@@ -1,10 +1,12 @@
 // Package omp adapts the omp coding harness (Bun/TS CLI, https://omp.sh) as a
-// in-one-chat agent over its JSONL RPC mode (`omp --mode rpc`).
+// in-one-chat agent over its JSONL RPC mode (`omp --mode rpc-ui`).
 //
 // Product decisions (see README design notes):
 //   - long-lived RPC sessions per chat (multi-turn context, steer/abort)
 //   - permission is fixed to maximum (--approval-mode yolo); the bridge does
 //     NOT implement permission prompting or a mode switcher
+//   - the `ask` tool's dialogs ARE supported: set_ask_dialog is enabled and
+//     extension_ui_request frames are rendered as chat question cards
 //   - sessions are stored under the in-one-chat data dir via --session-dir, so
 //     omp's personal ~/.omp store is not polluted
 //

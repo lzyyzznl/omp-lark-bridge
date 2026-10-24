@@ -274,6 +274,13 @@ func runCronList(args []string) {
 		if e, ok := j["enabled"].(bool); ok && !e {
 			enabled = "⏸"
 		}
+		// Match the chat dashboard: a job with a live failure streak is badged
+		// and shows the streak so CLI users see the same state.
+		streakStr := ""
+		if streak, ok := j["fail_streak"].(float64); ok && streak > 0 {
+			enabled = "❗"
+			streakStr = fmt.Sprintf("  (失败 %d 次 / %d failures)", int(streak), int(streak))
+		}
 		id, _ := j["id"].(string)
 		expr, _ := j["cron_expr"].(string)
 		prompt, _ := j["prompt"].(string)
@@ -290,7 +297,7 @@ func runCronList(args []string) {
 				display = display[:60] + "..."
 			}
 		}
-		fmt.Printf("  %s %s  %s  %s\n", enabled, id, expr, display)
+		fmt.Printf("  %s %s  %s  %s%s\n", enabled, id, expr, display, streakStr)
 	}
 }
 

@@ -1109,7 +1109,7 @@ func TestBuildRichCard_UsesCodexRuntimeToolDescriptors(t *testing.T) {
 		{Kind: core.ToolStepKindTool, Name: "tool_search_tool", Summary: "search available tools"},
 		{Kind: core.ToolStepKindTool, Name: "update_plan", Summary: "revise checklist"},
 		{Kind: core.ToolStepKindTool, Name: "request_user_input", Summary: "ask for confirmation"},
-	}, "answer", true, "")
+	}, "answer", true, "", core.LangEnglish)
 
 	panels := collectCardPanels(t, cardJSON)
 	if len(panels) != 1 {
@@ -1155,7 +1155,7 @@ func TestBuildRichCard_RendersThinkingAndToolResultRows(t *testing.T) {
 			Success:  &success,
 			Done:     true,
 		},
-	}, "done", true, "")
+	}, "done", true, "", core.LangEnglish)
 
 	for _, want := range []string{"Inspecting event routing", "echo hi", "completed", "exit: 0", "hi"} {
 		if !strings.Contains(cardJSON, want) {
@@ -1184,7 +1184,7 @@ func TestBuildRichCard_OversizePanelsKeepVisibleContent(t *testing.T) {
 		})
 	}
 
-	cardJSON := buildRichCard(core.CardStatusWorking, "", steps, "", true, "")
+	cardJSON := buildRichCard(core.CardStatusWorking, "", steps, "", true, "", core.LangEnglish)
 
 	panels := collectCardPanels(t, cardJSON)
 	if len(panels) == 0 {
@@ -1213,7 +1213,7 @@ func TestBuildRichCard_PanelsShowLatestTenSteps(t *testing.T) {
 		})
 	}
 
-	cardJSON := buildRichCard(core.CardStatusWorking, "", steps, "answer", true, "")
+	cardJSON := buildRichCard(core.CardStatusWorking, "", steps, "answer", true, "", core.LangEnglish)
 
 	panels := collectCardPanels(t, cardJSON)
 	if len(panels) != 2 {
@@ -1264,7 +1264,7 @@ func TestBuildRichCard_SeparatesReasoningAndTools(t *testing.T) {
 	cardJSON := buildRichCard(core.CardStatusWorking, "", []core.ToolStep{
 		{Kind: core.ToolStepKindThinking, Summary: "Inspecting event routing"},
 		{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "pwd"},
-	}, "answer", true, "")
+	}, "answer", true, "", core.LangEnglish)
 
 	panels := collectCardPanels(t, cardJSON)
 	if len(panels) != 2 {
@@ -1290,7 +1290,7 @@ func TestBuildRichCard_SeparatesReasoningAndTools(t *testing.T) {
 func TestBuildRichCard_UsesToolDescriptorsForAliases(t *testing.T) {
 	cardJSON := buildRichCard(core.CardStatusWorking, "", []core.ToolStep{
 		{Kind: core.ToolStepKindTool, Name: "web_fetch", Summary: "https://example.com/docs?token=secret"},
-	}, "answer", true, "")
+	}, "answer", true, "", core.LangEnglish)
 
 	panels := collectCardPanels(t, cardJSON)
 	if len(panels) != 1 {
@@ -1336,7 +1336,7 @@ func TestBuildRichCard_SanitizesMarkdownForCardLimits(t *testing.T) {
 		"![ok](img_v3_abc)",
 	}, "\n")
 
-	content := strings.Join(collectCardMarkdownContents(t, buildRichCard(core.CardStatusDone, "", nil, markdown, false, "")), "\n")
+	content := strings.Join(collectCardMarkdownContents(t, buildRichCard(core.CardStatusDone, "", nil, markdown, false, "", core.LangEnglish)), "\n")
 	if containsMarkdownLine(content, "# Big Result") {
 		t.Fatalf("card markdown should downgrade h1 headings, got %q", content)
 	}
@@ -2353,5 +2353,86 @@ func TestCmdAction_WithAfterClick_SessionKeyRoutes(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("expected command to be dispatched with correct session key")
+	}
+}
+
+// The tools panel must stay folded for the whole turn: it grows while the
+// agent works and an open panel pushes the streamed answer off-screen.
+func TestBuildRichCard_ToolsPanelStaysCollapsed(t *testing.T) {
+	steps := []core.ToolStep{
+		{Kind: core.ToolStepKindThinking, Summary: "Inspecting event routing"},
+		{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "pwd", Result: "/workspace", Status: "completed", Done: true},
+	}
+	for _, streaming := range []bool{true, false} {
+		cardJSON := buildRichCard(core.CardStatusWorking, "", steps, "answer", streaming, "", core.LangEnglish)
+		panels := collectCardPanels(t, cardJSON)
+		if len(panels) != 2 {
+			t.Fatalf("panel count = %d, want reasoning and tools panels", len(panels))
+		}
+		if got := cardPanelTitle(panels[1]); got != "Tools (1)" {
+			t.Fatalf("second panel title = %q, want Tools (1)", got)
+		}
+		if expanded, _ := panels[1]["expanded"].(bool); expanded {
+			t.Fatalf("tools panel expanded=%v (streaming=%v), want collapsed", expanded, streaming)
+		}
+		// Reasoning keeps following the turn: open while streaming, folded when done.
+		if expanded, _ := panels[0]["expanded"].(bool); expanded != streaming {
+			t.Fatalf("reasoning panel expanded=%v (streaming=%v), want expanded==streaming", expanded, streaming)
+		}
+	}
+}
+
+// Card JSON 2.0 renamed wide_screen_mode to width_mode, and the streaming print
+// rate must be configured explicitly: the defaults (1 char / 70ms) cannot keep
+// up with the engine's 20 chars / 200ms frames.
+func TestBuildRichCard_UsesJSON2WidthAndStreamingConfig(t *testing.T) {
+	steps := []core.ToolStep{{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "pwd"}}
+
+	readConfig := func(cardJSON string) map[string]any {
+		t.Helper()
+		var card map[string]any
+		if err := json.Unmarshal([]byte(cardJSON), &card); err != nil {
+			t.Fatalf("card JSON is invalid: %v\n%s", err, cardJSON)
+		}
+		cfg, ok := card["config"].(map[string]any)
+		if !ok {
+			t.Fatalf("card has no config object: %#v", card)
+		}
+		return cfg
+	}
+
+	streamingCfg := readConfig(buildRichCard(core.CardStatusWorking, "", steps, "body", true, "", core.LangEnglish))
+	if got := streamingCfg["width_mode"]; got != "fill" {
+		t.Fatalf("width_mode = %v, want fill", got)
+	}
+	if _, dead := streamingCfg["wide_screen_mode"]; dead {
+		t.Fatal("schema 2.0 card must not carry wide_screen_mode")
+	}
+	if got := streamingCfg["update_multi"]; got != true {
+		t.Fatalf("update_multi = %v, want true (required by streaming)", got)
+	}
+	printCfg, ok := streamingCfg["streaming_config"].(map[string]any)
+	if !ok {
+		t.Fatalf("streaming_config missing while streaming: %#v", streamingCfg)
+	}
+	freq, _ := printCfg["print_frequency_ms"].(map[string]any)
+	step, _ := printCfg["print_step"].(map[string]any)
+	if freq["default"] != float64(40) || step["default"] != float64(4) {
+		t.Fatalf("streaming_config = %#v, want 40ms / 4 chars per frame", printCfg)
+	}
+
+	doneCfg := readConfig(buildRichCard(core.CardStatusDone, "", steps, "body", false, "", core.LangEnglish))
+	if got := doneCfg["streaming_mode"]; got != false {
+		t.Fatalf("finished card streaming_mode = %v, want false (closes streaming mode)", got)
+	}
+	if _, ok := doneCfg["streaming_config"]; ok {
+		t.Fatalf("finished card should not carry streaming_config: %#v", doneCfg)
+	}
+
+	progressCfg := readConfig(buildProgressCardJSONFromPayload(&core.ProgressCardPayload{
+		Items: []core.ProgressCardEntry{{Kind: core.ProgressEntryInfo, Text: "step"}},
+	}))
+	if got := progressCfg["width_mode"]; got != "fill" {
+		t.Fatalf("progress card width_mode = %v, want fill", got)
 	}
 }

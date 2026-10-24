@@ -259,6 +259,8 @@ func TestBuildReplyFooter_LegacyAllSegments(t *testing.T) {
 func TestCompactReplyFooterPath_HomeRelativeDeepPathStaysFull(t *testing.T) {
 	homeDir := t.TempDir()
 	t.Setenv("HOME", homeDir)
+	// os.UserHomeDir reads USERPROFILE on Windows and HOME elsewhere.
+	t.Setenv("USERPROFILE", homeDir)
 
 	shortPath := filepath.Join(homeDir, "codes", "in-one-chat")
 	if got, want := compactReplyFooterPath(shortPath), "~/codes/in-one-chat"; got != want {

@@ -308,15 +308,21 @@ func captureStderr(t *testing.T, fn func()) string {
 		os.Stderr = old
 	}()
 
+	// Drain the pipe while fn writes: printUsage emits more than the pipe
+	// buffer holds, so reading only afterwards deadlocks forever.
+	var buf bytes.Buffer
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		_, _ = io.Copy(&buf, r)
+	}()
+
 	fn()
 
 	if err := w.Close(); err != nil {
 		t.Fatalf("close writer: %v", err)
 	}
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatalf("copy stderr: %v", err)
-	}
+	<-drained
 	if err := r.Close(); err != nil {
 		t.Fatalf("close reader: %v", err)
 	}

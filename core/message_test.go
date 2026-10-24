@@ -328,13 +328,16 @@ func TestSaveFilesToDisk_NoSubdirBackwardsCompat(t *testing.T) {
 // regardless of the cwd it was spawned into.
 func TestAppendFileRefs_AbsolutizesRelativePaths(t *testing.T) {
 	// Mixed input: one absolute, one relative, one that is exactly ".".
+	// The absolute entry comes from t.TempDir() because a hard-coded "/tmp/..."
+	// is drive-relative on Windows (and would be rewritten as C:\tmp\...).
+	absPath := filepath.Join(t.TempDir(), "explicit.txt")
 	in := []string{
-		"/tmp/explicit.txt",
-		"sub/dir/relative.txt",
+		absPath,
+		filepath.Join("sub", "dir", "relative.txt"),
 		".",
 	}
 	got := AppendFileRefs("see attached", in)
-	for _, want := range []string{"/tmp/explicit.txt"} {
+	for _, want := range []string{absPath} {
 		if !strings.Contains(got, want) {
 			t.Errorf("AppendFileRefs dropped absolute path %q from prompt: %q", want, got)
 		}
@@ -372,7 +375,7 @@ func TestAppendFileRefs_AbsolutizesRelativePaths(t *testing.T) {
 	// a substring inside an absolute path — that's fine and expected.
 	for i, entry := range entries {
 		entry = strings.TrimSpace(entry)
-		if entry == "sub/dir/relative.txt" || entry == "." || entry == "" {
+		if entry == filepath.Join("sub", "dir", "relative.txt") || entry == "." || entry == "" {
 			t.Errorf("AppendFileRefs emitted a bare relative entry %q at index %d: %q", entry, i, got)
 		}
 	}
@@ -382,7 +385,8 @@ func TestAppendFileRefs_AbsolutizesRelativePaths(t *testing.T) {
 // absolute paths are not rewritten (no extra syscalls, no normalization
 // surprises for callers who handed us a clean path).
 func TestAppendFileRefs_AbsoluteInputsPassthrough(t *testing.T) {
-	in := []string{"/already/abs/a.txt", "/already/abs/b.txt"}
+	dir := t.TempDir()
+	in := []string{filepath.Join(dir, "a.txt"), filepath.Join(dir, "b.txt")}
 	got := AppendFileRefs("see attached", in)
 	for _, want := range in {
 		if !strings.Contains(got, want) {

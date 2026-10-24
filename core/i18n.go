@@ -17,6 +17,15 @@ const (
 	LangSpanish            Language = "es"
 )
 
+// ParseLanguage maps a config `language` value to a Language. Unknown or empty
+// values mean auto-detect, matching every other consumer of the setting.
+func ParseLanguage(raw string) Language {
+	// Chinese-only build: the bot always speaks Simplified Chinese, so every
+	// config value (including "en", "auto" and unknown ones) resolves to zh.
+	_ = raw
+	return LangChinese
+}
+
 // I18n provides internationalized messages.
 //
 // All exported methods are safe to call from multiple goroutines: in-one-chat
@@ -267,33 +276,53 @@ const (
 	MsgHeartbeatUsage        MsgKey = "heartbeat_usage"
 	MsgHeartbeatInvalidMins  MsgKey = "heartbeat_invalid_mins"
 
-	MsgCronNotAvailable       MsgKey = "cron_not_available"
-	MsgCronUsage              MsgKey = "cron_usage"
-	MsgCronAddUsage           MsgKey = "cron_add_usage"
-	MsgCronAdded              MsgKey = "cron_added"
-	MsgCronAddedExec          MsgKey = "cron_added_exec"
-	MsgCronAddExecUsage       MsgKey = "cron_addexec_usage"
-	MsgCronEmpty              MsgKey = "cron_empty"
-	MsgCronListTitle          MsgKey = "cron_list_title"
-	MsgCronListFooter         MsgKey = "cron_list_footer"
-	MsgCronExecUsage          MsgKey = "cron_exec_usage"
-	MsgCronTriggered          MsgKey = "cron_triggered"
-	MsgCronProjectUnavailable MsgKey = "cron_project_unavailable"
-	MsgCronDelUsage           MsgKey = "cron_del_usage"
-	MsgCronDeleted            MsgKey = "cron_deleted"
-	MsgCronNotFound           MsgKey = "cron_not_found"
-	MsgCronEnabled            MsgKey = "cron_enabled"
-	MsgCronDisabled           MsgKey = "cron_disabled"
-	MsgCronMuted              MsgKey = "cron_muted"
-	MsgCronUnmuted            MsgKey = "cron_unmuted"
-	MsgCronCardHint           MsgKey = "cron_card_hint"
-	MsgCronNextShort          MsgKey = "cron_next_short"
-	MsgCronLastShort          MsgKey = "cron_last_short"
-	MsgCronBtnEnable          MsgKey = "cron_btn_enable"
-	MsgCronBtnDisable         MsgKey = "cron_btn_disable"
-	MsgCronBtnMute            MsgKey = "cron_btn_mute"
-	MsgCronBtnUnmute          MsgKey = "cron_btn_unmute"
-	MsgCronBtnDelete          MsgKey = "cron_btn_delete"
+	MsgCronNotAvailable          MsgKey = "cron_not_available"
+	MsgCronUsage                 MsgKey = "cron_usage"
+	MsgCronAddUsage              MsgKey = "cron_add_usage"
+	MsgCronAdded                 MsgKey = "cron_added"
+	MsgCronAddedExec             MsgKey = "cron_added_exec"
+	MsgCronAddExecUsage          MsgKey = "cron_addexec_usage"
+	MsgCronEmpty                 MsgKey = "cron_empty"
+	MsgCronListTitle             MsgKey = "cron_list_title"
+	MsgCronListFooter            MsgKey = "cron_list_footer"
+	MsgCronExecUsage             MsgKey = "cron_exec_usage"
+	MsgCronTriggered             MsgKey = "cron_triggered"
+	MsgCronProjectUnavailable    MsgKey = "cron_project_unavailable"
+	MsgCronDelUsage              MsgKey = "cron_del_usage"
+	MsgCronDeleted               MsgKey = "cron_deleted"
+	MsgCronNotFound              MsgKey = "cron_not_found"
+	MsgCronEnabled               MsgKey = "cron_enabled"
+	MsgCronDisabled              MsgKey = "cron_disabled"
+	MsgCronMuted                 MsgKey = "cron_muted"
+	MsgCronUnmuted               MsgKey = "cron_unmuted"
+	MsgCronCardHint              MsgKey = "cron_card_hint"
+	MsgCronNextShort             MsgKey = "cron_next_short"
+	MsgCronLastShort             MsgKey = "cron_last_short"
+	MsgCronBtnEnable             MsgKey = "cron_btn_enable"
+	MsgCronBtnDisable            MsgKey = "cron_btn_disable"
+	MsgCronBtnMute               MsgKey = "cron_btn_mute"
+	MsgCronBtnUnmute             MsgKey = "cron_btn_unmute"
+	MsgCronBtnDelete             MsgKey = "cron_btn_delete"
+	MsgCronBtnRun                MsgKey = "cron_btn_run"
+	MsgCronBtnNewSession         MsgKey = "cron_btn_new_session"
+	MsgCronBtnReuseSession       MsgKey = "cron_btn_reuse_session"
+	MsgCronSessionNew            MsgKey = "cron_session_new"
+	MsgCronSessionReuse          MsgKey = "cron_session_reuse"
+	MsgCronSessionLabel          MsgKey = "cron_session_label"
+	MsgCronSessionSet            MsgKey = "cron_session_set"
+	MsgLangOnlyChinese           MsgKey = "lang_only_chinese"
+	MsgCronSessionUsage          MsgKey = "cron_session_usage"
+	MsgCronEmptyAll              MsgKey = "cron_empty_all"
+	MsgTimerEmptyAll             MsgKey = "timer_empty_all"
+	MsgScheduleScopeAllNote      MsgKey = "schedule_scope_all_note"
+	MsgScheduleScopeAllBtn       MsgKey = "schedule_scope_all_btn"
+	MsgScheduleScopeMineBtn      MsgKey = "schedule_scope_mine_btn"
+	MsgScheduleNextEta           MsgKey = "schedule_next_eta"
+	MsgScheduleFailStreak        MsgKey = "schedule_fail_streak"
+	MsgScheduleFailureTitle      MsgKey = "schedule_failure_title"
+	MsgScheduleTimerFailureTitle MsgKey = "schedule_timer_failure_title"
+	MsgScheduleFailureBody       MsgKey = "schedule_failure_body"
+	MsgScheduleFailureHint       MsgKey = "schedule_failure_hint"
 
 	MsgStatusTitle           MsgKey = "status_title"
 	MsgReplyFooterRemaining  MsgKey = "reply_footer_remaining"
@@ -513,6 +542,7 @@ const (
 	MsgCommandDisabled   MsgKey = "command_disabled"
 	MsgAdminRequired     MsgKey = "admin_required"
 	MsgRateLimited       MsgKey = "rate_limited"
+	MsgRetryNothing      MsgKey = "retry_nothing"
 	MsgPsSent            MsgKey = "ps_sent"
 	MsgPsSendFailed      MsgKey = "ps_send_failed"
 	MsgPsEmpty           MsgKey = "ps_empty"
@@ -1805,18 +1835,18 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "El programador de tareas no está disponible.",
 	},
 	MsgCronUsage: {
-		LangEnglish:            "Usage:\n/cron add <min> <hour> <day> <month> <weekday> <prompt>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron setup — write in-one-chat instructions to agent memory file",
-		LangChinese:            "用法：\n/cron add <分> <时> <日> <月> <周> <任务描述>\n/cron list\n/cron exec <id> 立即执行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 静音/取消静音\n/cron setup — 将 in-one-chat 指令写入 agent 记忆文件",
-		LangTraditionalChinese: "用法：\n/cron add <分> <時> <日> <月> <週> <任務描述>\n/cron list\n/cron exec <id> 立即執行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 靜音/取消靜音\n/cron setup — 將 in-one-chat 指令寫入 agent 記憶檔案",
-		LangJapanese:           "使い方:\n/cron add <分> <時> <日> <月> <曜日> <タスク内容>\n/cron list\n/cron exec <id> 今すぐ実行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> ミュート/解除\n/cron setup — in-one-chat の指示をエージェントのメモリファイルに書き込む",
-		LangSpanish:            "Uso:\n/cron add <min> <hora> <día> <mes> <día_semana> <tarea>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron setup — escribir las instrucciones de in-one-chat en el archivo de memoria del agente",
+		LangEnglish:            "Usage:\n/cron add <min> <hour> <day> <month> <weekday> <prompt>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron session <id> <reuse|new>  (default reuse = same session every run)\n/cron setup — write in-one-chat instructions to agent memory file",
+		LangChinese:            "用法：\n/cron add <分> <时> <日> <月> <周> <任务描述>\n/cron list\n/cron exec <id> 立即执行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 静音/取消静音\n/cron session <id> <reuse|new>  默认 reuse：永远用同一个会话\n/cron setup — 将 in-one-chat 指令写入 agent 记忆文件",
+		LangTraditionalChinese: "用法：\n/cron add <分> <時> <日> <月> <週> <任務描述>\n/cron list\n/cron exec <id> 立即執行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 靜音/取消靜音\n/cron session <id> <reuse|new>  預設 reuse：永遠用同一個會話\n/cron setup — 將 in-one-chat 指令寫入 agent 記憶檔案",
+		LangJapanese:           "使い方:\n/cron add <分> <時> <日> <月> <曜日> <タスク内容>\n/cron list\n/cron exec <id> 今すぐ実行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> ミュート/解除\n/cron session <id> <reuse|new>  既定 reuse：常に同じセッション\n/cron setup — in-one-chat の指示をエージェントのメモリファイルに書き込む",
+		LangSpanish:            "Uso:\n/cron add <min> <hora> <día> <mes> <día_semana> <tarea>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron session <id> <reuse|new>  (por defecto reuse = misma sesión siempre)\n/cron setup — escribir las instrucciones de in-one-chat en el archivo de memoria del agente",
 	},
 	MsgCronAddUsage: {
-		LangEnglish:            "Usage: /cron add <min> <hour> <day> <month> <weekday> <prompt>\nExample: /cron add 0 6 * * * Collect GitHub trending data and send me a summary",
-		LangChinese:            "用法：/cron add <分> <时> <日> <月> <周> <任务描述>\n示例：/cron add 0 6 * * * 收集 GitHub Trending 数据整理成简报发给我",
-		LangTraditionalChinese: "用法：/cron add <分> <時> <日> <月> <週> <任務描述>\n範例：/cron add 0 6 * * * 收集 GitHub Trending 資料整理成簡報發給我",
-		LangJapanese:           "使い方: /cron add <分> <時> <日> <月> <曜日> <タスク内容>\n例: /cron add 0 6 * * * GitHub Trending を収集してまとめを送って",
-		LangSpanish:            "Uso: /cron add <min> <hora> <día> <mes> <día_semana> <tarea>\nEjemplo: /cron add 0 6 * * * Recopilar datos de GitHub Trending y enviarme un resumen",
+		LangEnglish:            "Usage: /cron add [--new-session] <min> <hour> <day> <month> <weekday> <prompt>\nExample: /cron add 0 6 * * * Collect GitHub trending data and send me a summary\nDefault: every run continues this chat's session (--new-session to start a fresh one each run)",
+		LangChinese:            "用法：/cron add [--new-session] <分> <时> <日> <月> <周> <任务描述>\n示例：/cron add 0 6 * * * 收集 GitHub Trending 数据整理成简报发给我\n默认：每次都在本会话里继续（加 --new-session 则每次新建会话）",
+		LangTraditionalChinese: "用法：/cron add [--new-session] <分> <時> <日> <月> <週> <任務描述>\n範例：/cron add 0 6 * * * 收集 GitHub Trending 資料整理成簡報發給我\n預設：每次都在本會話裡繼續（加 --new-session 則每次新建會話）",
+		LangJapanese:           "使い方: /cron add [--new-session] <分> <時> <日> <月> <曜日> <タスク内容>\n例: /cron add 0 6 * * * GitHub Trending を収集してまとめを送って\n既定: 毎回このチャットのセッションを継続（--new-session で毎回新規）",
+		LangSpanish:            "Uso: /cron add [--new-session] <min> <hora> <día> <mes> <día_semana> <tarea>\nEjemplo: /cron add 0 6 * * * Recopilar datos de GitHub Trending y enviarme un resumen\nPor defecto: cada ejecución continúa esta sesión (--new-session para una nueva)",
 	},
 	MsgCronAdded: {
 		LangEnglish:            "✅ Cron job created\nID: `%s`\nSchedule: `%s`\nPrompt: %s",
@@ -3331,6 +3361,145 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "🚫 コマンド `%s` はこのプロジェクトで無効化されています。",
 		LangSpanish:            "🚫 El comando `%s` está deshabilitado para este proyecto.",
 	},
+	MsgRetryNothing: {
+		LangEnglish:            "Nothing to retry yet — send a message first.",
+		LangChinese:            "还没有可重试的消息，先发一条吧。",
+		LangTraditionalChinese: "還沒有可重試的訊息，先送一則吧。",
+		LangJapanese:           "まだ再試行できるメッセージがありません。",
+		LangSpanish:            "Todavía no hay nada que reintentar: envía un mensaje primero.",
+	},
+	MsgCronBtnRun: {
+		LangEnglish:            "Run now",
+		LangChinese:            "立即运行",
+		LangTraditionalChinese: "立即執行",
+		LangJapanese:           "今すぐ実行",
+		LangSpanish:            "Ejecutar ahora",
+	},
+	MsgCronBtnNewSession: {
+		LangEnglish:            "New session per run",
+		LangChinese:            "每次新建会话",
+		LangTraditionalChinese: "每次新建會話",
+		LangJapanese:           "実行ごとに新規セッション",
+		LangSpanish:            "Sesión nueva por ejecución",
+	},
+	MsgCronBtnReuseSession: {
+		LangEnglish:            "Reuse this session",
+		LangChinese:            "复用本会话",
+		LangTraditionalChinese: "複用本會話",
+		LangJapanese:           "このセッションを再利用",
+		LangSpanish:            "Reutilizar esta sesión",
+	},
+	MsgCronSessionLabel: {
+		LangChinese: "会话：%s\n",
+	},
+	MsgLangOnlyChinese: {
+		LangChinese: "当前语言：中文\n\n本机器人仅支持中文，不再提供语言切换。",
+	},
+	MsgCronSessionNew: {
+		LangEnglish:            "🆕 new session per run",
+		LangChinese:            "🆕 每次新建会话",
+		LangTraditionalChinese: "🆕 每次新建會話",
+		LangJapanese:           "🆕 実行ごとに新規セッション",
+		LangSpanish:            "🆕 sesión nueva por ejecución",
+	},
+	MsgCronSessionReuse: {
+		LangEnglish:            "♻ reuses this session",
+		LangChinese:            "♻ 复用本会话",
+		LangTraditionalChinese: "♻ 複用本會話",
+		LangJapanese:           "♻ このセッションを再利用",
+		LangSpanish:            "♻ reutiliza esta sesión",
+	},
+	MsgCronSessionSet: {
+		LangEnglish:            "Job %s session mode → %s",
+		LangChinese:            "任务 %s 会话模式 → %s",
+		LangTraditionalChinese: "任務 %s 會話模式 → %s",
+		LangJapanese:           "タスク %s のセッションモード → %s",
+		LangSpanish:            "Modo de sesión de la tarea %s → %s",
+	},
+	MsgCronSessionUsage: {
+		LangEnglish:            "Usage: /cron session <id> <reuse|new>\nreuse = every run continues this chat's session (default); new = fresh session per run",
+		LangChinese:            "用法: /cron session <id> <reuse|new>\nreuse = 每次都在本会话里继续（默认）；new = 每次运行新建会话",
+		LangTraditionalChinese: "用法: /cron session <id> <reuse|new>\nreuse = 每次都在本會話裡繼續（預設）；new = 每次執行新建會話",
+		LangJapanese:           "使い方: /cron session <id> <reuse|new>\nreuse = 毎回このチャットのセッションを継続（既定）、new = 実行ごとに新規セッション",
+		LangSpanish:            "Uso: /cron session <id> <reuse|new>\nreuse = cada ejecución continúa esta sesión (por defecto); new = sesión nueva por ejecución",
+	},
+	MsgCronEmptyAll: {
+		LangEnglish:            "No cron jobs in this project yet. Create one with `/cron add …`.",
+		LangChinese:            "本项目还没有任何定时任务。用 `/cron add …` 创建。",
+		LangTraditionalChinese: "本專案還沒有任何定時任務。用 `/cron add …` 建立。",
+		LangJapanese:           "このプロジェクトには定期タスクがありません。`/cron add …` で作成してください。",
+		LangSpanish:            "Este proyecto aún no tiene tareas programadas. Crea una con `/cron add …`.",
+	},
+	MsgTimerEmptyAll: {
+		LangEnglish:            "No pending timers in this project.",
+		LangChinese:            "本项目没有待触发的提醒。",
+		LangTraditionalChinese: "本專案沒有待觸發的提醒。",
+		LangJapanese:           "このプロジェクトに待機中のリマインダーはありません。",
+		LangSpanish:            "No hay recordatorios pendientes en este proyecto.",
+	},
+	MsgScheduleScopeAllNote: {
+		LangEnglish:            "Scope: **all chats in this project**",
+		LangChinese:            "范围：**本项目全部会话**",
+		LangTraditionalChinese: "範圍：**本專案全部會話**",
+		LangJapanese:           "範囲：**このプロジェクトの全チャット**",
+		LangSpanish:            "Ámbito: **todos los chats del proyecto**",
+	},
+	MsgScheduleScopeAllBtn: {
+		LangEnglish:            "All jobs",
+		LangChinese:            "全部任务",
+		LangTraditionalChinese: "全部任務",
+		LangJapanese:           "すべてのタスク",
+		LangSpanish:            "Todas las tareas",
+	},
+	MsgScheduleScopeMineBtn: {
+		LangEnglish:            "This chat only",
+		LangChinese:            "仅本会话",
+		LangTraditionalChinese: "僅本會話",
+		LangJapanese:           "このチャットのみ",
+		LangSpanish:            "Solo este chat",
+	},
+	MsgScheduleNextEta: {
+		LangEnglish:            " (in %s)",
+		LangChinese:            "（还有 %s）",
+		LangTraditionalChinese: "（還有 %s）",
+		LangJapanese:           "（あと %s）",
+		LangSpanish:            " (en %s)",
+	},
+	MsgScheduleFailStreak: {
+		LangEnglish:            "Consecutive failures: %d\n",
+		LangChinese:            "连续失败 %d 次\n",
+		LangTraditionalChinese: "連續失敗 %d 次\n",
+		LangJapanese:           "連続失敗 %d 回\n",
+		LangSpanish:            "Fallos consecutivos: %d\n",
+	},
+	MsgScheduleFailureTitle: {
+		LangEnglish:            "❗ Scheduled job failed",
+		LangChinese:            "❗ 定时任务失败",
+		LangTraditionalChinese: "❗ 定時任務失敗",
+		LangJapanese:           "❗ 定期タスクが失敗しました",
+		LangSpanish:            "❗ La tarea programada falló",
+	},
+	MsgScheduleTimerFailureTitle: {
+		LangEnglish:            "❗ Scheduled reminder failed",
+		LangChinese:            "❗ 定时提醒失败",
+		LangTraditionalChinese: "❗ 定時提醒失敗",
+		LangJapanese:           "❗ リマインダーが失敗しました",
+		LangSpanish:            "❗ El recordatorio falló",
+	},
+	MsgScheduleFailureBody: {
+		LangEnglish:            "**%s**\nID: `%s`\nConsecutive failures: %d\n\n```\n%s\n```",
+		LangChinese:            "**%s**\nID: `%s`\n连续失败 %d 次\n\n```\n%s\n```",
+		LangTraditionalChinese: "**%s**\nID: `%s`\n連續失敗 %d 次\n\n```\n%s\n```",
+		LangJapanese:           "**%s**\nID: `%s`\n連続失敗 %d 回\n\n```\n%s\n```",
+		LangSpanish:            "**%s**\nID: `%s`\nFallos consecutivos: %d\n\n```\n%s\n```",
+	},
+	MsgScheduleFailureHint: {
+		LangEnglish:            "Open `/cron list` or `/timer list` to inspect, disable or delete it.",
+		LangChinese:            "在 `/cron list` 或 `/timer list` 里查看、停用或删除该任务。",
+		LangTraditionalChinese: "在 `/cron list` 或 `/timer list` 裡查看、停用或刪除該任務。",
+		LangJapanese:           "`/cron list` または `/timer list` で確認・停止・削除できます。",
+		LangSpanish:            "Abre `/cron list` o `/timer list` para revisarla, desactivarla o borrarla.",
+	},
 	MsgAdminRequired: {
 		LangEnglish:            "🔒 Command `%s` requires admin privilege. Set `admin_from` in config to authorize users.",
 		LangChinese:            "🔒 命令 `%s` 需要管理员权限。请在配置中设置 `admin_from` 来授权用户。",
@@ -4202,11 +4371,10 @@ func (i *I18n) T(key MsgKey) string {
 		if translated, ok := msg[lang]; ok {
 			return translated
 		}
-		// Fallback: zh-TW → zh → en
-		if lang == LangTraditionalChinese {
-			if translated, ok := msg[LangChinese]; ok {
-				return translated
-			}
+		// Fallback: requested → zh → en. Chinese is the product language, so a
+		// key missing from the requested locale still renders in Chinese.
+		if translated, ok := msg[LangChinese]; ok {
+			return translated
 		}
 		if msg[LangEnglish] != "" {
 			return msg[LangEnglish]

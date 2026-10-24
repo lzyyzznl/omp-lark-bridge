@@ -120,6 +120,8 @@ type Platform struct {
 	appID                      string
 	appSecret                  string
 	progressStyle              string
+	lang                       core.Language
+	slashCommands              bool
 	useInteractiveCard         bool
 	self                       core.Platform
 	reactionEmoji              string
@@ -392,6 +394,8 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		appID:                      appID,
 		appSecret:                  appSecret,
 		progressStyle:              progressStyle,
+		lang:                       cardLangFromOptions(opts),
+		slashCommands:              slashCommandsEnabled(opts),
 		useInteractiveCard:         useInteractiveCard,
 		reactionEmoji:              reactionEmoji,
 		doneEmoji:                  doneEmoji,
@@ -3949,7 +3953,8 @@ func buildCardJSON(content string) string {
 	card := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
-			"wide_screen_mode": true,
+			// schema 2.0 uses width_mode; the 1.0-era wide_screen_mode is ignored.
+			"width_mode": "fill",
 		},
 		"body": map[string]any{
 			"elements": []map[string]any{
@@ -3991,7 +3996,8 @@ func buildCardJSONWithStatusFooter(content, footer string) string {
 	card := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
-			"wide_screen_mode": true,
+			// schema 2.0 uses width_mode; the 1.0-era wide_screen_mode is ignored.
+			"width_mode": "fill",
 		},
 		"body": map[string]any{
 			"elements": elements,
@@ -4442,7 +4448,8 @@ func buildProgressCardJSONFromPayload(payload *core.ProgressCardPayload) string 
 	card := map[string]any{
 		"schema": "2.0",
 		"config": map[string]any{
-			"wide_screen_mode": true,
+			// schema 2.0 uses width_mode; the 1.0-era wide_screen_mode is ignored.
+			"width_mode": "fill",
 		},
 		"header": map[string]any{
 			"title": map[string]any{
@@ -4640,14 +4647,42 @@ func (p *Platform) StreamRichCardText(ctx context.Context, previewHandle any, fu
 		return fmt.Errorf("%s: StreamRichCardText: invalid preview handle type %T", p.tag(), previewHandle)
 	}
 
-	// Serialize all PUTs for one card so the monotonic sequence counter is
-	// preserved across concurrent EventText calls; rate-limit headroom is
-	// huge (Lark allows 50 QPS per element).
+	code, msg, err := p.streamCardText(ctx, h, fullText)
+	if err != nil {
+		return err
+	}
+	if code != 0 && cardStreamingClosed(code, msg) {
+		// Feishu closes streaming mode 10 minutes after it was opened (300309 /
+		// 200850), which long agent turns regularly exceed. Re-open it and replay
+		// the frame instead of degrading to full-card patches for the rest of the
+		// turn.
+		if rerr := p.reopenCardStreaming(ctx, h); rerr != nil {
+			slog.Debug(p.tag()+": reopen card streaming failed", "error", rerr)
+		} else if code, msg, err = p.streamCardText(ctx, h, fullText); err != nil {
+			return err
+		}
+	}
+	if code == 0 {
+		return nil
+	}
+	apiErr := classifyFeishuCardAPIError("stream rich card text", code, msg)
+	if errors.Is(apiErr, errFeishuCardRateLimited) {
+		slog.Debug(p.tag()+": stream rich card text rate limited; skipping frame", "code", code)
+		return nil
+	}
+	return fmt.Errorf("%s: %w", p.tag(), apiErr)
+}
+
+// streamCardText pushes one full-text frame to the card's streaming markdown
+// element. The handle mutex is held across the request so the sequence counter
+// stays strictly increasing: Feishu rejects out-of-order sequences across every
+// card API (300317), not just this element.
+func (p *Platform) streamCardText(ctx context.Context, h *feishuPreviewHandle, fullText string) (int, string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	if h.cardID == "" {
-		return core.ErrNotSupported
+		return 0, "", core.ErrNotSupported
 	}
 
 	h.sequence++
@@ -4664,27 +4699,83 @@ func (p *Platform) StreamRichCardText(ctx context.Context, previewHandle any, fu
 		apiResp, err = client.Put(ctx, apiPath, body, larkcore.AccessTokenTypeTenant, options...)
 		return err
 	}); err != nil {
-		return fmt.Errorf("%s: stream rich card text: %w", p.tag(), err)
+		return 0, "", fmt.Errorf("%s: stream rich card text: %w", p.tag(), err)
 	}
-	if apiResp == nil || apiResp.StatusCode != http.StatusOK {
-		return fmt.Errorf("%s: stream rich card text: HTTP status %d", p.tag(), apiResp.StatusCode)
+	return readCardAPIResponse(p.tag(), "stream rich card text", apiResp)
+}
+
+// reopenCardStreaming re-enables streaming mode on an existing card entity via
+// PATCH /open-apis/cardkit/v1/cards/{card_id}/settings.
+func (p *Platform) reopenCardStreaming(ctx context.Context, h *feishuPreviewHandle) error {
+	h.mu.Lock()
+	if h.cardID == "" {
+		h.mu.Unlock()
+		return core.ErrNotSupported
+	}
+	h.sequence++
+	cardID := h.cardID
+	seq := h.sequence
+	h.mu.Unlock()
+
+	settings, err := json.Marshal(map[string]any{
+		"config": map[string]any{"streaming_mode": true},
+	})
+	if err != nil {
+		return fmt.Errorf("%s: reopen card streaming: encode settings: %w", p.tag(), err)
+	}
+	apiPath := fmt.Sprintf("/open-apis/cardkit/v1/cards/%s/settings", cardID)
+	body := map[string]any{"settings": string(settings), "sequence": seq}
+
+	var apiResp *larkcore.ApiResp
+	if err := p.withFreshTenantAccessTokenRetry(ctx, "reopen card streaming", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+		var err error
+		apiResp, err = client.Patch(ctx, apiPath, body, larkcore.AccessTokenTypeTenant, options...)
+		return err
+	}); err != nil {
+		return fmt.Errorf("%s: reopen card streaming: %w", p.tag(), err)
+	}
+	code, msg, err := readCardAPIResponse(p.tag(), "reopen card streaming", apiResp)
+	if err != nil {
+		return err
+	}
+	if code != 0 {
+		return fmt.Errorf("%s: reopen card streaming: %w", p.tag(), classifyFeishuCardAPIError("reopen card streaming", code, msg))
+	}
+	return nil
+}
+
+// cardStreamingClosed reports whether a cardkit error means streaming mode is no
+// longer active (300309: closed, 200850: timed out).
+func cardStreamingClosed(code int, msg string) bool {
+	switch code {
+	case 300309, 200850:
+		return true
+	}
+	lower := strings.ToLower(msg)
+	return strings.Contains(lower, "streaming closed") || strings.Contains(lower, "streaming timeout")
+}
+
+// readCardAPIResponse decodes a cardkit response body into (code, msg). The HTTP
+// status is not enough: cardkit answers 400 with a body code for domain errors,
+// which callers classify.
+func readCardAPIResponse(tag, api string, apiResp *larkcore.ApiResp) (int, string, error) {
+	if apiResp == nil {
+		return 0, "", fmt.Errorf("%s: %s: empty response", tag, api)
 	}
 	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if err := json.Unmarshal(apiResp.RawBody, &resp); err != nil {
-		return fmt.Errorf("%s: stream rich card text: parse response: %w", p.tag(), err)
-	}
-	if resp.Code != 0 {
-		err := classifyFeishuCardAPIError("stream rich card text", resp.Code, resp.Msg)
-		if errors.Is(err, errFeishuCardRateLimited) {
-			slog.Debug(p.tag()+": stream rich card text rate limited; skipping frame", "code", resp.Code)
-			return nil
+	if len(bytes.TrimSpace(apiResp.RawBody)) > 0 {
+		if err := json.Unmarshal(apiResp.RawBody, &resp); err != nil {
+			return 0, "", fmt.Errorf("%s: %s: parse response (HTTP %d): %w", tag, api, apiResp.StatusCode, err)
 		}
-		return fmt.Errorf("%s: %w", p.tag(), err)
+		return resp.Code, resp.Msg, nil
 	}
-	return nil
+	if apiResp.StatusCode != http.StatusOK {
+		return 0, "", fmt.Errorf("%s: %s: HTTP status %d", tag, api, apiResp.StatusCode)
+	}
+	return 0, "", nil
 }
 
 // UpdateMessage edits an existing card message identified by previewHandle.
@@ -5795,9 +5886,78 @@ var thinkingVerbs = []string{
 	"Vibing", "Wandering", "Whirring", "Wizarding", "Working", "Wrangling",
 }
 
-func pickThinkingVerb() string {
-	idx := time.Now().Unix() % int64(len(thinkingVerbs))
-	return thinkingVerbs[idx] + "..."
+// thinkingVerbsZH keeps the rotating header verb readable in Chinese chats.
+var thinkingVerbsZH = []string{
+	"思考中", "梳理思路", "推敲方案", "检查代码", "整理线索", "核对细节", "权衡取舍",
+}
+
+func pickThinkingVerb(lang core.Language) string {
+	verbs := thinkingVerbs
+	if isCardChinese(lang) {
+		verbs = thinkingVerbsZH
+	}
+	idx := time.Now().Unix() % int64(len(verbs))
+	return verbs[idx] + "..."
+}
+
+func isCardChinese(lang core.Language) bool {
+	return lang == core.LangChinese || lang == core.LangTraditionalChinese
+}
+
+// cardLangFromOptions reads the platform's configured UI language. Platforms
+// render their own strings (card headers/buttons) and cannot see the engine's
+// per-message language detection, so main wires [language] into platform opts.
+func cardLangFromOptions(opts map[string]any) core.Language {
+	if v, ok := opts["language"].(string); ok {
+		return core.ParseLanguage(v)
+	}
+	return core.LangAuto
+}
+
+// slashCommandsEnabled reports whether the bot should sync its command list into
+// Feishu's "/" panel. On by default; `slash_commands = false` opts out (the app
+// then needs no application:app_slash_command:* scopes).
+func slashCommandsEnabled(opts map[string]any) bool {
+	if v, ok := opts["slash_commands"].(bool); ok {
+		return v
+	}
+	return true
+}
+
+// richCardLabels holds every user-visible string of the single-card turn.
+type richCardLabels struct {
+	reasoning      string
+	tools          string
+	done           string
+	failed         string
+	thinkingEmpty  string
+	continueButton string
+	retryButton    string
+	helpfulButton  string
+	poorButton     string
+	feedbackThanks string
+	stepsHiddenFmt string
+}
+
+func richCardLabelsFor(lang core.Language) richCardLabels {
+	if isCardChinese(lang) {
+		return richCardLabels{
+			reasoning:      "思考",
+			tools:          "工具",
+			done:           "完成",
+			failed:         "出错",
+			thinkingEmpty:  "思考中...",
+			stepsHiddenFmt: "... 已隐藏前 %d 步",
+		}
+	}
+	return richCardLabels{
+		reasoning:      "Reasoning",
+		tools:          "Tools",
+		done:           "Done",
+		failed:         "Error",
+		thinkingEmpty:  "Thinking...",
+		stepsHiddenFmt: "... %d earlier steps hidden",
+	}
 }
 
 var markdownTablePattern = regexp.MustCompile(`(?m)^\|.+\|\s*\n\|[\s:|-]+\|\s*\n(?:\|.+\|\s*\n?)+`)
@@ -6450,9 +6610,9 @@ func richPlaceholderElement(text string) map[string]any {
 	}
 }
 
-func richPanelElements(steps []core.ToolStep, emptyText string) []map[string]any {
+func richPanelElements(steps []core.ToolStep, labels richCardLabels) []map[string]any {
 	if len(steps) == 0 {
-		return []map[string]any{richPlaceholderElement(emptyText)}
+		return []map[string]any{richPlaceholderElement(labels.thinkingEmpty)}
 	}
 	const maxPanelSteps = 10
 	visible := steps
@@ -6463,7 +6623,7 @@ func richPanelElements(steps []core.ToolStep, emptyText string) []map[string]any
 	}
 	elements := make([]map[string]any, 0, len(visible)+1)
 	if hidden > 0 {
-		elements = append(elements, richPlaceholderElement(fmt.Sprintf("... %d earlier steps hidden", hidden)))
+		elements = append(elements, richPlaceholderElement(fmt.Sprintf(labels.stepsHiddenFmt, hidden)))
 	}
 	for _, step := range visible {
 		elements = append(elements, richStepElement(step))
@@ -6486,13 +6646,18 @@ func buildRichPanel(title string, expanded bool, elements []map[string]any) map[
 	}
 }
 
-const maxRichCardJSONBytes = 28000
+// Feishu rejects cards above 30KB (error 200860); keep a small margin for the
+// JSON envelope while preserving as much tool/reasoning history as possible.
+const (
+	maxRichCardJSONBytes = 29500
+	cardSummaryMaxRunes  = 60
+)
 
 // buildRichCard renders a Card 2.0 "single-card" turn with collapsible
 // reasoning/tool panels, streaming markdown body, status-colored header, and a
 // pre-composed multi-line statusFooter (engine-owned, includes elapsed).
-func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) string {
-	b, err := buildRichCardJSONBytes(status, steps, markdown, streaming, statusFooter)
+func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string, lang core.Language) string {
+	b, err := buildRichCardJSONBytes(status, steps, markdown, streaming, statusFooter, lang)
 	if err != nil {
 		slog.Debug("feishu: build rich card marshal failed, fallback to basic card", "error", err)
 		return buildCardJSONWithStatus(markdown, status)
@@ -6510,11 +6675,13 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 		textLen int
 	}{
 		{perLane: 10, textLen: 180},
-		{perLane: 6, textLen: 120},
-		{perLane: 3, textLen: 80},
+		{perLane: 10, textLen: 120},
+		{perLane: 8, textLen: 100},
+		{perLane: 6, textLen: 80},
+		{perLane: 3, textLen: 60},
 	} {
 		compactSteps := compactRichStepsForCardSize(steps, limit.perLane, limit.textLen)
-		compact, err := buildRichCardJSONBytes(status, compactSteps, markdown, streaming, statusFooter)
+		compact, err := buildRichCardJSONBytes(status, compactSteps, markdown, streaming, statusFooter, lang)
 		if err == nil && len(compact) <= maxRichCardJSONBytes {
 			slog.Debug("feishu: rich card exceeded size limit, compacted panels",
 				"original_size", len(b),
@@ -6534,25 +6701,30 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 	return buildCardJSONWithStatus(fallbackMarkdown, status)
 }
 
-func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) ([]byte, error) {
+func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string, lang core.Language) ([]byte, error) {
+	labels := richCardLabelsFor(lang)
 	reasoningSteps, toolSteps := splitRichStepsByLane(steps)
 	panelMaps := make([]map[string]any, 0, 2)
 	if len(reasoningSteps) > 0 {
 		panelMaps = append(panelMaps, buildRichPanel(
-			richLaneTitle("Reasoning", len(reasoningSteps)),
+			richLaneTitle(labels.reasoning, len(reasoningSteps)),
 			streaming,
-			richPanelElements(reasoningSteps, "Thinking..."),
+			richPanelElements(reasoningSteps, labels),
 		))
 	}
 	if len(toolSteps) > 0 {
+		// Tool calls stay folded for the whole turn: the panel keeps growing
+		// while the agent works, and an expanded panel buries the answer text
+		// below it. Reasoning still opens while streaming so the user can see
+		// what the agent is doing.
 		panelMaps = append(panelMaps, buildRichPanel(
-			richLaneTitle("Tools", len(toolSteps)),
-			streaming,
-			richPanelElements(toolSteps, "No tool steps"),
+			richLaneTitle(labels.tools, len(toolSteps)),
+			false,
+			richPanelElements(toolSteps, labels),
 		))
 	}
 	if len(panelMaps) == 0 && streaming {
-		panelMaps = append(panelMaps, buildRichPanel("Reasoning", true, richPanelElements(nil, "Thinking...")))
+		panelMaps = append(panelMaps, buildRichPanel(labels.reasoning, true, richPanelElements(nil, labels)))
 	}
 
 	markdownMap := map[string]any{
@@ -6595,26 +6767,44 @@ func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markd
 
 	// Header template color follows status.
 	headerTemplate := "blue"
-	headerTitle := pickThinkingVerb()
+	headerTitle := pickThinkingVerb(lang)
 	switch status {
 	case core.CardStatusDone:
 		headerTemplate = "green"
-		headerTitle = "Done"
+		headerTitle = labels.done
 	case core.CardStatusError:
 		headerTemplate = "red"
-		headerTitle = "Error"
+		headerTitle = labels.failed
 	case core.CardStatusThinking, core.CardStatusWorking:
 		headerTemplate = "blue"
-		headerTitle = pickThinkingVerb()
+		headerTitle = pickThinkingVerb(lang)
+	}
+
+	// Card 2.0 config: width_mode replaces the 1.0 wide_screen_mode; update_multi
+	// must stay true for streaming. streaming_config matches the client's print
+	// rate to the engine's frame rate (20 chars / 200ms): the defaults (1 char
+	// per 70ms) cannot keep up, so `fast` would dump each backlog at once.
+	cardConfig := map[string]any{
+		"streaming_mode":             streaming,
+		"update_multi":               true,
+		"enable_forward_interaction": true,
+		"width_mode":                 "fill",
+	}
+	if streaming {
+		cardConfig["streaming_config"] = map[string]any{
+			"print_frequency_ms": map[string]any{"default": 40},
+			"print_step":         map[string]any{"default": 4},
+			"print_strategy":     "fast",
+		}
+	} else if summary := richCardSummary(markdown); summary != "" {
+		// Chat-list preview: while streaming Feishu shows the default "生成中"
+		// placeholder; a custom summary keeps the settled card readable there.
+		cardConfig["summary"] = map[string]any{"content": summary}
 	}
 
 	card := map[string]any{
 		"schema": "2.0",
-		"config": map[string]any{
-			"streaming_mode":             streaming,
-			"update_multi":               true,
-			"enable_forward_interaction": true,
-		},
+		"config": cardConfig,
 		"header": map[string]any{
 			"template": headerTemplate,
 			"title":    map[string]any{"tag": "plain_text", "content": headerTitle},
@@ -6717,7 +6907,333 @@ func splitMarkdownByTables(md string, maxTables int) []string {
 // statusFooter (multi-line, '\n'-separated) and passes it through; the renderer
 // splits it back into one dim notation block per line.
 func (p *Platform) BuildRichCard(status core.CardStatus, title string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) string {
-	return buildRichCard(status, title, steps, markdown, streaming, statusFooter)
+	return buildRichCard(status, title, steps, markdown, streaming, statusFooter, p.lang)
+}
+
+// ---------------------------------------------------------------------------
+// Slash Command menu (Feishu client 7.70+)
+//
+// Feishu shows a command panel when the user types "/" in the chat box, but the
+// list comes from the app's registered slash commands — it is not derived from
+// message content. Registration needs the `application:app_slash_command:write`
+// (+ `:read`) scope and a published app version; the client caches the list for
+// a few minutes, so newly registered commands appear with a delay.
+// API: https://open.feishu.cn/document/mcp_open_tools/agent-best-practices/agent-supports-slash-commands
+// ---------------------------------------------------------------------------
+
+const (
+	feishuSlashCommandPath  = "/open-apis/application/v7/app_slash_commands"
+	feishuSlashCommandLimit = 100 // platform quota per app
+	feishuSlashCommandTTL   = 20 * time.Second
+)
+
+// feishuSlashCommand is one command as the OpenAPI reports it.
+type feishuSlashCommand struct {
+	commandID   string
+	command     string
+	description string
+}
+
+// RegisterCommands implements core.CommandRegistrar: it syncs the engine's
+// command list into Feishu's "/" panel. Feishu has no bulk upsert, so the list
+// is fetched first and only missing commands are created and changed
+// descriptions patched; commands that exist remotely but not locally are left
+// alone (they may belong to the console or another deploy).
+func (p *Platform) RegisterCommands(commands []core.BotCommandInfo) error {
+	if !p.slashCommands || p.appID == "" || p.appSecret == "" {
+		return nil
+	}
+
+	names := make([]string, 0, len(commands))
+	desired := make(map[string]string, len(commands))
+	for _, command := range commands {
+		name := normalizeFeishuSlashCommandName(command.Command)
+		if name == "" {
+			continue
+		}
+		if _, dup := desired[name]; dup {
+			continue
+		}
+		desc := strings.TrimSpace(command.Description)
+		if desc == "" {
+			desc = name
+		}
+		desired[name] = desc
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	if len(names) > feishuSlashCommandLimit {
+		slog.Warn(p.tag()+": slash command list truncated to the Feishu quota",
+			"commands", len(names), "limit", feishuSlashCommandLimit)
+		names = names[:feishuSlashCommandLimit]
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), feishuSlashCommandTTL)
+	defer cancel()
+
+	existing, err := p.listSlashCommands(ctx)
+	if err != nil {
+		return err
+	}
+
+	created, updated := 0, 0
+	for _, name := range names {
+		desc := desired[name]
+		remote, ok := existing[name]
+		if ok {
+			if strings.TrimSpace(remote.description) == desc {
+				continue
+			}
+			if err := p.updateSlashCommand(ctx, remote.commandID, desc); err != nil {
+				return err
+			}
+			updated++
+			continue
+		}
+		if err := p.createSlashCommand(ctx, name, desc); err != nil {
+			return err
+		}
+		created++
+	}
+	// Drop commands this bot no longer advertises (e.g. after a capability
+	// filter hid them): the panel is API-owned, so anything left over is stale.
+	pruned := 0
+	for name, remote := range existing {
+		if _, keep := desired[name]; keep {
+			continue
+		}
+		if err := p.deleteSlashCommand(ctx, remote.commandID); err != nil {
+			return err
+		}
+		pruned++
+	}
+	slog.Info(p.tag()+": slash commands synced",
+		"commands", len(names), "created", created, "updated", updated, "pruned", pruned)
+	return nil
+}
+
+// normalizeFeishuSlashCommandName keeps only names the OpenAPI accepts:
+// lowercase ASCII letters, digits, "_" and "-" (max 32 chars).
+func normalizeFeishuSlashCommandName(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(raw), "/")))
+	if raw == "" || len(raw) > 32 {
+		return ""
+	}
+	for _, r := range raw {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return ""
+		}
+	}
+	if raw[0] == '-' || raw[0] == '_' {
+		return ""
+	}
+	return raw
+}
+
+func (p *Platform) slashCommandAPIBase() string {
+	base := strings.TrimRight(strings.TrimSpace(p.domain), "/")
+	if base == "" {
+		base = lark.FeishuBaseUrl
+	}
+	return base
+}
+
+func (p *Platform) listSlashCommands(ctx context.Context) (map[string]feishuSlashCommand, error) {
+	out := make(map[string]feishuSlashCommand)
+	pageToken := ""
+	for {
+		path := feishuSlashCommandPath + "?page_size=100"
+		if pageToken != "" {
+			path += "&page_token=" + url.QueryEscape(pageToken)
+		}
+		data, err := p.slashCommandCall(ctx, http.MethodGet, path, nil)
+		if err != nil {
+			return nil, err
+		}
+		var payload struct {
+			Items     []feishuSlashCommandItem `json:"items"`
+			PageToken string                   `json:"page_token"`
+			HasMore   bool                     `json:"has_more"`
+		}
+		if err := json.Unmarshal(data, &payload); err != nil {
+			return nil, fmt.Errorf("%s: decode slash command list: %w", p.tag(), err)
+		}
+		for _, item := range payload.Items {
+			name := normalizeFeishuSlashCommandName(item.Command)
+			if name == "" || item.CommandID == "" {
+				continue
+			}
+			out[name] = feishuSlashCommand{
+				commandID:   item.CommandID,
+				command:     name,
+				description: item.Description.DefaultValue,
+			}
+		}
+		if !payload.HasMore || payload.PageToken == "" || payload.PageToken == pageToken {
+			return out, nil
+		}
+		pageToken = payload.PageToken
+	}
+}
+
+type feishuSlashCommandItem struct {
+	CommandID   string `json:"command_id"`
+	Command     string `json:"command"`
+	Description struct {
+		DefaultValue string            `json:"default_value"`
+		I18n         map[string]string `json:"i18n"`
+	} `json:"description"`
+}
+
+func (p *Platform) createSlashCommand(ctx context.Context, name, description string) error {
+	body := map[string]any{
+		"command":     name,
+		"description": feishuSlashCommandDescription(description),
+	}
+	_, err := p.slashCommandCall(ctx, http.MethodPost, feishuSlashCommandPath, body)
+	return err
+}
+
+func (p *Platform) updateSlashCommand(ctx context.Context, commandID, description string) error {
+	body := map[string]any{"description": feishuSlashCommandDescription(description)}
+	path := feishuSlashCommandPath + "/" + url.PathEscape(commandID)
+	_, err := p.slashCommandCall(ctx, http.MethodPatch, path, body)
+	return err
+}
+
+func (p *Platform) deleteSlashCommand(ctx context.Context, commandID string) error {
+	path := feishuSlashCommandPath + "/" + url.PathEscape(commandID)
+	_, err := p.slashCommandCall(ctx, http.MethodDelete, path, nil)
+	return err
+}
+
+func feishuSlashCommandDescription(description string) map[string]any {
+	return map[string]any{
+		"default_value": description,
+		"i18n": map[string]string{
+			"zh_cn": description,
+			"en_us": description,
+		},
+	}
+}
+
+// slashCommandCall performs one OpenAPI request and returns the `data` object.
+// It retries once with a fresh tenant token when Feishu reports an expired one.
+func (p *Platform) slashCommandCall(ctx context.Context, method, path string, body any) (json.RawMessage, error) {
+	var payload []byte
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return nil, fmt.Errorf("%s: encode slash command payload: %w", p.tag(), err)
+		}
+		payload = encoded
+	}
+
+	call := func(token string) (json.RawMessage, error) {
+		var reader io.Reader
+		if payload != nil {
+			reader = bytes.NewReader(payload)
+		}
+		req, err := http.NewRequestWithContext(ctx, method, p.slashCommandAPIBase()+path, reader)
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		if payload != nil {
+			req.Header.Set("Content-Type", "application/json; charset=utf-8")
+		}
+		resp, err := p.slashCommandHTTPClient().Do(req)
+		if err != nil {
+			return nil, err
+		}
+		defer func() {
+			if cerr := resp.Body.Close(); cerr != nil {
+				slog.Debug(p.tag()+": close slash command response body", "error", cerr)
+			}
+		}()
+		raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+		if err != nil {
+			return nil, err
+		}
+		var envelope struct {
+			Code int             `json:"code"`
+			Msg  string          `json:"msg"`
+			Data json.RawMessage `json:"data"`
+		}
+		if err := json.Unmarshal(raw, &envelope); err != nil {
+			return nil, fmt.Errorf("decode response: %w (body: %.200s)", err, string(raw))
+		}
+		if envelope.Code != 0 {
+			return nil, &feishuSlashCommandError{code: envelope.Code, msg: envelope.Msg}
+		}
+		return envelope.Data, nil
+	}
+
+	token, err := p.fetchFreshTenantAccessToken(ctx)
+	if err != nil {
+		return nil, err
+	}
+	data, err := call(token)
+	var apiErr *feishuSlashCommandError
+	if errors.As(err, &apiErr) && apiErr.code == 99991663 {
+		freshToken, refreshErr := p.fetchFreshTenantAccessToken(ctx)
+		if refreshErr != nil {
+			return nil, err
+		}
+		data, err = call(freshToken)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("%s: slash command %s %s: %w", p.tag(), method, path, err)
+	}
+	return data, nil
+}
+
+type feishuSlashCommandError struct {
+	code int
+	msg  string
+}
+
+func (e *feishuSlashCommandError) Error() string {
+	lower := strings.ToLower(e.msg)
+	if e.code == 99991672 || strings.Contains(lower, "permission") {
+		return fmt.Sprintf("code=%d msg=%s — grant the app scopes "+
+			"application:app_slash_command:write and application:app_slash_command:read, "+
+			"then publish a new app version", e.code, e.msg)
+	}
+	return fmt.Sprintf("code=%d msg=%s", e.code, e.msg)
+}
+
+func (p *Platform) slashCommandHTTPClient() *http.Client {
+	return &http.Client{Timeout: 15 * time.Second}
+}
+
+// richCardSummary derives the chat-list preview text from the answer's first
+// non-empty line, stripped of the Markdown constructs Feishu would render.
+func richCardSummary(markdown string) string {
+	for _, line := range strings.Split(markdown, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.TrimLeft(line, "#>*-+ ")
+		line = strings.ReplaceAll(line, "**", "")
+		line = strings.ReplaceAll(line, "__", "")
+		line = strings.ReplaceAll(line, "`", "")
+		if line == "" || strings.HasPrefix(line, "|") || strings.HasPrefix(line, "![") {
+			continue
+		}
+		runes := []rune(line)
+		if len(runes) > cardSummaryMaxRunes {
+			// Stay within the preview budget: cap the whole string at
+			// cardSummaryMaxRunes including the ellipsis.
+			return string(runes[:cardSummaryMaxRunes-1]) + "…"
+		}
+		return line
+	}
+	return ""
 }
 
 // SplitMarkdownByTables implements core.MarkdownTableSplitter.

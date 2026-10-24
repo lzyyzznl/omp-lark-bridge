@@ -377,6 +377,12 @@ func main() {
 			}
 			opts["cc_data_dir"] = cfg.DataDir
 			opts["cc_project"] = proj.Name
+			// Platforms render their own UI (card headers, buttons), so they need
+			// the configured language; they cannot see the engine's per-message
+			// auto-detection.
+			if cfg.Language != "" {
+				opts["language"] = cfg.Language
+			}
 			p, err := core.CreatePlatform(pc.Type, opts)
 			if err != nil {
 				slog.Error("failed to create platform", "project", proj.Name, "type", pc.Type, "error", err)
@@ -392,21 +398,7 @@ func main() {
 		sessionFile := sessionStorePath(cfg.DataDir, proj.Name, effectiveWorkDir)
 
 		// Parse language setting
-		var lang core.Language
-		switch cfg.Language {
-		case "zh", "chinese":
-			lang = core.LangChinese
-		case "zh-TW", "zh_TW", "zhtw":
-			lang = core.LangTraditionalChinese
-		case "ja", "japanese":
-			lang = core.LangJapanese
-		case "es", "spanish":
-			lang = core.LangSpanish
-		case "en", "english":
-			lang = core.LangEnglish
-		default:
-			lang = core.LangAuto // auto-detect
-		}
+		lang := core.ParseLanguage(cfg.Language)
 
 		engine := core.NewEngine(proj.Name, agent, platforms, sessionFile, lang)
 		// Wire display settings including show_context_indicator and reply_footer

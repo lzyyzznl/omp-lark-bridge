@@ -279,6 +279,9 @@ func runTimerList(args []string) {
 		if m, ok := j["mute"].(bool); ok && m {
 			muteStr = " [mute]"
 		}
+		if streak, ok := j["fail_streak"].(float64); ok && streak > 0 {
+			muteStr += fmt.Sprintf("  (失败 %d 次 / %d failures)", int(streak), int(streak))
+		}
 		fmt.Printf("  ⏰ %s  %s  %s%s\n", id, scheduledAt, display, muteStr)
 	}
 }

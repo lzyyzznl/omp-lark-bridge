@@ -16,10 +16,9 @@
 # =============================================================================
 
 # Language for bot messages / 机器人消息语言
-# - "en": English
-# - "zh": 中文
-# - "" (empty/not set): Auto-detect from user's first message / 留空自动检测
-# language = "en"
+# 本版本只支持中文：任何取值（"en"、"auto"、留空……）都会按中文输出。
+# Chinese-only build: every value ("en", "auto", empty, …) renders Chinese.
+language = "zh"
 
 # Shell for /shell commands, cron exec, hooks, and webhook exec.
 # /shell 命令、cron exec、hooks 和 webhook exec 使用的 shell。
@@ -31,6 +30,13 @@
 # so user-defined functions and aliases are available.
 # 初始化命令，会添加到每条 shell 命令前面。用于加载 profile，使自定义函数和别名可用。
 # shell_profile = "source ~/.zshrc"
+
+# Cron / timer session mode / 定时任务会话模式
+# "reuse"（默认）= 每次触发都在创建任务时的那个会话里继续，永远同一个会话；
+# "new_per_run" = 每次触发新建一个会话。
+# 单个任务可用 /cron add --new-session、/cron session <id> <reuse|new> 覆盖。
+# [cron]
+# session_mode = "reuse"
 
 # Session data storage directory (default: ~/.in-one-chat)
 # Stores conversation history and session state as JSON files, plus the omp
@@ -142,6 +148,11 @@ app_id = "your-feishu-app-id"
 app_secret = "your-feishu-app-secret"
 # domain = "https://open.feishu.cn"  # Optional runtime API/WebSocket base URL override / 可选：运行时 API/WebSocket 域名覆盖
 # enable_feishu_card = true  # Enable Feishu interactive cards (default: true) / 启用飞书交互式卡片（默认 true）
+# slash_commands = true      # Sync commands into Feishu's "/" panel (default: true).
+#                            # Requires the application:app_slash_command:write + :read scopes,
+#                            # then publish a new app version; client 7.70+ shows the panel.
+#                            # 把命令同步到飞书输入框的 "/" 面板（默认 true）。需先开通
+#                            # application:app_slash_command:write/read 权限并发布新版本，客户端 7.70+ 才会显示。
 # allow_from = "*"          # Allowed user open_ids, comma-separated; "*" = all (default). Use /whoami to get your open_id.
 #                           # 允许的用户 open_id，逗号分隔；"*" 表示所有（默认）。发送 /whoami 获取你的 open_id。
 # allow_chat = "*"          # Allowed group chat_ids, comma-separated; "*" = all (default).

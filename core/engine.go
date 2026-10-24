@@ -2956,6 +2956,21 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 		interactiveKey = resolvedWorkspace + ":" + msg.SessionKey
 	}
 
+	// "/retry" (also wired to the retry button on a finished card) replays the
+	// last real user message in this session instead of reaching the agent as
+	// literal text.
+	if len(msg.Images) == 0 && isRetryCommand(content) {
+		retryText := lastRetryableUserMessage(sessions.GetOrCreateActive(msg.SessionKey))
+		if retryText == "" {
+			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgRetryNothing))
+			return
+		}
+		slog.Info("retrying last user message",
+			"session", msg.SessionKey, "user", msg.UserName, "chars", len(retryText))
+		content = retryText
+		msg.Content = retryText
+	}
+
 	if len(msg.Images) == 0 && strings.HasPrefix(content, "/") {
 		if e.handleCommand(p, msg, content) {
 			return
@@ -3071,6 +3086,36 @@ sessionLocked:
 	)
 
 	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, resolvedWorkspace, msg.SessionKey)
+}
+
+// isRetryCommand reports whether content asks the engine to replay the last
+// user message.
+func isRetryCommand(content string) bool {
+	switch strings.ToLower(strings.TrimSpace(content)) {
+	case "/retry", "/regenerate":
+		return true
+	}
+	return false
+}
+
+// lastRetryableUserMessage returns the most recent non-command user message in
+// the session history, or "" when there is nothing to replay.
+func lastRetryableUserMessage(session *Session) string {
+	if session == nil {
+		return ""
+	}
+	history := session.GetHistory(0)
+	for i := len(history) - 1; i >= 0; i-- {
+		if history[i].Role != "user" {
+			continue
+		}
+		text := strings.TrimSpace(history[i].Content)
+		if text == "" || strings.HasPrefix(text, "/") {
+			continue
+		}
+		return text
+	}
+	return ""
 }
 
 func runMessageAccepted(msg *Message) {
@@ -5008,12 +5053,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 					break
 				}
 				if thinking := strings.TrimSpace(truncateIf(event.Content, e.display.ThinkingMaxLen)); thinking != "" {
-					toolSteps = append(toolSteps, ToolStep{
-						Kind:    ToolStepKindThinking,
-						Name:    "Thinking",
-						Summary: thinking,
-						Done:    true,
-					})
+					toolSteps = upsertRichThinkingStep(toolSteps, thinking)
 				}
 				if cardMessageID == nil {
 					card := buildResolvedRichCard(CardStatusThinking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
@@ -6136,6 +6176,29 @@ channelClosed:
 			}
 		}
 	}
+}
+
+// upsertRichThinkingStep records the current reasoning text. Adapters that
+// stream a growing reasoning block (omp) re-emit the whole accumulated text on
+// every thinking event, beginning with a stub like "用户" / "The" from the first
+// delta. Appending each snapshot would stack duplicate rows in the reasoning
+// panel, so the newest snapshot replaces the existing row instead.
+func upsertRichThinkingStep(steps []ToolStep, text string) []ToolStep {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if steps[i].Kind != ToolStepKindThinking {
+			continue
+		}
+		steps[i].Name = "Thinking"
+		steps[i].Summary = text
+		steps[i].Done = true
+		return steps
+	}
+	return append(steps, ToolStep{
+		Kind:    ToolStepKindThinking,
+		Name:    "Thinking",
+		Summary: text,
+		Done:    true,
+	})
 }
 
 func mergeRichToolResult(steps []ToolStep, event Event, result string, maxLen int) []ToolStep {
@@ -9140,66 +9203,9 @@ func truncateHistoryEntry(content string, maxLen int) string {
 }
 
 func (e *Engine) cmdLang(p Platform, msg *Message, args []string) {
-	if len(args) == 0 {
-		cur := e.i18n.CurrentLang()
-		name := langDisplayName(cur)
-		text := e.i18n.Tf(MsgLangCurrent, name)
-		buttons := [][]ButtonOption{
-			{
-				{Text: "English", Data: "cmd:/lang en"},
-				{Text: "中文", Data: "cmd:/lang zh"},
-				{Text: "繁體中文", Data: "cmd:/lang zh-TW"},
-			},
-			{
-				{Text: "日本語", Data: "cmd:/lang ja"},
-				{Text: "Español", Data: "cmd:/lang es"},
-				{Text: "Auto", Data: "cmd:/lang auto"},
-			},
-		}
-		if supportsCards(p) {
-			e.replyWithCard(p, msg.ReplyCtx, e.renderLangCard())
-			return
-		}
-		if _, ok := p.(InlineButtonSender); ok {
-			e.replyWithButtons(p, msg.ReplyCtx, text, buttons)
-			return
-		}
-		var sb strings.Builder
-		sb.WriteString(text)
-		sb.WriteString("\n\n")
-		sb.WriteString("- English: `/lang en`\n")
-		sb.WriteString("- 中文: `/lang zh`\n")
-		sb.WriteString("- 繁體中文: `/lang zh-TW`\n")
-		sb.WriteString("- 日本語: `/lang ja`\n")
-		sb.WriteString("- Español: `/lang es`\n")
-		sb.WriteString("- Auto: `/lang auto`")
-		e.reply(p, msg.ReplyCtx, sb.String())
-		return
-	}
-
-	target := strings.ToLower(strings.TrimSpace(args[0]))
-	var lang Language
-	switch target {
-	case "en", "english":
-		lang = LangEnglish
-	case "zh", "cn", "chinese", "中文":
-		lang = LangChinese
-	case "zh-tw", "zh_tw", "zhtw", "繁體", "繁体":
-		lang = LangTraditionalChinese
-	case "ja", "jp", "japanese", "日本語":
-		lang = LangJapanese
-	case "es", "spanish", "español":
-		lang = LangSpanish
-	case "auto":
-		lang = LangAuto
-	default:
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgLangInvalid))
-		return
-	}
-
-	e.i18n.SetLang(lang)
-	name := langDisplayName(lang)
-	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgLangChanged, name))
+	// Chinese-only build: no language switching, just report the fixed choice.
+	e.i18n.SetLang(LangChinese)
+	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgLangOnlyChinese))
 }
 
 func langDisplayName(lang Language) string {
@@ -9273,6 +9279,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/switch", action: "nav:/list"},
 				{command: "/search", action: "cmd:/search"},
 				{command: "/history", action: "nav:/history"},
+				{command: "/retry", action: "cmd:/retry"},
 				{command: "/delete", action: "cmd:/delete"},
 				{command: "/name", action: "cmd:/name"},
 			},
@@ -9387,6 +9394,9 @@ func (e *Engine) renderHelpGroupCard(groupKey string) *Card {
 		cb.ButtonsEqual(row...)
 	}
 	for _, item := range current.items {
+		if !e.commandSupported(item.command) {
+			continue
+		}
 		cb.ListItem(commandText(item.command), "▶", item.action)
 	}
 	cb.Note(e.i18n.T(MsgHelpTip))
@@ -9395,6 +9405,50 @@ func (e *Engine) renderHelpGroupCard(groupKey string) *Card {
 
 // GetAllCommands returns all available commands for bot menu registration.
 // It includes built-in commands (with localized descriptions) and custom commands.
+// commandSupported reports whether the active agent can actually serve a
+// builtin command. Commands whose capability interface the agent does not
+// implement are hidden from /help, /commands and the platform slash-command
+// panel instead of advertising a guaranteed error.
+func (e *Engine) commandSupported(id string) bool {
+	id = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(id), "/")))
+	if id == "" || e == nil || e.agent == nil {
+		return false
+	}
+	switch id {
+	case "compress", "compact":
+		c, ok := e.agent.(ContextCompressor)
+		return ok && strings.TrimSpace(c.CompressCommand()) != ""
+	case "delete":
+		_, ok := e.agent.(SessionDeleter)
+		return ok
+	case "model":
+		_, ok := e.agent.(ModelSwitcher)
+		return ok
+	case "workspace", "dir":
+		_, ok := e.agent.(WorkDirSwitcher)
+		return ok
+	case "memory":
+		_, ok := e.agent.(MemoryFileProvider)
+		return ok
+	case "mode":
+		_, ok := e.agent.(ModeSwitcher)
+		return ok
+	case "reasoning", "effort":
+		_, ok := e.agent.(ReasoningEffortSwitcher)
+		return ok
+	case "provider":
+		_, ok := e.agent.(ProviderSwitcher)
+		return ok
+	case "usage":
+		_, ok := e.agent.(UsageReporter)
+		return ok
+	case "history":
+		_, ok := e.agent.(HistoryProvider)
+		return ok
+	}
+	return true
+}
+
 func (e *Engine) GetAllCommands() []BotCommandInfo {
 	var commands []BotCommandInfo
 
@@ -9417,6 +9471,12 @@ func (e *Engine) GetAllCommands() []BotCommandInfo {
 
 		// Skip disabled commands
 		if disabledCmds[c.id] {
+			continue
+		}
+		// Skip commands the current agent cannot serve: the platform panel and
+		// /help must only offer what actually works (e.g. omp has no mode
+		// switch, provider switch, usage reporter or session deletion).
+		if !e.commandSupported(c.id) {
 			continue
 		}
 
@@ -11949,9 +12009,11 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 	case "/provider/add", "/provider/add-other", "/provider/add-cancel":
 		return e.renderProviderAddCard(sessionKey)
 	case "/cron":
-		return e.renderCronCard(sessionKey, extractUserID(sessionKey))
+		page, all := parseScheduleCardArgs(args)
+		return e.renderCronCardView(sessionKey, page, all)
 	case "/timer":
-		return e.renderTimerCard(sessionKey, extractUserID(sessionKey))
+		page, all := parseScheduleCardArgs(args)
+		return e.renderTimerCardView(sessionKey, page, all)
 	case "/heartbeat":
 		return e.renderHeartbeatCard()
 	case "/commands":
@@ -12310,6 +12372,10 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 		}
 		sub, id := subArgs[0], subArgs[1]
 		switch sub {
+		case "run", "exec", "trigger":
+			if err := e.cronScheduler.RunJobNow(id); err != nil {
+				slog.Error("cron: manual run failed", "id", id, "error", err)
+			}
 		case "enable":
 			if err := e.cronScheduler.EnableJob(id); err != nil {
 				slog.Error("cron: enable job failed", "id", id, "error", err)
@@ -12324,6 +12390,10 @@ func (e *Engine) executeCardAction(cmd, args, sessionKey string) {
 			e.cronScheduler.Store().SetMute(id, true)
 		case "unmute":
 			e.cronScheduler.Store().SetMute(id, false)
+		case "newsession", "new-session":
+			e.setCronSessionMode(id, "new_per_run")
+		case "reuse", "session-reuse":
+			e.setCronSessionMode(id, "reuse")
 		}
 
 	case "/timer":
@@ -12821,26 +12891,9 @@ func (e *Engine) submitDeleteModeSelection(sessionKey string, selectedIDs map[st
 }
 
 func (e *Engine) renderLangCard() *Card {
-	cur := e.i18n.CurrentLang()
-	name := langDisplayName(cur)
-
-	langs := []struct{ code, label string }{
-		{"en", "English"}, {"zh", "中文"}, {"zh-TW", "繁體中文"},
-		{"ja", "日本語"}, {"es", "Español"}, {"auto", "Auto"},
-	}
-	var opts []CardSelectOption
-	initVal := ""
-	for _, l := range langs {
-		opts = append(opts, CardSelectOption{Text: l.label, Value: "act:/lang " + l.code})
-		if string(cur) == l.code || (cur == LangAuto && l.code == "auto") {
-			initVal = "act:/lang " + l.code
-		}
-	}
-
 	return NewCard().
 		Title(e.i18n.T(MsgCardTitleLanguage), "wathet").
-		Markdown(e.i18n.Tf(MsgLangCurrent, name)).
-		Select(e.i18n.T(MsgLangSelectPlaceholder), opts, initVal).
+		Markdown(e.i18n.T(MsgLangOnlyChinese)).
 		Buttons(e.cardBackButton()).
 		Build()
 }
@@ -13435,142 +13488,6 @@ func (e *Engine) executeProviderLink(sessionKey, name string) {
 	}
 }
 
-func (e *Engine) renderCronCard(sessionKey string, userID string) *Card {
-	if e.cronScheduler == nil {
-		return e.simpleCard(e.i18n.T(MsgCardTitleCron), "orange", e.i18n.T(MsgCronNotAvailable))
-	}
-
-	jobs := e.cronScheduler.Store().ListBySessionKey(sessionKey)
-	if len(jobs) == 0 {
-		return e.simpleCard(e.i18n.T(MsgCardTitleCron), "orange", e.i18n.T(MsgCronEmpty))
-	}
-
-	lang := e.i18n.CurrentLang()
-	now := time.Now()
-
-	cb := NewCard().Title(e.i18n.T(MsgCardTitleCron), "orange")
-	cb.Markdown(fmt.Sprintf(e.i18n.T(MsgCronListTitle), len(jobs)))
-
-	for _, j := range jobs {
-		status := "✅"
-		if !j.Enabled {
-			status = "⏸"
-		}
-
-		desc := j.Description
-		if desc == "" {
-			if j.IsShellJob() {
-				desc = "🖥 " + truncateStr(j.Exec, 60)
-			} else {
-				desc = truncateStr(j.Prompt, 60)
-			}
-		}
-		if j.Mute {
-			desc += " [mute]"
-		}
-
-		human := CronExprToHuman(j.CronExpr, lang)
-
-		var sb strings.Builder
-		sb.WriteString(fmt.Sprintf("%s %s\n", status, desc))
-		sb.WriteString(e.i18n.Tf(MsgCronIDLabel, j.ID))
-		sb.WriteString(e.i18n.Tf(MsgCronScheduleLabel, human, j.CronExpr))
-		nextRun := e.cronScheduler.NextRun(j.ID)
-		if !nextRun.IsZero() {
-			fmtStr := cronTimeFormat(nextRun, now)
-			sb.WriteString(e.i18n.Tf(MsgCronNextRunLabel, nextRun.Format(fmtStr)))
-		}
-		if !j.LastRun.IsZero() {
-			fmtStr := cronTimeFormat(j.LastRun, now)
-			sb.WriteString(e.i18n.Tf(MsgCronLastRunLabel, j.LastRun.Format(fmtStr)))
-			if j.LastError != "" {
-				sb.WriteString(e.i18n.Tf(MsgCronFailedSuffix, truncateStr(j.LastError, 40)))
-			}
-			sb.WriteString("\n")
-		}
-		cb.Markdown(sb.String())
-
-		var btns []CardButton
-		if j.Enabled {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnDisable), fmt.Sprintf("act:/cron disable %s", j.ID)))
-		} else {
-			btns = append(btns, PrimaryBtn(e.i18n.T(MsgCronBtnEnable), fmt.Sprintf("act:/cron enable %s", j.ID)))
-		}
-		if j.Mute {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnUnmute), fmt.Sprintf("act:/cron unmute %s", j.ID)))
-		} else {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnMute), fmt.Sprintf("act:/cron mute %s", j.ID)))
-		}
-		btns = append(btns, DangerBtn(e.i18n.T(MsgCronBtnDelete), fmt.Sprintf("act:/cron delete %s", j.ID)))
-		cb.ButtonsEqual(btns...)
-	}
-
-	cb.Divider()
-	cb.Note(e.i18n.T(MsgCronCardHint))
-	cb.Buttons(e.cardBackButton())
-	return cb.Build()
-}
-
-func (e *Engine) renderTimerCard(sessionKey string, userID string) *Card {
-	if e.timerScheduler == nil {
-		return e.simpleCard(e.i18n.T(MsgCardTitleTimer), "blue", e.i18n.T(MsgTimerNotAvailable))
-	}
-
-	jobs := e.timerScheduler.Store().ListPending()
-	// Filter to current session
-	var filtered []*TimerJob
-	for _, j := range jobs {
-		if j.SessionKey == sessionKey {
-			filtered = append(filtered, j)
-		}
-	}
-	if len(filtered) == 0 {
-		return e.simpleCard(e.i18n.T(MsgCardTitleTimer), "blue", e.i18n.T(MsgTimerEmpty))
-	}
-
-	cb := NewCard().Title(e.i18n.T(MsgCardTitleTimer), "blue")
-	cb.Markdown(fmt.Sprintf(e.i18n.T(MsgTimerListTitle), len(filtered)))
-
-	for _, j := range filtered {
-		desc := j.Description
-		if desc == "" {
-			if j.IsShellJob() {
-				desc = "🖥 " + truncateStr(j.Exec, 60)
-			} else {
-				desc = truncateStr(j.Prompt, 60)
-			}
-		}
-		if j.Mute {
-			desc += " [mute]"
-		}
-
-		remaining := FormatTimerRemaining(j.ScheduledAt)
-
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "⏰ %s\n", desc)
-		sb.WriteString(e.i18n.Tf(MsgTimerIDLabel, j.ID))
-		sb.WriteString(e.i18n.Tf(MsgTimerScheduledLabel, j.ScheduledAt.Format("2006-01-02 15:04"), remaining))
-		if j.LastError != "" {
-			sb.WriteString(e.i18n.Tf(MsgTimerFailedSuffix, truncateStr(j.LastError, 40)))
-		}
-		cb.Markdown(sb.String())
-
-		var btns []CardButton
-		if j.Mute {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgTimerBtnUnmute), fmt.Sprintf("act:/timer unmute %s", j.ID)))
-		} else {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgTimerBtnMute), fmt.Sprintf("act:/timer mute %s", j.ID)))
-		}
-		btns = append(btns, DangerBtn(e.i18n.T(MsgTimerBtnDelete), fmt.Sprintf("act:/timer delete %s", j.ID)))
-		cb.ButtonsEqual(btns...)
-	}
-
-	cb.Divider()
-	cb.Note(e.i18n.T(MsgTimerCardHint))
-	cb.Buttons(e.cardBackButton())
-	return cb.Build()
-}
-
 func (e *Engine) renderCommandsCard() *Card {
 	cmds := e.commands.ListAll()
 	if len(cmds) == 0 {
@@ -13862,6 +13779,7 @@ func (e *Engine) cmdCron(p Platform, msg *Message, args []string) {
 
 	sub := matchSubCommand(strings.ToLower(args[0]), []string{
 		"add", "addexec", "list", "exec", "run", "trigger", "del", "delete", "rm", "remove", "enable", "disable", "mute", "unmute", "setup",
+		"session", "session-mode",
 	})
 	switch sub {
 	case "add":
@@ -13884,13 +13802,86 @@ func (e *Engine) cmdCron(p Platform, msg *Message, args []string) {
 		e.cmdCronMute(p, msg, args[1:], false)
 	case "setup":
 		e.cmdCronSetup(p, msg)
+	case "session", "session-mode":
+		e.cmdCronSessionMode(p, msg, args[1:])
 	default:
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgCronUsage))
 	}
 }
 
+// parseCronSessionFlags pulls the optional session-mode flags out of a
+// /cron add argument list, leaving the positional cron expression + prompt.
+// Absent flags mean "" (reuse the job's chat session), which is the default.
+func parseCronSessionFlags(args []string) ([]string, string) {
+	rest := make([]string, 0, len(args))
+	mode := ""
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--new-session" || args[i] == "--new" || args[i] == "-n":
+			mode = "new_per_run"
+		case args[i] == "--reuse" || args[i] == "-r":
+			mode = "reuse"
+		case args[i] == "--session-mode" && i+1 < len(args):
+			i++
+			mode = NormalizeCronSessionMode(args[i])
+		case strings.HasPrefix(args[i], "--session-mode="):
+			mode = NormalizeCronSessionMode(strings.TrimPrefix(args[i], "--session-mode="))
+		default:
+			rest = append(rest, args[i])
+		}
+	}
+	return rest, mode
+}
+
+// setCronSessionMode switches one job between "reuse this chat's session" and
+// "start a fresh session on every run".
+func (e *Engine) setCronSessionMode(id, mode string) error {
+	mode = NormalizeCronSessionMode(mode)
+	if mode == "" {
+		mode = "reuse"
+	}
+	job := e.cronScheduler.Store().Get(id)
+	if job == nil {
+		return fmt.Errorf("job %q not found", id)
+	}
+	if err := e.cronScheduler.UpdateJob(id, "session_mode", mode); err != nil {
+		return err
+	}
+	slog.Info("cron: session mode updated", "id", id, "session_mode", mode)
+	return nil
+}
+
+// cmdCronSessionMode implements /cron session <id> <reuse|new>.
+func (e *Engine) cmdCronSessionMode(p Platform, msg *Message, args []string) {
+	if len(args) < 2 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgCronSessionUsage))
+		return
+	}
+	id := strings.TrimSpace(args[0])
+	raw := strings.ToLower(strings.TrimSpace(args[1]))
+	switch raw {
+	case "new", "new_session", "new-session", "new_per_run", "fresh":
+		raw = "new_per_run"
+	case "reuse", "same", "keep", "existing":
+		raw = "reuse"
+	default:
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgCronSessionUsage))
+		return
+	}
+	if err := e.setCronSessionMode(id, raw); err != nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgError, err))
+		return
+	}
+	label := e.i18n.T(MsgCronSessionReuse)
+	if raw == "new_per_run" {
+		label = e.i18n.T(MsgCronSessionNew)
+	}
+	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCronSessionSet), id, label))
+}
+
 func (e *Engine) cmdCronAdd(p Platform, msg *Message, args []string) {
-	// /cron add <min> <hour> <day> <month> <weekday> <prompt...>
+	// /cron add [--new-session|--reuse] <min> <hour> <day> <month> <weekday> <prompt...>
+	args, sessionMode := parseCronSessionFlags(args)
 	if len(args) < 6 {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgCronAddUsage))
 		return
@@ -13900,13 +13891,14 @@ func (e *Engine) cmdCronAdd(p Platform, msg *Message, args []string) {
 	prompt := strings.Join(args[5:], " ")
 
 	job := &CronJob{
-		ID:         GenerateCronID(),
-		Project:    e.name,
-		SessionKey: msg.SessionKey,
-		CronExpr:   cronExpr,
-		Prompt:     prompt,
-		Enabled:    true,
-		CreatedAt:  time.Now(),
+		ID:          GenerateCronID(),
+		Project:     e.name,
+		SessionKey:  msg.SessionKey,
+		CronExpr:    cronExpr,
+		Prompt:      prompt,
+		Enabled:     true,
+		SessionMode: sessionMode,
+		CreatedAt:   time.Now(),
 	}
 
 	if err := e.cronScheduler.AddJob(job); err != nil {
@@ -13923,7 +13915,8 @@ func (e *Engine) cmdCronAddExec(p Platform, msg *Message, args []string) {
 		return
 	}
 
-	// /cron addexec <min> <hour> <day> <month> <weekday> <shell command...>
+	// /cron addexec [--new-session|--reuse] <min> <hour> <day> <month> <weekday> <shell command...>
+	args, sessionMode := parseCronSessionFlags(args)
 	if len(args) < 6 {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgCronAddExecUsage))
 		return
@@ -13933,13 +13926,14 @@ func (e *Engine) cmdCronAddExec(p Platform, msg *Message, args []string) {
 	shellCmd := strings.Join(args[5:], " ")
 
 	job := &CronJob{
-		ID:         GenerateCronID(),
-		Project:    e.name,
-		SessionKey: msg.SessionKey,
-		CronExpr:   cronExpr,
-		Exec:       shellCmd,
-		Enabled:    true,
-		CreatedAt:  time.Now(),
+		ID:          GenerateCronID(),
+		Project:     e.name,
+		SessionKey:  msg.SessionKey,
+		CronExpr:    cronExpr,
+		Exec:        shellCmd,
+		Enabled:     true,
+		SessionMode: sessionMode,
+		CreatedAt:   time.Now(),
 	}
 
 	if err := e.cronScheduler.AddJob(job); err != nil {
@@ -13970,7 +13964,10 @@ func (e *Engine) cmdCronList(p Platform, msg *Message) {
 		}
 
 		status := "✅"
-		if !j.Enabled {
+		switch {
+		case j.FailStreak > 0:
+			status = "❗"
+		case !j.Enabled:
 			status = "⏸"
 		}
 		desc := j.Description
@@ -14004,6 +14001,9 @@ func (e *Engine) cmdCronList(p Platform, msg *Message) {
 				sb.WriteString(fmt.Sprintf(" (failed: %s)", truncateStr(j.LastError, 40)))
 			}
 			sb.WriteString("\n")
+		}
+		if j.FailStreak > 0 {
+			sb.WriteString(e.i18n.Tf(MsgScheduleFailStreak, j.FailStreak))
 		}
 	}
 
@@ -14254,8 +14254,15 @@ func (e *Engine) cmdTimerList(p Platform, msg *Message) {
 			desc += " [mute]"
 		}
 		remaining := FormatTimerRemaining(j.ScheduledAt)
-		fmt.Fprintf(&sb, "⏰ %s (%s)\n", desc, remaining)
+		status := "⏰"
+		if j.FailStreak > 0 {
+			status = "❗"
+		}
+		fmt.Fprintf(&sb, "%s %s (%s)\n", status, desc, remaining)
 		fmt.Fprintf(&sb, "ID: %s\n", j.ID)
+		if j.FailStreak > 0 {
+			sb.WriteString(e.i18n.Tf(MsgScheduleFailStreak, j.FailStreak))
+		}
 	}
 
 	fmt.Fprintf(&sb, "\n%s", e.i18n.T(MsgTimerListFooter))

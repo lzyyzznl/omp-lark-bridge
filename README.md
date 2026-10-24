@@ -109,7 +109,7 @@ the `omp-sessions/` stores.
 
 ## Slash commands (in chat)
 
-Sessions: `/new` `/switch` `/list` `/delete` `/history`
+Sessions: `/new` `/switch` `/list` `/delete` `/history` `/retry`
 Agent: `/model` `/reasoning` `/memory` `/shell` `/skill`
 System: `/help` `/status` `/whoami` `/doctor` `/mode` no-op (fixed yolo),
 plus cron/timer via `/cron` `/timer` and CLI equivalents
@@ -117,18 +117,69 @@ plus cron/timer via `/cron` `/timer` and CLI equivalents
 
 Permission prompts never occur (yolo); use `/stop` to abort a running turn.
 
+The bot speaks Simplified Chinese only: `language` is accepted but every value
+(`en`, `auto`, …) renders Chinese and `/lang` no longer switches languages.
+
+Commands that the active agent cannot serve are hidden everywhere — the `/`
+panel, `/help` and `/commands` all ask the engine for capabilities before
+listing an entry. omp therefore shows no `/compress` (no compaction command),
+`/delete` (no `SessionDeleter`), `/mode`, `/reasoning`, `/provider`, `/usage`
+or `/history`.
+
+On Feishu the bot also syncs these commands into the client's `/` panel
+(`application/v7/app_slash_commands`): grant the `application:app_slash_command:write`
+and `:read` scopes, publish a new app version, and use client 7.70+. Each start
+creates missing entries, patches changed descriptions and **deletes** entries the
+bot no longer advertises (stale capabilities, renamed commands), so the panel
+never shows dead commands. The client caches the list for a few minutes. Set
+`slash_commands = false` to opt out.
+
+## Cron & timer dashboard
+
+`/cron` and `/timer` render a paged card (8 jobs per page) with a per-job status
+line: `✅`/`❗`/`⏸`, schedule + next-run countdown, last run, consecutive-failure
+streak and the last error. Buttons per job: **立即运行**, **启用/停用**,
+**静音/取消静音**, **删除** and the session toggle (**每次新建会话** /
+**复用本会话**); the footer toggles between *this chat only* and
+*all jobs in the project*.
+
+### Cron session policy
+
+Each job carries `session_mode`:
+
+| 值 | 行为 |
+|---|---|
+| `""` / `reuse`（默认） | 每次触发都在创建任务时的那个会话里继续——同一个任务永远是同一个会话 |
+| `new_per_run` | 每次触发新建会话（触发消息落在 `<session>#cron:<id>` 侧会话里） |
+
+Set it at creation (`/cron add --new-session 0 9 * * * 每日报告`, or the CLI's
+`cron add --session-mode new-per-run`) or flip it later with
+`/cron session <id> <reuse|new>` / the card button. `[cron] session_mode` in the
+config file only changes the *default* for new jobs; existing jobs keep their
+own value. A failing job pushes a failure card into its chat on
+the 1st failure and then every 5th (`streak % 5 == 0`), so a permanently broken
+job is loud once and then quiet; the streak resets on the next success. Muted
+jobs stay silent.
+
 ## How the omp adapter works
 
-`agent/omp` spawns `omp --mode rpc --approval-mode yolo --session-dir
+`agent/omp` spawns `omp --mode rpc-ui --approval-mode yolo --session-dir
 <data_dir>/omp-sessions/<session> --cwd <work_dir>` once per chat and speaks
 omp's JSONL RPC protocol (v1):
 
-- `new_session` / `open_session` to start or resume; `set_model` to apply the
-  configured model on the next session
+- `new_session` / `switch_session` to start or resume; the resumed identity is
+  the omp session *file* (`get_state.sessionFile`, since `new_session` reports
+  no id), persisted as `Session.AgentSessionID` so a daemon restart continues the
+  same conversation; `set_model` to apply the configured model
 - `prompt` → streamed `message_update` (text/thinking deltas),
   `tool_execution_start/end`, then `prompt_result` (completed/aborted/error)
 - `/stop` sends `abort`; session lifecycle (new/switch/close) maps to
   `session_settled`
+- `set_ask_dialog` is enabled, so the `ask` tool's dialog arrives as one
+  `extension_ui_request` per call and is rendered as chat question cards
+  (buttons for single-select, numbered reply for multi-select); the answer goes
+  back as `extension_ui_response{answers}` (`select` fallback and free-text
+  `customInput` included)
 - images/files are persisted to disk and referenced by path in the prompt
 
 ## Build & test

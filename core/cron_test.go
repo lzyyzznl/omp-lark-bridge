@@ -222,8 +222,8 @@ func TestRenderCronCard_WithButtons(t *testing.T) {
 	}
 
 	text := card.RenderText()
-	if !strings.Contains(text, "[mute]") {
-		t.Error("muted job should show [mute] tag in card text")
+	if !strings.Contains(text, "[静音]") {
+		t.Error("muted job should show the muted tag in card text")
 	}
 }
 

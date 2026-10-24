@@ -49,10 +49,12 @@ func TestI18n_Tf(t *testing.T) {
 	}
 }
 
-func TestI18n_AllKeysHaveEnglish(t *testing.T) {
+func TestI18n_AllKeysHaveChinese(t *testing.T) {
+	// Chinese is the product language; the lookup falls back to it, so every
+	// key must carry a Chinese string.
 	for key, langs := range messages {
-		if _, ok := langs[LangEnglish]; !ok {
-			t.Errorf("message key %q missing English translation", key)
+		if _, ok := langs[LangChinese]; !ok {
+			t.Errorf("message key %q missing Chinese translation", key)
 		}
 	}
 }

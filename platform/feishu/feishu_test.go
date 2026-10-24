@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -2170,5 +2171,124 @@ func TestFlushImageBatchForSession_NoBatchIsSafe(t *testing.T) {
 	p.flushImageBatchForSession("") // empty session key is also a safe no-op
 	if n := len(p.imageBatch); n != 0 {
 		t.Fatalf("imageBatch size = %d, want 0", n)
+	}
+}
+
+// Feishu closes a card's streaming mode 10 minutes after it was opened (error
+// 300309 "Card streaming closed" / 200850 "Card streaming timeout"). Long agent
+// turns hit that wall; the frame must re-open streaming mode and replay instead
+// of silently degrading to full-card patches for the rest of the turn.
+func TestStreamRichCardTextReopensStreamingAfterTimeout(t *testing.T) {
+	type apiCall struct {
+		method   string
+		path     string
+		sequence int
+	}
+	var (
+		mu          sync.Mutex
+		calls       []apiCall
+		contentPuts int
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			writeJSON(t, w, map[string]any{
+				"code":                0,
+				"msg":                 "success",
+				"expire":              7200,
+				"tenant_access_token": "tenant-token",
+			})
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/elements/main_text/content"):
+			var body struct {
+				Content  string `json:"content"`
+				Sequence int    `json:"sequence"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode content body: %v", err)
+			}
+			mu.Lock()
+			contentPuts++
+			attempt := contentPuts
+			calls = append(calls, apiCall{r.Method, r.URL.Path, body.Sequence})
+			mu.Unlock()
+			if attempt == 1 {
+				writeJSON(t, w, map[string]any{"code": 300309, "msg": "Card streaming closed"})
+				return
+			}
+			if body.Content != "streamed body" {
+				t.Errorf("content = %q, want replay of the same frame", body.Content)
+			}
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
+		case r.Method == http.MethodPatch && strings.HasSuffix(r.URL.Path, "/settings"):
+			var body struct {
+				Settings string `json:"settings"`
+				Sequence int    `json:"sequence"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode settings body: %v", err)
+			}
+			if !strings.Contains(body.Settings, `"streaming_mode":true`) {
+				t.Errorf("settings = %q, want streaming_mode re-enabled", body.Settings)
+			}
+			mu.Lock()
+			calls = append(calls, apiCall{r.Method, r.URL.Path, body.Sequence})
+			mu.Unlock()
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
+		}
+	}))
+	defer srv.Close()
+
+	p := &Platform{
+		platformName: "feishu",
+		domain:       srv.URL,
+		appID:        "cli_stream",
+		appSecret:    "secret-stream",
+		client: lark.NewClient("cli_stream", "secret-stream",
+			lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(srv.Client()),
+		),
+	}
+	h := &feishuPreviewHandle{messageID: "om_card", chatID: "oc_chat", cardID: "7355"}
+
+	if err := p.StreamRichCardText(context.Background(), h, "streamed body"); err != nil {
+		t.Fatalf("StreamRichCardText() error = %v, want success after streaming re-open", err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 3 {
+		t.Fatalf("api calls = %d, want content PUT + settings PATCH + content PUT: %+v", len(calls), calls)
+	}
+	if calls[0].method != http.MethodPut || calls[1].method != http.MethodPatch || calls[2].method != http.MethodPut {
+		t.Fatalf("call order = %+v, want PUT, PATCH, PUT", calls)
+	}
+	for i := 1; i < len(calls); i++ {
+		if calls[i].sequence <= calls[i-1].sequence {
+			t.Fatalf("sequence must strictly increase across card APIs: %+v", calls)
+		}
+	}
+}
+
+func TestCardStreamingClosedDetection(t *testing.T) {
+	cases := []struct {
+		code int
+		msg  string
+		want bool
+	}{
+		{300309, "Card streaming closed", true},
+		{200850, "Card streaming timeout", true},
+		{0, "Card streaming timeout", true},
+		{300317, "The sequence number for operating on the card did not increment consecutively", false},
+		{200860, "Card content exceeds limit.", false},
+	}
+	for _, c := range cases {
+		if got := cardStreamingClosed(c.code, c.msg); got != c.want {
+			t.Errorf("cardStreamingClosed(%d, %q) = %v, want %v", c.code, c.msg, got, c.want)
+		}
 	}
 }

@@ -4451,31 +4451,30 @@ func TestExecuteCardActionStop_RemovesInteractiveState(t *testing.T) {
 	}
 }
 
-func TestCmdLang_UsesInlineButtonsOnButtonOnlyPlatform(t *testing.T) {
+func TestCmdLang_ReportsChineseOnlyOnAnyPlatform(t *testing.T) {
+	// Chinese-only build: /lang never offers a chooser, whatever the platform
+	// supports, and it pins the engine language to Simplified Chinese.
 	p := &stubInlineButtonPlatform{stubPlatformEngine: stubPlatformEngine{n: "inline-only"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 
 	e.cmdLang(p, &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}, nil)
 
-	if len(p.buttonRows) == 0 {
-		t.Fatal("expected /lang to send inline buttons on button-only platform")
+	if len(p.buttonRows) != 0 {
+		t.Fatalf("expected no language buttons, got %v", p.buttonRows)
 	}
-	if got := p.buttonRows[0][0].Data; got != "cmd:/lang en" {
-		t.Fatalf("first /lang button = %q, want %q", got, "cmd:/lang en")
+	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "仅支持中文") {
+		t.Fatalf("lang reply = %v, want the Chinese-only notice", p.sent)
+	}
+	if got := e.i18n.CurrentLang(); got != LangChinese {
+		t.Fatalf("CurrentLang() = %q, want zh", got)
 	}
 }
 
-func TestCmdLang_UsesPlainTextChoicesOnPlatformWithoutCardsOrButtons(t *testing.T) {
-	p := &stubPlatformEngine{n: "plain"}
-	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-
-	e.cmdLang(p, &Message{SessionKey: "test:user1", ReplyCtx: "ctx"}, nil)
-
-	if len(p.sent) != 1 {
-		t.Fatalf("sent messages = %d, want 1", len(p.sent))
-	}
-	if !strings.Contains(p.sent[0], "/lang en") || !strings.Contains(p.sent[0], "/lang auto") {
-		t.Fatalf("lang text = %q, want plain-text language choices", p.sent[0])
+func TestParseLanguage_AlwaysChinese(t *testing.T) {
+	for _, raw := range []string{"", "en", "auto", "ja", "es", "zh-TW", "garbage"} {
+		if got := ParseLanguage(raw); got != LangChinese {
+			t.Fatalf("ParseLanguage(%q) = %q, want zh (Chinese-only build)", raw, got)
+		}
 	}
 }
 
@@ -6479,8 +6478,13 @@ func TestHandleCardNav_HelpSwitchesTabs(t *testing.T) {
 	}
 	text := card.RenderText()
 
-	if !strings.Contains(text, "**/model**") {
+	// The bare stub implements no model/mode/reasoning/provider capability, so
+	// those entries are filtered out; /lang stays available on every agent.
+	if !strings.Contains(text, "**/lang**") {
 		t.Fatalf("agent help text = %q, want agent commands", text)
+	}
+	if strings.Contains(text, "**/mode**") || strings.Contains(text, "**/provider**") {
+		t.Fatalf("agent help text = %q, must not advertise unsupported capabilities", text)
 	}
 	if strings.Contains(text, "**Agent Configuration**") {
 		t.Fatalf("agent help text = %q, should not repeat tab title in body", text)
@@ -16072,5 +16076,58 @@ func TestProcessInteractiveEvents_StreamingCard_BareNoReply_Suppressed(t *testin
 	}
 	if strings.Contains(card.finalContent(), "NO_REPLY") {
 		t.Fatalf("silent reply leaked NO_REPLY into the streaming card: %q", card.finalContent())
+	}
+}
+
+// Regression: omp streams one growing reasoning block as cumulative snapshots
+// (the first one is a stub like "用户" / "The"). Each snapshot must refresh the
+// reasoning row, not append a duplicate row per snapshot.
+func TestProcessInteractiveEvents_RichCardThinkingSnapshotReplacesRow(t *testing.T) {
+	p := &stubCompactProgressPlatform{
+		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+		style:              "card",
+		supportPayload:     true,
+	}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{
+		ThinkingMessages: true,
+		ThinkingMaxLen:   300,
+		ToolMaxLen:       500,
+		ToolMessages:     true,
+		Mode:             "full",
+		CardMode:         "rich",
+	})
+	sessionKey := "feishu:user-rich-thinking-snapshot"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s-rich-thinking-snapshot")
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-rich-thinking-snapshot",
+	}
+	e.interactiveStates[sessionKey] = state
+
+	agentSession.events <- Event{Type: EventThinking, Content: "用户"}
+	agentSession.events <- Event{Type: EventThinking, Content: "用户想知道现在时间"}
+	agentSession.events <- Event{Type: EventText, Content: "answer"}
+	agentSession.events <- Event{Type: EventResult, Content: "answer", Done: true}
+
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-rich-thinking-snapshot", time.Now(), nil, nil, state.replyCtx)
+
+	if starts := p.getPreviewStarts(); len(starts) != 1 {
+		t.Fatalf("preview starts = %d, want one rich card", len(starts))
+	}
+	final := ""
+	if edits := p.getPreviewEdits(); len(edits) > 0 {
+		final = edits[len(edits)-1]
+	}
+	if final == "" {
+		t.Fatal("no final card update recorded")
+	}
+	if got := strings.Count(final, "Kind:thinking"); got != 1 {
+		t.Fatalf("reasoning rows = %d, want 1 (snapshots must replace, not append):\n%s", got, final)
+	}
+	if !strings.Contains(final, "Summary:用户想知道现在时间") {
+		t.Fatalf("reasoning row must hold the latest snapshot, got:\n%s", final)
 	}
 }

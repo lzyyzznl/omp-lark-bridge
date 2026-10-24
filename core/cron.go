@@ -38,6 +38,9 @@ type CronJob struct {
 	CreatedAt   time.Time `json:"created_at"`
 	LastRun     time.Time `json:"last_run,omitempty"`
 	LastError   string    `json:"last_error,omitempty"`
+	// FailStreak counts consecutive failed runs; reset by the next success. It
+	// drives the dashboard badge and the failure-alert throttle.
+	FailStreak int `json:"fail_streak,omitempty"`
 }
 
 // IsShellJob returns true if the job runs a shell command directly.
@@ -79,7 +82,7 @@ func NormalizeCronSessionMode(s string) string {
 	switch low {
 	case "", "reuse":
 		return ""
-	case "new_per_run", "new-per-run":
+	case "new_per_run", "new-per-run", "new", "new_session", "new-session", "fresh":
 		return "new_per_run"
 	default:
 		return s
@@ -224,8 +227,10 @@ func (s *CronStore) MarkRun(id string, err error) {
 			j.LastRun = time.Now()
 			if err != nil {
 				j.LastError = err.Error()
+				j.FailStreak++
 			} else {
 				j.LastError = ""
+				j.FailStreak = 0
 			}
 			if saveErr := s.save(); saveErr != nil {
 				slog.Warn("cron: failed to save after mark run", "error", saveErr)
@@ -718,6 +723,15 @@ func (cs *CronScheduler) runJob(job *CronJob, manual bool) {
 
 	if err != nil {
 		slog.Error("cron: job failed", "id", job.ID, "manual", manual, "error", err)
+		streak := 1
+		desc := cronJobLabel(job)
+		muted := job.Mute
+		if current := cs.store.Get(job.ID); current != nil {
+			streak = current.FailStreak
+			desc = cronJobLabel(current)
+			muted = current.Mute
+		}
+		engine.notifyScheduleFailure("cron", job.ID, desc, job.SessionKey, muted, streak, err)
 	} else {
 		slog.Info("cron: job completed", "id", job.ID, "manual", manual)
 	}

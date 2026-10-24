@@ -32,6 +32,8 @@ type TimerJob struct {
 	Fired       bool      `json:"fired"`
 	FiredAt     time.Time `json:"fired_at,omitempty"`
 	LastError   string    `json:"last_error,omitempty"`
+	// FailStreak is 0 or 1 for one-shot timers; kept for the shared dashboard.
+	FailStreak int `json:"fail_streak,omitempty"`
 }
 
 // IsShellJob returns true if the job runs a shell command directly.
@@ -169,8 +171,10 @@ func (s *TimerStore) MarkFired(id string, err error) {
 			j.FiredAt = time.Now()
 			if err != nil {
 				j.LastError = err.Error()
+				j.FailStreak++
 			} else {
 				j.LastError = ""
+				j.FailStreak = 0
 			}
 			if saveErr := s.save(); saveErr != nil {
 				slog.Warn("timer: failed to save after mark fired", "error", saveErr)
@@ -429,6 +433,13 @@ func (ts *TimerScheduler) executeJob(jobID string) {
 
 	if err != nil {
 		slog.Error("timer: job failed", "id", jobID, "error", err)
+		streak := 1
+		desc := timerJobLabel(job)
+		if current := ts.store.Get(jobID); current != nil {
+			streak = current.FailStreak
+			desc = timerJobLabel(current)
+		}
+		engine.notifyScheduleFailure("timer", jobID, desc, job.SessionKey, job.Mute, streak, err)
 	} else {
 		slog.Info("timer: job completed", "id", jobID)
 	}

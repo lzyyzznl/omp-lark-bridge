@@ -14,6 +14,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/lzyyzznl/in-one-chat/core"
@@ -25,7 +26,7 @@ const (
 	maxFrameBytes      = 1 << 20 // omp v1 stdout frame limit (1 MiB)
 )
 
-// ompSession is a long-lived `omp --mode rpc` subprocess bound to one chat
+// ompSession is a long-lived `omp --mode rpc-ui` subprocess bound to one chat
 // session. It speaks omp's JSONL RPC protocol (see omp://rpc.md).
 type ompSession struct {
 	ctx    context.Context
@@ -45,12 +46,19 @@ type ompSession struct {
 	events chan core.Event
 	alive  atomic.Bool
 
-	sessionDir string // --session-dir store handed to omp
-	ompSessID  string // omp-side session id (from new_session / open_session)
+	sessionDir  string // --session-dir container handed to omp (stable per project)
+	ompSessID   string // omp-side session id (from get_state)
+	ompSessFile string // absolute .jsonl path; the value persisted as AgentSessionID
 
 	writeMu sync.Mutex
 	pMu     sync.Mutex
 	pending map[string]chan map[string]any
+
+	// asks holds open extension UI dialogs (omp's `ask` tool, plus `select`)
+	// keyed by the request id, so RespondPermission can translate the user's
+	// card answer into an extension_ui_response.
+	askMu sync.Mutex
+	asks  map[string]*ompPendingAsk
 
 	// thinking accumulation: engine's EventThinking handler overwrites the
 	// card's thinking area with event.Content (never appends), so deltas must
@@ -62,10 +70,11 @@ type ompSession struct {
 	thinkLast    time.Time
 }
 
-// ompSessionStoreDir returns the per-session store directory under the cc-data
-// dir. Using --session-dir keeps omp's store out of the user's ~/.omp.
-func ompSessionStoreDir(ccDataDir, sessionID string) string {
-	return filepath.Join(ompSessionsRoot(ccDataDir), sanitizeSessionName(sessionID))
+// ompSessionStoreDir returns the store container under the cc-data dir. The name
+// is deliberately independent of the agent session id (see newOmpSession):
+// per-conversation identity lives in the session file, not the directory.
+func ompSessionStoreDir(ccDataDir, _ string) string {
+	return filepath.Join(ompSessionsRoot(ccDataDir), defaultSessionName)
 }
 
 func ompSessionsRoot(ccDataDir string) string {
@@ -101,14 +110,23 @@ func sanitizeSessionName(sessionID string) string {
 func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, ccDataDir, sessionID string, env []string) (*ompSession, error) {
 	sctx, cancel := context.WithCancel(ctx)
 
-	sessionDir := ompSessionStoreDir(ccDataDir, sessionID)
+	// The store directory is a stable container for every conversation of this
+	// project. Per-conversation identity is carried by the session *file* path
+	// (see enterSession), so the directory must NOT be derived from the agent
+	// session id: that produced a fresh empty directory per restart and made
+	// resume impossible.
+	sessionDir := ompSessionStoreDir(ccDataDir, "")
 	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
 		cancel()
 		return nil, fmt.Errorf("omp: mkdir session store: %w", err)
 	}
 
 	args := append([]string{
-		"--mode", "rpc",
+		// rpc-ui (not rpc) is required for the `ask` tool's tool UI: plain rpc
+		// never emits extension_ui_request tool dialogs, so `ask` would resolve
+		// to its defaults without ever reaching the user (verified against
+		// omp 18.12.6: set_ask_dialog succeeds but no ask frame follows).
+		"--mode", "rpc-ui",
 		"--approval-mode", "yolo",
 		"--session-dir", sessionDir,
 		"--cwd", workDir,
@@ -151,6 +169,7 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 		events:     make(chan core.Event, 512),
 		sessionDir: sessionDir,
 		pending:    make(map[string]chan map[string]any),
+		asks:       make(map[string]*ompPendingAsk),
 	}
 
 	if err := cmd.Start(); err != nil {
@@ -175,46 +194,35 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 		return nil, fmt.Errorf("omp: rpc handshake: %w", s.readyErr)
 	}
 
-	// Begin/resume the omp-side session inside the running process.
-	if err := s.enterSession(model, sessionID != ""); err != nil {
+	// Begin/resume the omp-side session inside the running process. sessionID
+	// is whatever CurrentSessionID() reported last time: an absolute session file
+	// path (current builds) or a bare id / directory name (legacy).
+	if err := s.enterSession(model, sessionID); err != nil {
 		cancel()
 		return nil, err
 	}
 
+	// Ask omp to emit one dialog per `ask` tool call instead of one select per
+	// option (see omp://rpc.md `set_ask_dialog`). Failure only costs the nicer
+	// shape: the select path below still renders questions as cards.
+	go s.enableAskDialog()
+
 	return s, nil
 }
 
-// enterSession opens (resume) or starts a fresh omp session and remembers the
-// omp-side session id.
-func (s *ompSession) enterSession(model string, resume bool) error {
-	cmd := "new_session"
-	if resume && dirHasSessionData(s.sessionDir) {
-		cmd = "open_session"
-	}
-	id := uuid.NewString()
-	var payload map[string]any
-	switch cmd {
-	case "open_session":
-		payload = map[string]any{"id": id, "type": cmd, "sessionDir": s.sessionDir}
-	default:
-		payload = map[string]any{"id": id, "type": cmd}
-	}
-	if err := s.writeFrame(payload); err != nil {
+// enterSession resumes the conversation identified by resumeTarget, or starts a
+// fresh omp session, then records the omp-side id and session file path.
+//
+// `new_session`'s response carries only {cancelled} (verified on omp 18.12.6), so
+// the id/file must come from get_state — without that this adapter persisted an
+// empty AgentSessionID and every daemon restart silently began a blank
+// conversation.
+func (s *ompSession) enterSession(model, resumeTarget string) error {
+	kind, value := planEnterSession(resumeTarget, s.sessionDir)
+	if err := s.enterWithFallback(kind, value); err != nil {
 		return err
 	}
-
-	resp, err := s.waitResponse(id)
-	if err != nil {
-		return err
-	}
-	if data, ok := resp["data"].(map[string]any); ok {
-		if sid, _ := data["sessionId"].(string); sid != "" {
-			s.ompSessID = sid
-		}
-		if file, _ := data["sessionFile"].(string); file != "" && s.ompSessID == "" {
-			s.ompSessID = file
-		}
-	}
+	s.recordState()
 
 	if model != "" {
 		pid := uuid.NewString()
@@ -227,6 +235,82 @@ func (s *ompSession) enterSession(model string, resume bool) error {
 		return s.writeFrame(mp)
 	}
 	return nil
+}
+
+// planEnterSession decides how to bind the process to a conversation:
+//   - "switch_session" for a session file path that still exists (exact resume)
+//   - "open_session"   for a legacy bare dir name under the store root
+//   - "new_session"    otherwise ("" target, "/new", or a vanished file)
+func planEnterSession(resumeTarget, sessionDir string) (kind, value string) {
+	target := strings.TrimSpace(resumeTarget)
+	if target == "" {
+		return "new_session", ""
+	}
+	if strings.HasSuffix(strings.ToLower(target), ".jsonl") {
+		if _, err := os.Stat(target); err != nil {
+			return "new_session", ""
+		}
+		return "switch_session", target
+	}
+	legacyDir := filepath.Join(filepath.Dir(sessionDir), sanitizeSessionName(target))
+	if dirHasSessionData(legacyDir) {
+		return "open_session", legacyDir
+	}
+	return "new_session", ""
+}
+
+// enterWithFallback performs the planned enter command and degrades to a fresh
+// session when resume is refused (deleted/foreign session file, model gone).
+func (s *ompSession) enterWithFallback(kind, value string) error {
+	for attempt := 0; attempt < 2; attempt++ {
+		id := uuid.NewString()
+		payload := map[string]any{"id": id, "type": kind}
+		switch kind {
+		case "switch_session":
+			payload["sessionPath"] = value
+		case "open_session":
+			payload["sessionDir"] = value
+		}
+		if err := s.writeFrame(payload); err != nil {
+			return err
+		}
+		if _, err := s.waitResponse(id); err == nil {
+			return nil
+		} else if kind == "new_session" {
+			return err
+		} else {
+			slog.Warn("omp: resume refused, starting a fresh session", "kind", kind, "target", value, "error", err)
+			kind, value = "new_session", ""
+		}
+	}
+	return nil
+}
+
+// recordState reads get_state and remembers the omp session id + file path.
+func (s *ompSession) recordState() {
+	id := uuid.NewString()
+	if err := s.writeFrame(map[string]any{"id": id, "type": "get_state"}); err != nil {
+		slog.Debug("omp: get_state write failed", "error", err)
+		return
+	}
+	resp, err := s.waitResponse(id)
+	if err != nil {
+		slog.Debug("omp: get_state failed", "error", err)
+		return
+	}
+	data, _ := resp["data"].(map[string]any)
+	if data == nil {
+		return
+	}
+	if sid, _ := data["sessionId"].(string); sid != "" {
+		s.ompSessID = sid
+	}
+	if file, _ := data["sessionFile"].(string); file != "" {
+		s.ompSessFile = file
+	}
+	if s.ompSessID == "" {
+		s.ompSessID = s.ompSessFile
+	}
 }
 
 // waitResponse registers a pending command id and blocks for omp's `response`
@@ -351,12 +435,58 @@ func (s *ompSession) CancelTurn() error {
 	return s.writeFrame(map[string]any{"type": "abort"})
 }
 
-// RespondPermission is a no-op: the agent runs yolo with no approval prompts.
-func (s *ompSession) RespondPermission(_ string, _ core.PermissionResult) error { return nil }
+// RespondPermission answers an open extension UI dialog. Tool approvals never
+// reach here (yolo mode); the dialogs that do are omp's `ask` tool and its
+// per-option `select` fallback, whose card answers the engine collected.
+func (s *ompSession) RespondPermission(requestID string, result core.PermissionResult) error {
+	pending := s.takeAsk(requestID)
+	if pending == nil {
+		return nil
+	}
+	if result.Behavior == "deny" {
+		return s.writeFrame(map[string]any{
+			"type":      "extension_ui_response",
+			"id":        requestID,
+			"cancelled": true,
+		})
+	}
+	switch pending.kind {
+	case "select":
+		answer := askAnswerText(pending.questions[0], result.UpdatedInput)
+		return s.writeFrame(map[string]any{
+			"type":  "extension_ui_response",
+			"id":    requestID,
+			"value": answer,
+		})
+	default:
+		answers := make([]map[string]any, 0, len(pending.questions))
+		for _, q := range pending.questions {
+			selected, custom := splitAskAnswer(q, askAnswerText(q, result.UpdatedInput))
+			entry := map[string]any{"id": q.id, "selectedOptions": selected}
+			if custom != "" {
+				entry["customInput"] = custom
+			}
+			answers = append(answers, entry)
+		}
+		return s.writeFrame(map[string]any{
+			"type":    "extension_ui_response",
+			"id":      requestID,
+			"answers": answers,
+		})
+	}
+}
 
 func (s *ompSession) Events() <-chan core.Event { return s.events }
 
-func (s *ompSession) CurrentSessionID() string { return s.ompSessID }
+// CurrentSessionID is persisted by the engine as Session.AgentSessionID and fed
+// back into StartSession, so it must be the value that identifies the
+// conversation across process restarts: the session file path when known.
+func (s *ompSession) CurrentSessionID() string {
+	if s.ompSessFile != "" {
+		return s.ompSessFile
+	}
+	return s.ompSessID
+}
 
 func (s *ompSession) Alive() bool { return s.alive.Load() }
 
@@ -521,21 +651,183 @@ func (s *ompSession) resetThinking() {
 }
 
 func (s *ompSession) handleToolStart(frame map[string]any) {
-	name, _ := frame["name"].(string)
-	if name == "" {
-		if n, ok := frame["toolName"].(string); ok {
-			name = n
-		}
+	name := toolFrameName(frame)
+	args, _ := frame["args"].(map[string]any)
+	summary := toolInputSummary(args)
+	if summary == "" {
+		// Some tools carry no args object; omp's `intent` is then the only
+		// human-readable description of the call.
+		summary = strField(frame, "intent")
 	}
-	emitSafe(s.events, core.Event{Type: core.EventToolUse, ToolName: name})
+	emitSafe(s.events, core.Event{
+		Type:      core.EventToolUse,
+		ToolName:  name,
+		ToolInput: summary,
+	})
 }
 
 func (s *ompSession) handleToolEnd(frame map[string]any) {
+	result := frame["result"]
+	status := "completed"
+	success := true
+	if isError, _ := frame["isError"].(bool); isError {
+		status = "failed"
+		success = false
+	}
 	emitSafe(s.events, core.Event{
-		Type:       core.EventToolResult,
-		ToolName:   strField(frame, "name"),
-		ToolStatus: "completed",
+		Type:         core.EventToolResult,
+		ToolName:     toolFrameName(frame),
+		ToolResult:   toolResultText(result),
+		ToolStatus:   status,
+		ToolSuccess:  &success,
+		ToolExitCode: toolResultExitCode(result),
 	})
+}
+
+// toolFrameName reads the tool name from a tool_execution_* frame. Current omp
+// builds send `toolName`; older ones used `name`.
+func toolFrameName(frame map[string]any) string {
+	if name := strField(frame, "name"); name != "" {
+		return name
+	}
+	return strField(frame, "toolName")
+}
+
+const (
+	// maxToolArgValueRunes bounds one string argument (a `command`, a file
+	// body, …) so a single huge value cannot swallow the whole summary.
+	maxToolArgValueRunes = 160
+	// maxToolInputRunes keeps the marshalled args JSON below the engine's
+	// default tool_max_len (500), so the platform can still parse it as JSON
+	// and extract the interesting key (command / file path / pattern).
+	maxToolInputRunes = 420
+)
+
+// toolInputSummary renders the tool_execution_start `args` object as compact
+// JSON. The platform layer extracts a human-readable detail (command, path,
+// pattern…) from well-known keys inside that JSON, so the payload must stay
+// valid JSON: long values are re-truncated at tighter limits instead of cutting
+// the marshalled tail.
+func toolInputSummary(args map[string]any) string {
+	if len(args) == 0 {
+		return ""
+	}
+	for _, limit := range []int{maxToolArgValueRunes, 80, 40, 20} {
+		b, err := json.Marshal(pruneToolArgs(args, limit))
+		if err != nil {
+			return ""
+		}
+		if utf8.RuneCount(b) <= maxToolInputRunes || limit == 20 {
+			return string(b)
+		}
+	}
+	return ""
+}
+
+func pruneToolArgs(args map[string]any, limit int) map[string]any {
+	out := make(map[string]any, len(args))
+	for k, v := range args {
+		out[k] = pruneToolArgValue(v, limit)
+	}
+	return out
+}
+
+func pruneToolArgValue(v any, limit int) any {
+	switch val := v.(type) {
+	case string:
+		return truncateRunes(val, limit)
+	case []any:
+		if len(val) > 4 {
+			val = val[:4]
+		}
+		out := make([]any, 0, len(val))
+		for _, item := range val {
+			out = append(out, pruneToolArgValue(item, limit))
+		}
+		return out
+	case map[string]any:
+		return pruneToolArgs(val, limit)
+	default:
+		return v
+	}
+}
+
+func truncateRunes(s string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	if utf8.RuneCountInString(s) <= limit {
+		return s
+	}
+	return string([]rune(s)[:limit]) + "…"
+}
+
+// toolResultText flattens omp's tool_execution_end `result` into the plain text
+// the chat card shows: either the text blocks of `content` or a scalar output
+// field. Non-text content (images, structured details) is dropped.
+func toolResultText(result any) string {
+	switch r := result.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(r)
+	case map[string]any:
+		if text := toolResultContentText(r["content"]); text != "" {
+			return text
+		}
+		for _, key := range []string{"text", "output", "stdout", "message"} {
+			if s := strings.TrimSpace(strField(r, key)); s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
+func toolResultContentText(content any) string {
+	switch c := content.(type) {
+	case string:
+		return strings.TrimSpace(c)
+	case []any:
+		parts := make([]string, 0, len(c))
+		for _, item := range c {
+			block, ok := item.(map[string]any)
+			if !ok || strField(block, "type") != "text" {
+				continue
+			}
+			if text := strings.TrimSpace(strField(block, "text")); text != "" {
+				parts = append(parts, text)
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	return ""
+}
+
+// toolResultExitCode pulls a process exit code out of result.details or the
+// result root, when the tool (bash and friends) reports one.
+func toolResultExitCode(result any) *int {
+	root, ok := result.(map[string]any)
+	if !ok {
+		return nil
+	}
+	sources := []map[string]any{root}
+	if details, ok := root["details"].(map[string]any); ok {
+		sources = append([]map[string]any{details}, sources...)
+	}
+	for _, src := range sources {
+		for _, key := range []string{"exitCode", "exit_code"} {
+			switch v := src[key].(type) {
+			case float64:
+				code := int(v)
+				return &code
+			case int:
+				code := v
+				return &code
+			}
+		}
+	}
+	return nil
 }
 
 func (s *ompSession) handlePromptResult(frame map[string]any) {
@@ -571,12 +863,273 @@ func (s *ompSession) handlePromptResult(frame map[string]any) {
 // the pipe never deadlocks if the mode ever changes.
 func (s *ompSession) handleUIRequest(frame map[string]any) {
 	method, _ := frame["method"].(string)
-	if method != "select" {
+	id, _ := frame["id"].(string)
+	switch method {
+	case "ask":
+		s.handleAskDialog(id, frame)
+	case "select":
+		s.handleSelectDialog(id, frame)
+	case "cancel":
+		// omp timed out or aborted its own dialog; the answer is no longer wanted.
+		if target, _ := frame["targetId"].(string); target != "" {
+			s.forgetAsk(target)
+		}
+	case "notify", "setStatus", "setWidget", "setTitle", "set_editor_text", "open_url":
+		// presentation-only frames need no response
+	default:
+		// confirm/input/editor have no card surface here; cancelling keeps the
+		// agent from blocking on a dialog the host cannot show.
+		if id != "" {
+			slog.Debug("omp: cancelling unsupported ui request", "method", method, "id", id)
+			_ = s.writeFrame(map[string]any{"type": "extension_ui_response", "id": id, "cancelled": true})
+		}
+	}
+}
+
+// enableAskDialog opts this process into the combined `ask` dialog. Builds
+// without the command answer with a failure, which is fine: the `select`
+// fallback below still renders questions.
+func (s *ompSession) enableAskDialog() {
+	id := uuid.NewString()
+	if err := s.writeFrame(map[string]any{
+		"id":      id,
+		"type":    "set_ask_dialog",
+		"enabled": true,
+	}); err != nil {
+		slog.Debug("omp: set_ask_dialog write failed", "error", err)
 		return
 	}
-	if id, ok := frame["id"].(string); ok {
-		_ = s.writeFrame(map[string]any{"type": "extension_ui_response", "id": id, "value": "Deny"})
+	if _, err := s.waitResponse(id); err != nil {
+		slog.Debug("omp: set_ask_dialog unsupported, using select fallback", "error", err)
 	}
+}
+
+// handleAskDialog renders omp's `ask` tool call (every question of the call in
+// one request) as engine question cards.
+func (s *ompSession) handleAskDialog(requestID string, frame map[string]any) {
+	rawQuestions, _ := frame["questions"].([]any)
+	pending := &ompPendingAsk{kind: "ask"}
+	userQuestions := make([]core.UserQuestion, 0, len(rawQuestions))
+	for _, raw := range rawQuestions {
+		qm, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		q := ompAskQuestion{
+			id:          strField(qm, "id"),
+			question:    strField(qm, "question"),
+			header:      strField(qm, "header"),
+			multi:       boolField(qm, "multi"),
+			recommended: intField(qm, "recommended"),
+		}
+		if q.question == "" {
+			continue
+		}
+		if q.id == "" {
+			q.id = q.question
+		}
+		options, _ := qm["options"].([]any)
+		userOptions := make([]core.UserQuestionOption, 0, len(options))
+		for _, rawOpt := range options {
+			om, ok := rawOpt.(map[string]any)
+			if !ok {
+				continue
+			}
+			label := strField(om, "label")
+			if label == "" {
+				continue
+			}
+			q.labels = append(q.labels, label)
+			userOptions = append(userOptions, core.UserQuestionOption{
+				Label:       label,
+				Description: strField(om, "description"),
+			})
+		}
+		pending.questions = append(pending.questions, q)
+		userQuestions = append(userQuestions, core.UserQuestion{
+			Question:    q.question,
+			Header:      q.header,
+			Options:     userOptions,
+			MultiSelect: q.multi,
+		})
+	}
+	if len(userQuestions) == 0 {
+		slog.Warn("omp: ask request without renderable questions", "id", requestID)
+		_ = s.writeFrame(map[string]any{"type": "extension_ui_response", "id": requestID, "cancelled": true})
+		return
+	}
+	s.storeAsk(requestID, pending)
+
+	slog.Info("omp: question dialog", "id", requestID, "questions", len(userQuestions))
+	emitSafe(s.events, core.Event{
+		Type:      core.EventPermissionRequest,
+		RequestID: requestID,
+		ToolName:  "AskUserQuestion",
+		ToolInput: userQuestions[0].Question,
+		ToolInputRaw: map[string]any{
+			"request_id": requestID,
+			"questions":  userQuestions,
+		},
+		Questions: userQuestions,
+	})
+}
+
+// handleSelectDialog maps omp's single-choice fallback (one select per option
+// list, used when build or config keeps `ask` on the per-choice path).
+func (s *ompSession) handleSelectDialog(requestID string, frame map[string]any) {
+	question := strField(frame, "title")
+	if question == "" {
+		question = strField(frame, "message")
+	}
+	options, _ := frame["options"].([]any)
+	details, _ := frame["optionDetails"].([]any)
+	q := ompAskQuestion{id: requestID, question: question}
+	userQuestion := core.UserQuestion{Question: question, Header: question}
+	for i, raw := range options {
+		label, ok := raw.(string)
+		if !ok || label == "" {
+			continue
+		}
+		q.labels = append(q.labels, label)
+		opt := core.UserQuestionOption{Label: label}
+		if i < len(details) {
+			if dm, ok := details[i].(map[string]any); ok {
+				opt.Description = strField(dm, "description")
+			}
+		}
+		userQuestion.Options = append(userQuestion.Options, opt)
+	}
+	if len(userQuestion.Options) == 0 {
+		_ = s.writeFrame(map[string]any{"type": "extension_ui_response", "id": requestID, "cancelled": true})
+		return
+	}
+	s.storeAsk(requestID, &ompPendingAsk{kind: "select", questions: []ompAskQuestion{q}})
+
+	slog.Info("omp: select dialog", "id", requestID, "options", len(userQuestion.Options))
+	emitSafe(s.events, core.Event{
+		Type:      core.EventPermissionRequest,
+		RequestID: requestID,
+		ToolName:  "AskUserQuestion",
+		ToolInput: question,
+		ToolInputRaw: map[string]any{
+			"request_id": requestID,
+			"questions":  []core.UserQuestion{userQuestion},
+		},
+		Questions: []core.UserQuestion{userQuestion},
+	})
+}
+
+func (s *ompSession) storeAsk(id string, pending *ompPendingAsk) {
+	if id == "" {
+		return
+	}
+	s.askMu.Lock()
+	defer s.askMu.Unlock()
+	if s.asks == nil {
+		s.asks = make(map[string]*ompPendingAsk)
+	}
+	s.asks[id] = pending
+}
+
+func (s *ompSession) takeAsk(id string) *ompPendingAsk {
+	s.askMu.Lock()
+	defer s.askMu.Unlock()
+	pending := s.asks[id]
+	delete(s.asks, id)
+	return pending
+}
+
+func (s *ompSession) forgetAsk(id string) {
+	s.askMu.Lock()
+	defer s.askMu.Unlock()
+	delete(s.asks, id)
+}
+
+// askAnswerText pulls one question's answer out of the engine's UpdatedInput
+// (buildAskQuestionResponse keys answers by question text).
+func askAnswerText(q ompAskQuestion, updatedInput map[string]any) string {
+	if updatedInput == nil {
+		return ""
+	}
+	answers, ok := updatedInput["answers"].(map[string]any)
+	if !ok {
+		return ""
+	}
+	answer, _ := answers[q.question].(string)
+	return strings.TrimSpace(answer)
+}
+
+// splitAskAnswer turns the engine's answer text back into omp's
+// `selectedOptions` + `customInput` pair. The engine joins multi-select labels
+// with ", "; anything that is not an exact option label is free text.
+func splitAskAnswer(q ompAskQuestion, answer string) ([]string, string) {
+	selected := []string{}
+	if answer == "" {
+		return selected, ""
+	}
+	for _, label := range q.labels {
+		if label == answer {
+			return []string{label}, ""
+		}
+	}
+	if !q.multi {
+		return selected, answer
+	}
+	var custom []string
+	for _, piece := range strings.Split(answer, ",") {
+		piece = strings.TrimSpace(piece)
+		if piece == "" {
+			continue
+		}
+		matched := false
+		for _, label := range q.labels {
+			if label == piece {
+				selected = append(selected, label)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			custom = append(custom, piece)
+		}
+	}
+	if len(custom) > 0 && len(selected) > 0 {
+		// omp rejects mixing options with free text on a multi-select; keep the
+		// typed text as the whole answer instead of dropping one half.
+		return []string{}, answer
+	}
+	return selected, strings.Join(custom, ", ")
+}
+
+func boolField(m map[string]any, key string) bool {
+	v, _ := m[key].(bool)
+	return v
+}
+
+func intField(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return -1
+}
+
+// ompAskQuestion is one question of an `ask` request, in omp's own ids.
+type ompAskQuestion struct {
+	id          string
+	question    string
+	header      string
+	multi       bool
+	recommended int
+	labels      []string
+}
+
+// ompPendingAsk is an open extension UI dialog awaiting the user's card answer.
+type ompPendingAsk struct {
+	kind      string // "ask" (answers payload) or "select" (value payload)
+	questions []ompAskQuestion
 }
 
 func emitSafe(ch chan core.Event, ev core.Event) {

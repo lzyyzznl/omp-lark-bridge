@@ -413,7 +413,7 @@ func (s *ompSession) readLoop(stdout io.Reader) {
 				slog.Warn("omp: command failed", "error", frame["error"], "command", frame["command"])
 			}
 		case "extension_ui_request":
-			s.autoRejectUI(frame)
+			s.handleUIRequest(frame)
 		case "notice":
 			slog.Warn("omp: notice", "message", frame["message"])
 		case "rpc_frame_error":
@@ -521,9 +521,15 @@ func (s *ompSession) handlePromptResult(frame map[string]any) {
 	}
 }
 
-// autoRejectUI defensively answers any extension UI request (approval dialogs
-// should never arrive under yolo) so the pipe never deadlocks.
-func (s *ompSession) autoRejectUI(frame map[string]any) {
+// handleUIRequest answers omp's out-of-band UI requests. Under yolo there are
+// no approval dialogs; omp still emits informational ones (setStatus/notify —
+// fine to ignore). Only a `select` request (approval) is answered with Deny so
+// the pipe never deadlocks if the mode ever changes.
+func (s *ompSession) handleUIRequest(frame map[string]any) {
+	method, _ := frame["method"].(string)
+	if method != "select" {
+		return
+	}
 	if id, ok := frame["id"].(string); ok {
 		_ = s.writeFrame(map[string]any{"type": "extension_ui_response", "id": id, "value": "Deny"})
 	}

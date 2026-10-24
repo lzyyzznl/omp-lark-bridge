@@ -51,6 +51,15 @@ type ompSession struct {
 	writeMu sync.Mutex
 	pMu     sync.Mutex
 	pending map[string]chan map[string]any
+
+	// thinking accumulation: engine's EventThinking handler overwrites the
+	// card's thinking area with event.Content (never appends), so deltas must
+	// be accumulated and emitted at a human cadence — otherwise the card shows
+	// only the last 1-2 chars per delta ("one char per line").
+	thinkMu      sync.Mutex
+	thinkBuf     strings.Builder
+	thinkEmitted bool
+	thinkLast    time.Time
 }
 
 // ompSessionStoreDir returns the per-session store directory under the cc-data
@@ -471,13 +480,44 @@ func (s *ompSession) handleMessageUpdate(frame map[string]any) {
 		}
 	case "thinking_delta":
 		if d, _ := ae["delta"].(string); d != "" {
-			emitSafe(s.events, core.Event{Type: core.EventThinking, Content: d})
+			s.thinkMu.Lock()
+			s.thinkBuf.WriteString(d)
+			s.thinkMu.Unlock()
+			s.flushThinking(false)
 		}
 	case "toolcall_delta":
 		// tool call arguments stream in; surface the action name on start only
 	default:
 		slog.Debug("omp: assistantMessageEvent", "type", t)
 	}
+}
+
+// flushThinking emits the accumulated thinking text as one EventThinking
+// whose Content is the full accumulated text so far. force bypasses the
+// throttle (used before turn end so the finished card holds the complete
+// thinking). The first thinking of a turn is always emitted immediately so
+// the card appears right away.
+func (s *ompSession) flushThinking(force bool) {
+	s.thinkMu.Lock()
+	defer s.thinkMu.Unlock()
+	if s.thinkBuf.Len() == 0 {
+		return
+	}
+	if !force && s.thinkEmitted && time.Since(s.thinkLast) < 1500*time.Millisecond {
+		return
+	}
+	s.thinkEmitted = true
+	s.thinkLast = time.Now()
+	emitSafe(s.events, core.Event{Type: core.EventThinking, Content: s.thinkBuf.String()})
+}
+
+// resetThinking clears accumulated thinking; called when a turn settles.
+func (s *ompSession) resetThinking() {
+	s.thinkMu.Lock()
+	s.thinkBuf.Reset()
+	s.thinkEmitted = false
+	s.thinkLast = time.Time{}
+	s.thinkMu.Unlock()
 }
 
 func (s *ompSession) handleToolStart(frame map[string]any) {
@@ -499,6 +539,10 @@ func (s *ompSession) handleToolEnd(frame map[string]any) {
 }
 
 func (s *ompSession) handlePromptResult(frame map[string]any) {
+	// final flush so the settled card carries the complete thinking, then
+	// reset for the next turn.
+	s.flushThinking(true)
+	s.resetThinking()
 	status, _ := frame["status"].(string)
 	switch status {
 	case "completed":

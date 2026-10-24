@@ -153,3 +153,5 @@ credentials/
 
 .codex
 in-one-chat-new
+# ws test dumps (written into cwd by feishu ws tests)
+test_ws_*.json

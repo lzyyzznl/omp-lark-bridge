@@ -1,0 +1,167 @@
+# in-one-chat configuration
+# in-one-chat 配置文件
+#
+# A slim bridge for exactly ONE coding agent (omp) and ONE messaging platform
+# (Feishu/Lark), built on the cc-connect architecture (MIT). Copy this file to
+# config.toml and fill in your credentials.
+#
+# String values support ${VAR_NAME} environment variable substitution.
+# Example: app_secret = "${APP_SECRET}" / 所有字符串值都支持 ${VAR_NAME} 环境变量替换。
+#
+# Each [[projects]] entry binds one code directory to the agent + its platforms.
+# 每个 [[projects]] 将一个代码目录绑定到 agent 和平台。
+
+# =============================================================================
+# Global Settings / 全局设置
+# =============================================================================
+
+# Language for bot messages / 机器人消息语言
+# - "en": English
+# - "zh": 中文
+# - "" (empty/not set): Auto-detect from user's first message / 留空自动检测
+# language = "en"
+
+# Shell for /shell commands, cron exec, hooks, and webhook exec.
+# /shell 命令、cron exec、hooks 和 webhook exec 使用的 shell。
+# Default / 默认: "sh" (Unix) or "powershell.exe" (Windows)
+# Supported / 支持: sh, bash, zsh, fish, cmd, powershell, pwsh
+# shell = "/bin/zsh"
+
+# Init command prepended to every shell command. Useful for sourcing profiles
+# so user-defined functions and aliases are available.
+# 初始化命令，会添加到每条 shell 命令前面。用于加载 profile，使自定义函数和别名可用。
+# shell_profile = "source ~/.zshrc"
+
+# Session data storage directory (default: ~/.in-one-chat)
+# Stores conversation history and session state as JSON files, plus the omp
+# session stores under <data_dir>/omp-sessions (kept out of your ~/.omp).
+# 会话数据存储目录（默认 ~/.in-one-chat），以 JSON 文件保存对话历史和会话状态；
+# omp 会话目录在 <data_dir>/omp-sessions 下（不占用你的 ~/.omp）。
+# data_dir = "/path/to/custom/dir"
+
+[log]
+level = "info" # debug, info, warn, error
+
+# =============================================================================
+# Display Settings / 显示设置
+# =============================================================================
+# Controls how intermediate messages (thinking, tool use) are shown in chat.
+# 控制中间消息（思考过程、工具调用）在聊天中的显示方式。
+[display]
+# mode = "full"             # Display mode: "full" (default), "compact", or "quiet"
+# thinking_messages = true  # Show/hide thinking messages (default: true) / 是否显示思考消息（默认 true）
+# thinking_max_len = 300    # Max chars for thinking messages (default: 300)
+# tool_messages = true      # Show/hide tool progress messages (default: true)
+# show_context_indicator = true  # Show "[ctx: ~N%]" suffix on assistant replies (default: true)
+
+# =============================================================================
+# Streaming Preview / 流式预览
+# =============================================================================
+# Real-time message preview on Feishu: the message is edited in-place as the
+# agent streams, like a "typing" indicator.
+# 实时流式预览：Agent 输出时就地更新飞书消息（类似"正在输入"效果）。
+# [stream_preview]
+# enabled = true            # Enable/disable streaming preview (default: true)
+# interval_ms = 1500        # Min ms between updates (default: 1500)
+# min_delta_chars = 30      # Min new chars before sending update (default: 30)
+# max_chars = 2000          # Max preview length (default: 2000)
+
+# =============================================================================
+# Rate Limiting / 速率限制
+# =============================================================================
+# [rate_limit]
+# max_messages = 20         # Max messages per window; 0 = disabled (default: 20)
+# window_secs = 60          # Window size in seconds (default: 60)
+
+# Agent idle timeout: max minutes between consecutive agent events before
+# considering the session stuck. Set to 0 to disable the timeout entirely.
+# Agent 空闲超时：两次 agent 事件之间的最大等待分钟数，超时则认为会话卡住。设为 0 禁用。
+# idle_timeout_mins = 120  # default: 120 (2 hours) / 默认 120（2 小时）
+
+# Absolute wall-clock cap per agent turn in minutes (never reset by events).
+# 每次 agent 对话的绝对时间上限（分钟），不因事件重置。
+# max_turn_time_mins = 0  # default: disabled / 默认禁用
+
+# Auto-rotate the active session after the user has been idle for a while.
+# 用户长时间未发消息后，自动切换到新的活跃会话（旧会话通过 /list /switch 保留）。
+# Default: 30 minutes when unset. Set to 0 to opt out.
+# 默认 30 分钟（未设置时）；设为 0 禁用。
+# reset_on_idle_mins = 30
+
+# =============================================================================
+# Project: one code directory + omp agent + Feishu
+# =============================================================================
+[[projects]]
+name = "my-project"
+
+# admin_from controls who can run privileged commands (/dir, /shell, /restart,
+# /upgrade, /commands addexec, /cron addexec). Not set = blocked for all.
+# admin_from 控制谁能执行特权命令。未设置 = 全部禁止。
+# ⚠️ admin_from = "*" grants ALL allowed users full shell access to the host.
+# 仅在个人单用户部署中使用。
+# 💡 Send /whoami to the bot to get your User ID.
+# admin_from = "*"
+
+[projects.agent]
+type = "omp"
+
+[projects.agent.options]
+# Working directory omp operates in (required). This is where omp writes the
+# conversation / checks AGENTS.md.
+# omp 的工作目录（必填），omp 在此读写会话与 AGENTS.md。
+work_dir = "/path/to/your/workspace"
+
+# Optional: default model for new sessions, e.g. "router" or "provider/modelId".
+# Applies on the next session; switchable at runtime via /model.
+# 可选：新会话默认模型（如 "router" 或 "provider/modelId"）。下一次会话生效，运行中用 /model 切换。
+# model = "router"
+
+# Optional: override the omp CLI binary / extra args.
+# 可选：覆盖 omp CLI 二进制名或附加参数。
+# cmd = "omp"
+# env = ["MY_VAR=value"]
+
+# ============================================================
+# Feishu / Lark / 飞书
+# ============================================================
+# 1. Create an app at https://open.feishu.cn / 在 https://open.feishu.cn 创建应用
+# 2. Enable Bot capability / 开启机器人能力
+# 3. Add im.message.receive_v1 event, select WebSocket long-connection mode
+#    添加 im.message.receive_v1 事件，选择 WebSocket 长连接模式
+# 4. Fill in app_id and app_secret below / 填入下方 app_id 和 app_secret
+# Quick setup: / quick 配置可通过 CLI 进行
+#   in-one-chat feishu setup --project <project_name>
+# Note: No WebSocket URL needed — the SDK auto-negotiates the connection.
+# 注意：无需配置 WebSocket URL，SDK 会自动通过凭证建立连接。
+
+[[projects.platforms]]
+type = "feishu"
+
+[projects.platforms.options]
+app_id = "your-feishu-app-id"
+app_secret = "your-feishu-app-secret"
+# domain = "https://open.feishu.cn"  # Optional runtime API/WebSocket base URL override / 可选：运行时 API/WebSocket 域名覆盖
+# enable_feishu_card = true  # Enable Feishu interactive cards (default: true) / 启用飞书交互式卡片（默认 true）
+# allow_from = "*"          # Allowed user open_ids, comma-separated; "*" = all (default). Use /whoami to get your open_id.
+#                           # 允许的用户 open_id，逗号分隔；"*" 表示所有（默认）。发送 /whoami 获取你的 open_id。
+# allow_chat = "*"          # Allowed group chat_ids, comma-separated; "*" = all (default).
+#                           # 允许的群聊 chat_id，逗号分隔；"*" 表示所有（默认）。
+# group_reply_all = false   # If true, respond to ALL group messages without requiring @mention
+#                           # 设为 true 时，群聊中无需 @机器人 也会响应所有消息（默认 false）
+# share_session_in_channel = false  # If true, all users in a group share one agent session
+#                                   # 设为 true 时，群聊内所有用户共享同一个 Agent 会话
+# reaction_emoji = "OnIt"  # Emoji reaction on incoming messages (default: "OnIt"); set to "none" to disable.
+# done_emoji = "none"       # Emoji reaction when agent finishes a reply (e.g. "Done"); set to "none" to disable.
+# progress_style = "legacy" # Progress rendering style: legacy | compact | card
+#                           # 进度消息展示风格：legacy（逐条消息）| compact（单消息持续更新）| card（结构化卡片）
+
+# Lark (International Version) / Lark 国际版
+# [[projects.platforms]]
+# type = "lark"
+# [projects.platforms.options]
+# app_id = "your-lark-app-id"
+# app_secret = "your-lark-app-secret"
+# domain = "https://open.larksuite.com"
+# port = "8080"                  # Webhook server port / Webhook 服务器端口
+# callback_path = "/feishu/webhook"  # Webhook callback path / Webhook 回调路径
+# encrypt_key = ""               # Event encrypt key (optional) / 事件加密密钥（可选）

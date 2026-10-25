@@ -80,6 +80,7 @@ type ompSession struct {
 	thinkMu      sync.Mutex
 	thinkBuf     strings.Builder
 	thinkEmitted bool
+	thinkSent    int // runes already emitted; dedups force flushes
 	thinkLast    time.Time
 }
 
@@ -593,6 +594,10 @@ func (s *ompSession) handleMessageUpdate(frame map[string]any) {
 	}
 	switch t, _ := ae["type"].(string); t {
 	case "text_delta":
+		// thinking → text transition: push the complete reasoning up before
+		// the answer streams, so a bursty thinking block isn't stranded at
+		// its first delta until the turn-end force flush.
+		s.flushThinking(true)
 		if d, _ := ae["delta"].(string); d != "" {
 			emitSafe(s.events, core.Event{Type: core.EventText, Content: d})
 		}
@@ -621,10 +626,14 @@ func (s *ompSession) flushThinking(force bool) {
 	if s.thinkBuf.Len() == 0 {
 		return
 	}
+	if s.thinkBuf.Len() == s.thinkSent && s.thinkEmitted {
+		return // no new thinking since the last flush
+	}
 	if !force && s.thinkEmitted && time.Since(s.thinkLast) < 1500*time.Millisecond {
 		return
 	}
 	s.thinkEmitted = true
+	s.thinkSent = s.thinkBuf.Len()
 	s.thinkLast = time.Now()
 	emitSafe(s.events, core.Event{Type: core.EventThinking, Content: s.thinkBuf.String()})
 }
@@ -634,6 +643,7 @@ func (s *ompSession) resetThinking() {
 	s.thinkMu.Lock()
 	s.thinkBuf.Reset()
 	s.thinkEmitted = false
+	s.thinkSent = 0
 	s.thinkLast = time.Time{}
 	s.thinkMu.Unlock()
 }

@@ -138,6 +138,58 @@ func TestThinkingDeltaAccumulates(t *testing.T) {
 	}
 }
 
+// Regression: a bursty thinking block (all deltas inside the 1.5s throttle
+// window) used to strand the reasoning at its first delta until the turn-end
+// force flush — the user saw only the opening chars with no update while the
+// answer streamed, then the full thinking after the answer finished. The first
+// text_delta must push the complete thinking up before the text starts.
+func TestThinkingFlushedAtTextStart(t *testing.T) {
+	s := &ompSession{events: make(chan core.Event, 100)}
+	feedThink := func(delta string) {
+		s.handleMessageUpdate(map[string]any{
+			"assistantMessageEvent": map[string]any{"type": "thinking_delta", "delta": delta},
+		})
+	}
+	feedText := func(delta string) {
+		s.handleMessageUpdate(map[string]any{
+			"assistantMessageEvent": map[string]any{"type": "text_delta", "delta": delta},
+		})
+	}
+	collect := func() []core.Event {
+		var evs []core.Event
+		for {
+			select {
+			case ev := <-s.events:
+				evs = append(evs, ev)
+			default:
+				return evs
+			}
+		}
+	}
+
+	feedThink("前")
+	feedThink("两字")
+	feedThink("被吞")
+	first := collect()
+	if len(first) != 1 || first[0].Content != "前" {
+		t.Fatalf("bursty thinking must emit only the first delta initially, got %+v", first)
+	}
+
+	feedText("正")
+	evs := collect()
+	if len(evs) != 2 || evs[0].Type != core.EventThinking || evs[0].Content != "前两字被吞" || evs[1].Type != core.EventText {
+		t.Fatalf("text start should flush full thinking then text, got %+v", evs)
+	}
+
+	feedText("文")
+	feedText("!")
+	for _, ev := range collect() {
+		if ev.Type == core.EventThinking {
+			t.Fatalf("unchanged thinking re-emitted on text delta (flood)")
+		}
+	}
+}
+
 // The chat card can only show a tool's parameters/result if the adapter
 // forwards them; omp sends them as `args` and `result` on the
 // tool_execution_start/end frames.

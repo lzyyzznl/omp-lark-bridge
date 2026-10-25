@@ -121,7 +121,7 @@ export default function App() {
     <div>
       <header className="masthead">
         <div>
-          <h1>omp·lark·bridge <span className="dot">▮</span> {tabTitle}</h1>
+          <h1>omp-lark-bridge <span className="dot">▮</span> {tabTitle}</h1>
           <div className="sub">Cron Scheduler Console</div>
         </div>
         <div className="masthead-right">

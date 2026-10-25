@@ -292,6 +292,20 @@ export default function SessionsPage({ initialId, onToast }) {
 
   // activeProject 必须先于 sendComposer 等 hook 声明（useCallback deps 会在
   // 每次 render 求值它，置后再引用会触发 TDZ：Cannot access before init）。
+  // 项目显示名（display_name）映射：ID 不可变，展示名可改。
+  const [projectLabels, setProjectLabels] = useState({})
+  useEffect(() => {
+    let alive = true
+    api.listProjects().then((d) => {
+      if (!alive) return
+      const m = {}
+      for (const p of d?.projects || []) if (p.display_name) m[p.name] = p.display_name
+      setProjectLabels(m)
+    }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  const projectLabel = (id) => projectLabels[id] || id
+
   const activeProject = useMemo(
     () => jobs?.find((j) => j.id === selectedJob)?.project || '',
     [jobs, selectedJob],
@@ -541,7 +555,7 @@ export default function SessionsPage({ initialId, onToast }) {
           <>
             <div className="sess-detail-head">
               <div className="sess-detail-title">{jobs?.find((j) => j.id === selectedJob)?.description || selectedJob}</div>
-              <div className="sess-detail-sub">{activeProject} · 该任务执行的会话（只列定时任务）</div>
+              <div className="sess-detail-sub">{projectLabel(activeProject)} · 该任务执行的会话（只列定时任务）</div>
             </div>
             <div className="t-flow">
               {jobTxs === null && <div className="sess-empty">加载中…</div>}
@@ -574,7 +588,7 @@ export default function SessionsPage({ initialId, onToast }) {
               <button className="btn btn-sm btn-ghost" onClick={() => { setSelectedTx(''); setTxDetail(null) }}>← 返回任务会话</button>
               <button className="btn btn-sm btn-ghost sess-copy" onClick={copyTx}>{copied.tx ? '已复制' : '复制文本'}</button>
               <div className="sess-detail-title">{txDetail ? (jobTxs?.find((t) => t.id === selectedTx)?.title || selectedTx) : selectedTx}</div>
-              <div className="sess-detail-sub">{activeProject} · {selectedTx}</div>
+              <div className="sess-detail-sub">{projectLabel(activeProject)} · {selectedTx}</div>
             </div>
             <div className="t-flow">
               {txLoading && !txDetail && <div className="sess-empty">加载中…</div>}

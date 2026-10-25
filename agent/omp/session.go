@@ -82,6 +82,7 @@ type ompSession struct {
 	thinkEmitted bool
 	thinkSent    int // runes already emitted; dedups force flushes
 	thinkLast    time.Time
+	thinkTimer   *time.Timer // scheduled convergence flush (see flushThinking)
 }
 
 // ompSessionStoreDir returns the store container under the cc-data dir. The name
@@ -624,23 +625,53 @@ func (s *ompSession) flushThinking(force bool) {
 	s.thinkMu.Lock()
 	defer s.thinkMu.Unlock()
 	if s.thinkBuf.Len() == 0 {
+		s.cancelThinkTimer()
 		return
 	}
 	if s.thinkBuf.Len() == s.thinkSent && s.thinkEmitted {
 		return // no new thinking since the last flush
 	}
 	if !force && s.thinkEmitted && time.Since(s.thinkLast) < 1500*time.Millisecond {
+		// Throttled: schedule a convergence flush anyway, so a bursty block
+		// that stops inside the window still lands on the card instead of
+		// depending on a later text/tool/turn-end event to trigger it.
+		s.scheduleThinkFlush()
 		return
 	}
+	s.cancelThinkTimer()
 	s.thinkEmitted = true
 	s.thinkSent = s.thinkBuf.Len()
 	s.thinkLast = time.Now()
 	emitSafe(s.events, core.Event{Type: core.EventThinking, Content: s.thinkBuf.String()})
 }
 
+// scheduleThinkFlush arms a one-shot timer that re-attempts the flush after
+// the throttle window. Callers hold thinkMu. Overlapping schedules collapse:
+// repeated deltas inside the window keep the original pending timer (it fires
+// once, then the next delta re-arms if still throttled).
+func (s *ompSession) scheduleThinkFlush() {
+	if s.thinkTimer != nil {
+		return
+	}
+	s.thinkTimer = time.AfterFunc(1500*time.Millisecond, func() {
+		s.thinkMu.Lock()
+		s.thinkTimer = nil
+		s.thinkMu.Unlock()
+		s.flushThinking(false)
+	})
+}
+
+func (s *ompSession) cancelThinkTimer() {
+	if s.thinkTimer != nil {
+		s.thinkTimer.Stop()
+		s.thinkTimer = nil
+	}
+}
+
 // resetThinking clears accumulated thinking; called when a turn settles.
 func (s *ompSession) resetThinking() {
 	s.thinkMu.Lock()
+	s.cancelThinkTimer()
 	s.thinkBuf.Reset()
 	s.thinkEmitted = false
 	s.thinkSent = 0

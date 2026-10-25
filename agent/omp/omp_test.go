@@ -190,6 +190,49 @@ func TestThinkingFlushedAtTextStart(t *testing.T) {
 	}
 }
 
+
+// Regression: a bursty thinking block that finishes inside the 1.5s throttle
+// window used to strand the reasoning at its first delta with no further
+// trigger (the flow may go straight to a tool call, so the earlier flush-at-
+// text-start does not fire) — the full thinking only appeared at turn end.
+// The throttled flush must schedule a convergence timer so the accumulated
+// block lands on the card shortly after it stops, independent of later events.
+func TestThinkingConvergesAfterThrottle(t *testing.T) {
+	s := &ompSession{events: make(chan core.Event, 100)}
+	feedThink := func(delta string) {
+		s.handleMessageUpdate(map[string]any{
+			"assistantMessageEvent": map[string]any{"type": "thinking_delta", "delta": delta},
+		})
+	}
+	collectNow := func() []core.Event {
+		var evs []core.Event
+		for {
+			select {
+			case ev := <-s.events:
+				evs = append(evs, ev)
+			default:
+				return evs
+			}
+		}
+	}
+
+	feedThink("第一")
+	feedThink("块被节流")
+	first := collectNow()
+	if len(first) != 1 || first[0].Content != "第一" {
+		t.Fatalf("bursty thinking must emit only the first delta initially, got %+v", first)
+	}
+
+	// No further events: the convergence timer must still flush the full text.
+	select {
+	case ev := <-s.events:
+		if ev.Type != core.EventThinking || ev.Content != "第一块被节流" {
+			t.Fatalf("convergence flush = %+v, want full thinking", ev)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("convergence timer never flushed the accumulated thinking")
+	}
+}
 // The chat card can only show a tool's parameters/result if the adapter
 // forwards them; omp sends them as `args` and `result` on the
 // tool_execution_start/end frames.

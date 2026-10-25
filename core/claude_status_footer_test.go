@@ -262,8 +262,8 @@ func TestCompactReplyFooterPath_HomeRelativeDeepPathStaysFull(t *testing.T) {
 	// os.UserHomeDir reads USERPROFILE on Windows and HOME elsewhere.
 	t.Setenv("USERPROFILE", homeDir)
 
-	shortPath := filepath.Join(homeDir, "codes", "in-one-chat")
-	if got, want := compactReplyFooterPath(shortPath), "~/codes/in-one-chat"; got != want {
+	shortPath := filepath.Join(homeDir, "codes", "omp-lark-bridge")
+	if got, want := compactReplyFooterPath(shortPath), "~/codes/omp-lark-bridge"; got != want {
 		t.Fatalf("short home path = %q, want %q", got, want)
 	}
 

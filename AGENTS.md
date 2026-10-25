@@ -8,7 +8,7 @@ CC-Connect is a bridge that connects AI coding agents (Claude Code, Codex, Gemin
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                   cmd/cc-connect                │  ← entry point, CLI, daemon
+│             cmd/omp-lark-bridge                  │  ← entry point, CLI, daemon
 ├─────────────────────────────────────────────────┤
 │                     config/                     │  ← TOML config parsing
 ├─────────────────────────────────────────────────┤
@@ -198,7 +198,7 @@ A CUJ test is a USER-perspective end-to-end scenario, not a developer-
 perspective unit test. The current inventory of CUJs and their coverage
 status lives in:
 
-`projects/cc-connect/agents/qa-cursor/release-gate/CUJ-INVENTORY.md`
+`projects/omp-lark-bridge/agents/qa-cursor/release-gate/CUJ-INVENTORY.md`
 (in the spaceship agency workspace; the registered authoritative copy).
 
 Rules for adding/updating CUJ tests in `core/cuj_test.go`:
@@ -238,7 +238,7 @@ make build EXCLUDE=discord,dingtalk,qq,qqbot,line
 ### Direct build tag usage (without Make)
 
 ```bash
-go build -tags 'no_discord no_dingtalk no_qq no_qqbot no_line' ./cmd/cc-connect
+go build -tags 'no_discord no_dingtalk no_qq no_qqbot no_line' ./cmd/omp-lark-bridge
 ```
 
 Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`, `no_gemini`,
@@ -261,7 +261,7 @@ Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`
 1. Create `platform/newplatform/newplatform.go`
 2. Implement `core.Platform` interface (and optional interfaces as needed)
 3. Register in `init()`: `core.RegisterPlatform("newplatform", factory)`
-4. Create `cmd/cc-connect/plugin_platform_newplatform.go` with `//go:build !no_newplatform` tag
+4. Create `cmd/omp-lark-bridge/plugin_platform_newplatform.go` with `//go:build !no_newplatform` tag
 5. Add `newplatform` to `ALL_PLATFORMS` in `Makefile`
 6. Add config example in `config.example.toml`
 7. Add unit tests
@@ -271,8 +271,8 @@ Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`
 1. Create `agent/newagent/newagent.go`
 2. Implement `core.Agent` and `core.AgentSession` interfaces
 3. Register in `init()`: `core.RegisterAgent("newagent", factory)`
-4. Create `cmd/cc-connect/plugin_agent_newagent.go` with `//go:build !no_newagent` tag
+4. Create `cmd/omp-lark-bridge/plugin_agent_newagent.go` with `//go:build !no_newagent` tag
 5. Add `newagent` to `ALL_AGENTS` in `Makefile`
-6. Optionally implement `AgentDoctorInfo` for `cc-connect doctor` support
+6. Optionally implement `AgentDoctorInfo` for `omp-lark-bridge doctor` support
 7. Add config example in `config.example.toml`
 8. Add unit tests

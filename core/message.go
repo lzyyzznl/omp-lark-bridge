@@ -34,9 +34,9 @@ func MergeEnv(base, extra []string) []string {
 	return append(merged, extra...)
 }
 
-// InjectedAgentEnv returns the env vars in-one-chat injects into a spawned
-// agent process so in-process extensions can learn in-one-chat's runtime state.
-// The CC_ prefix marks these vars as in-one-chat's public extension contract,
+// InjectedAgentEnv returns the env vars omp-lark-bridge injects into a spawned
+// agent process so in-process extensions can learn omp-lark-bridge's runtime state.
+// The CC_ prefix marks these vars as omp-lark-bridge's public extension contract,
 // alongside CC_PROJECT / CC_SESSION_KEY / CC_DATA_DIR that the engine injects
 // as session env.
 //
@@ -112,8 +112,8 @@ type FileAttachment struct {
 //
 // Layout:
 //
-//	messageID == "": <workDir>/.in-one-chat/attachments/<sanitized_name>
-//	messageID != "": <workDir>/.in-one-chat/attachments/<messageID>/<sanitized_name>
+//	messageID == "": <workDir>/.omp-lark-bridge/attachments/<sanitized_name>
+//	messageID != "": <workDir>/.omp-lark-bridge/attachments/<messageID>/<sanitized_name>
 //
 // Scoping files to a per-message subdirectory (issue #1552) prevents the
 // silent-overwrite data loss that occurred when two different messages
@@ -127,7 +127,7 @@ type FileAttachment struct {
 //
 // workDir may be absolute or relative; the returned paths are always
 // absolute. When workDir is relative, filepath.Abs resolves it against
-// the in-one-chat process's current working directory, so callers running
+// the omp-lark-bridge process's current working directory, so callers running
 // from different cwd contexts (especially those where the agent's
 // "workDir" is itself relative to the user's home, like "~/project") still
 // get paths the agent can actually open. An empty workDir falls back to
@@ -160,9 +160,9 @@ func SaveFilesToDisk(workDir, messageID string, files []FileAttachment) []string
 	}
 	// Absolutize workDir so the returned paths are usable no matter where the
 	// process is invoked from. See issue #1459: when workDir is relative
-	// (e.g. ".in-one-chat" or "project/sub"), the agent's prompt referenced
-	// ".in-one-chat/attachments/<file>" while the file actually landed at
-	// workDir/.in-one-chat/attachments/<file> — a path mismatch that lost
+	// (e.g. ".omp-lark-bridge" or "project/sub"), the agent's prompt referenced
+	// ".omp-lark-bridge/attachments/<file>" while the file actually landed at
+	// workDir/.omp-lark-bridge/attachments/<file> — a path mismatch that lost
 	// every attachment.
 	absWorkDir, err := filepath.Abs(workDir)
 	if err != nil {
@@ -172,7 +172,7 @@ func SaveFilesToDisk(workDir, messageID string, files []FileAttachment) []string
 		absWorkDir = workDir
 		slog.Warn("SaveFilesToDisk: filepath.Abs failed, using raw workDir", "workDir", workDir, "error", err)
 	}
-	attachDir := filepath.Join(absWorkDir, ".in-one-chat", "attachments")
+	attachDir := filepath.Join(absWorkDir, ".omp-lark-bridge", "attachments")
 	scoped := false
 	if messageID != "" {
 		safeMid := sanitizeAttachmentFileName(messageID)
@@ -315,7 +315,7 @@ func sanitizeAttachmentFileName(name string) string {
 // File paths are defensively absolutized so the prompt handed to the agent
 // always points at a real on-disk location, even when a caller passed a
 // relative path by mistake. This guards against the issue #1459 class of
-// bugs where the prompt referenced ".in-one-chat/attachments/<file>" while
+// bugs where the prompt referenced ".omp-lark-bridge/attachments/<file>" while
 // the file actually landed at the absolute version of workDir. Absolute
 // inputs are passed through unchanged. An unresolvable relative path falls
 // back to the raw input rather than dropping the reference.

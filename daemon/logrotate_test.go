@@ -54,7 +54,7 @@ func TestMetaSaveLoad(t *testing.T) {
 		LogMaxSize:    1024,
 		LogMaxBackups: 3,
 		WorkDir:       "/tmp",
-		BinaryPath:    "/usr/local/bin/in-one-chat",
+		BinaryPath:    "/usr/local/bin/omp-lark-bridge",
 		InstalledAt:   NowISO(),
 	}
 

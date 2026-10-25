@@ -11,8 +11,8 @@ import (
 )
 
 const (
-	defaultPresetsURL         = "https://raw.githubusercontent.com/lzyyzznl/in-one-chat/main/provider-presets.json"
-	fallbackPresetsURL        = "https://gitee.com/lzyyzznl/in-one-chat/raw/main/provider-presets.json"
+	defaultPresetsURL         = "https://raw.githubusercontent.com/lzyyzznl/omp-lark-bridge/main/provider-presets.json"
+	fallbackPresetsURL        = "https://gitee.com/lzyyzznl/omp-lark-bridge/raw/main/provider-presets.json"
 	presetsCacheTTL           = 6 * time.Hour
 	presetsHTTPTimeout        = 15 * time.Second
 	presetsFallbackHTTPTimeout = 10 * time.Second

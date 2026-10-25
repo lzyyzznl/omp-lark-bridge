@@ -134,7 +134,7 @@ func runCronAdd(args []string) {
 		}
 	}
 
-	// Fallback to env vars (set by in-one-chat when spawning agent)
+	// Fallback to env vars (set by omp-lark-bridge when spawning agent)
 	if project == "" {
 		project = os.Getenv("CC_PROJECT")
 	}
@@ -164,7 +164,7 @@ func runCronAdd(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -243,7 +243,7 @@ func runCronList(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -344,7 +344,7 @@ func runCronExec(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -388,7 +388,7 @@ func runCronDel(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -430,14 +430,14 @@ func runCronInfo(args []string) {
 
 	if id == "" {
 		fmt.Fprintln(os.Stderr, "Error: job ID is required")
-		fmt.Fprintln(os.Stderr, "Usage: in-one-chat cron info <id> [field]")
-		fmt.Fprintln(os.Stderr, "Use 'in-one-chat cron list' to see all task IDs.")
+		fmt.Fprintln(os.Stderr, "Usage: omp-lark-bridge cron info <id> [field]")
+		fmt.Fprintln(os.Stderr, "Use 'omp-lark-bridge cron list' to see all task IDs.")
 		os.Exit(1)
 	}
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -529,17 +529,17 @@ func runCronEdit(args []string) {
 
 	if id == "" {
 		fmt.Fprintln(os.Stderr, "Error: job ID is required")
-		fmt.Fprintln(os.Stderr, "Run 'in-one-chat cron edit --help' for usage.")
+		fmt.Fprintln(os.Stderr, "Run 'omp-lark-bridge cron edit --help' for usage.")
 		os.Exit(1)
 	}
 	if field == "" {
 		fmt.Fprintln(os.Stderr, "Error: field name is required")
-		fmt.Fprintln(os.Stderr, "Run 'in-one-chat cron edit --help' for usage.")
+		fmt.Fprintln(os.Stderr, "Run 'omp-lark-bridge cron edit --help' for usage.")
 		os.Exit(1)
 	}
 	if valueStr == "" {
 		fmt.Fprintln(os.Stderr, "Error: value is required")
-		fmt.Fprintln(os.Stderr, "Run 'in-one-chat cron edit --help' for usage.")
+		fmt.Fprintln(os.Stderr, "Run 'omp-lark-bridge cron edit --help' for usage.")
 		os.Exit(1)
 	}
 
@@ -551,7 +551,7 @@ func runCronEdit(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -587,7 +587,7 @@ func runCronEdit(args []string) {
 // "unknown or invalid field: <field>".
 //
 // `silent` was previously missing from the bool case here even though it's
-// documented as a bool in printCronEditUsage, so `in-one-chat cron edit <id>
+// documented as a bool in printCronEditUsage, so `omp-lark-bridge cron edit <id>
 // silent true` failed with "unknown or invalid field: silent" — see the
 // regression test in cron_edit_test.go.
 func parseCronEditValue(field, valueStr string) (any, error) {
@@ -623,7 +623,7 @@ func apiPost(sockPath, path string, payload []byte) (*http.Response, error) {
 }
 
 func printCronUsage() {
-	fmt.Println(`Usage: in-one-chat cron <command> [options]
+	fmt.Println(`Usage: omp-lark-bridge cron <command> [options]
 
 Commands:
   add       Create a new scheduled task
@@ -634,11 +634,11 @@ Commands:
                      (optionally filter to a single field)
   del <id>  Delete a scheduled task
 
-Run 'in-one-chat cron <command> --help' for details.`)
+Run 'omp-lark-bridge cron <command> --help' for details.`)
 }
 
 func printCronAddUsage() {
-	fmt.Println(`Usage: in-one-chat cron add [options] [<min> <hour> <day> <month> <weekday> <prompt>]
+	fmt.Println(`Usage: omp-lark-bridge cron add [options] [<min> <hour> <day> <month> <weekday> <prompt>]
 
 Create a new scheduled task (agent prompt or shell command).
 
@@ -654,32 +654,32 @@ Options:
       --model <name>         Agent model for this job (blank = default; runs in its own fresh session)
       --thinking <level>     Thinking level: inherit|off|minimal|low|medium|high|xhigh|max (blank = inherit)
       --silent               Suppress cron start notification
-      --data-dir <path>      Data directory (default: ~/.in-one-chat)
+      --data-dir <path>      Data directory (default: ~/.omp-lark-bridge)
   -h, --help                 Show this help
 
 Examples:
-  in-one-chat cron add --cron "0 6 * * *" --prompt "Collect GitHub trending data" --desc "Daily Trending"
-  in-one-chat cron add --cron "*/30 * * * *" --exec "df -h" --desc "Disk usage check"
-  in-one-chat cron add --cron "0 9 * * *" --prompt "Daily standup reminder" --silent
-  in-one-chat cron add 0 6 * * * Collect GitHub trending data and send me a summary`)
+  omp-lark-bridge cron add --cron "0 6 * * *" --prompt "Collect GitHub trending data" --desc "Daily Trending"
+  omp-lark-bridge cron add --cron "*/30 * * * *" --exec "df -h" --desc "Disk usage check"
+  omp-lark-bridge cron add --cron "0 9 * * *" --prompt "Daily standup reminder" --silent
+  omp-lark-bridge cron add 0 6 * * * Collect GitHub trending data and send me a summary`)
 }
 
 func printCronExecUsage() {
-	fmt.Println(`Usage: in-one-chat cron exec <id> [options]
+	fmt.Println(`Usage: omp-lark-bridge cron exec <id> [options]
 
 Trigger an existing scheduled task immediately.
 
 Options:
-      --data-dir <path>      Data directory (default: ~/.in-one-chat)
+      --data-dir <path>      Data directory (default: ~/.omp-lark-bridge)
   -h, --help                 Show this help
 
 Example:
-  in-one-chat cron exec abc123
-  in-one-chat cron run abc123`)
+  omp-lark-bridge cron exec abc123
+  omp-lark-bridge cron run abc123`)
 }
 
 func printCronEditUsage() {
-	fmt.Println(`Usage: in-one-chat cron edit <id> <field> <value> [options]
+	fmt.Println(`Usage: omp-lark-bridge cron edit <id> <field> <value> [options]
 
 Edit a specific field of an existing scheduled task.
 
@@ -705,13 +705,13 @@ Read-only Fields (cannot be edited):
   id, created_at, last_run, last_error
 
 Options:
-      --data-dir <path>  Data directory (default: ~/.in-one-chat)
+      --data-dir <path>  Data directory (default: ~/.omp-lark-bridge)
   -h, --help             Show this help
 
 Examples:
-  in-one-chat cron edit abc123 cron_expr "0 9 * * *"
-  in-one-chat cron edit abc123 enabled false
-  in-one-chat cron edit abc123 description "Daily standup reminder"
-  in-one-chat cron edit abc123 timeout_mins 60
-  in-one-chat cron edit abc123 mute true`)
+  omp-lark-bridge cron edit abc123 cron_expr "0 9 * * *"
+  omp-lark-bridge cron edit abc123 enabled false
+  omp-lark-bridge cron edit abc123 description "Daily standup reminder"
+  omp-lark-bridge cron edit abc123 timeout_mins 60
+  omp-lark-bridge cron edit abc123 mute true`)
 }

@@ -14,7 +14,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func TestSanitizeSessionName(t *testing.T) {
@@ -480,11 +480,11 @@ func TestParseModelsResponse(t *testing.T) {
 }
 
 func TestBuildSpawnArgs_AppendsSystemPromptForLiveSessions(t *testing.T) {
-	args := buildSpawnArgs("/store", "/work", []string{"--extra"}, "in-one-chat brief")
+	args := buildSpawnArgs("/store", "/work", []string{"--extra"}, "omp-lark-bridge brief")
 	found := false
 	for i, a := range args {
 		if a == "--append-system-prompt" {
-			if i+1 >= len(args) || args[i+1] != "in-one-chat brief" {
+			if i+1 >= len(args) || args[i+1] != "omp-lark-bridge brief" {
 				t.Fatalf("--append-system-prompt missing its value: %v", args)
 			}
 			found = true

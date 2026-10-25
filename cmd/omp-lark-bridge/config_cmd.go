@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	ccconnect "github.com/lzyyzznl/in-one-chat"
-	"github.com/lzyyzznl/in-one-chat/config"
+	ccconnect "github.com/lzyyzznl/omp-lark-bridge"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
 )
 
 func runConfig(args []string) {
@@ -47,7 +47,7 @@ func runConfigFormat(args []string) {
 }
 
 func printConfigUsage() {
-	fmt.Fprintf(os.Stderr, `Usage: in-one-chat config <subcommand>
+	fmt.Fprintf(os.Stderr, `Usage: omp-lark-bridge config <subcommand>
 
 Subcommands:
   example    Print a complete annotated config.toml example
@@ -58,9 +58,9 @@ Flags for 'format':
   --config <path>   Path to config file (default: auto-detect)
 
 Examples:
-  in-one-chat config example              Print example config
-  in-one-chat config example > config.toml  Save example config
-  in-one-chat config format               Format default config file
-  in-one-chat config fmt --config /path/to/config.toml
+  omp-lark-bridge config example              Print example config
+  omp-lark-bridge config example > config.toml  Save example config
+  omp-lark-bridge config format               Format default config file
+  omp-lark-bridge config fmt --config /path/to/config.toml
 `)
 }

@@ -1,9 +1,8 @@
-# in-one-chat configuration
-# in-one-chat 配置文件
+# omp-lark-bridge configuration
+# omp-lark-bridge 配置文件
 #
 # A slim bridge for exactly ONE coding agent (omp) and ONE messaging platform
-# (Feishu/Lark), built on the cc-connect architecture (MIT). Copy this file to
-# config.toml and fill in your credentials.
+# (Feishu/Lark). Copy this file to config.toml and fill in your credentials.
 #
 # String values support ${VAR_NAME} environment variable substitution.
 # Example: app_secret = "${APP_SECRET}" / 所有字符串值都支持 ${VAR_NAME} 环境变量替换。
@@ -38,10 +37,10 @@ language = "zh"
 # [cron]
 # session_mode = "reuse"
 
-# Session data storage directory (default: ~/.in-one-chat)
+# Session data storage directory (default: ~/.omp-lark-bridge)
 # Stores conversation history and session state as JSON files, plus the omp
 # session stores under <data_dir>/omp-sessions (kept out of your ~/.omp).
-# 会话数据存储目录（默认 ~/.in-one-chat），以 JSON 文件保存对话历史和会话状态；
+# 会话数据存储目录（默认 ~/.omp-lark-bridge），以 JSON 文件保存对话历史和会话状态；
 # omp 会话目录在 <data_dir>/omp-sessions 下（不占用你的 ~/.omp）。
 # data_dir = "/path/to/custom/dir"
 
@@ -128,10 +127,10 @@ work_dir = "/path/to/your/workspace"
 # env = ["MY_VAR=value"]
 
 # Optional: system-prompt fragment injected into each session via
-# --append-system-prompt. Omitted → the compact in-one-chat brief (Chinese);
+# --append-system-prompt. Omitted → the compact omp-lark-bridge brief (Chinese);
 # an explicitly empty string disables injection entirely.
 # 可选：注入每个会话的系统提示片段（经 --append-system-prompt）。
-# 省略 → 内置精简版 in-one-chat 能力说明（中文）；显式留空字符串 → 完全不注入。
+# 省略 → 内置精简版 omp-lark-bridge 能力说明（中文）；显式留空字符串 → 完全不注入。
 # append_system_prompt = ""
 
 # ============================================================
@@ -143,7 +142,7 @@ work_dir = "/path/to/your/workspace"
 #    添加 im.message.receive_v1 事件，选择 WebSocket 长连接模式
 # 4. Fill in app_id and app_secret below / 填入下方 app_id 和 app_secret
 # Quick setup: / quick 配置可通过 CLI 进行
-#   in-one-chat feishu setup --project <project_name>
+#   omp-lark-bridge feishu setup --project <project_name>
 # Note: No WebSocket URL needed — the SDK auto-negotiates the connection.
 # 注意：无需配置 WebSocket URL，SDK 会自动通过凭证建立连接。
 

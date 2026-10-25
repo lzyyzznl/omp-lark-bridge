@@ -1,6 +1,6 @@
-# in-one-chat
+# omp-lark-bridge
 
-Reference implementation of the **cc-connect** architecture (Go), trimmed to a
+Reference implementation of the **omp-lark-bridge** architecture (Go), trimmed to a
 single-agent, single-platform bridge: **Feishu/Lark ⇄ omp** (the `omp` coding
 harness).
 
@@ -24,8 +24,8 @@ this project:
   `timer`, `daemon`, `doctor`)
 - Runs as a resident daemon (`systemd`/`launchd`)
 
-Architecture and engineering rules are inherited from cc-connect (MIT). See
-`AGENTS.md`. License: MIT — see `LICENSE` (portions derived from
+Architecture and engineering rules per `AGENTS.md`. License: MIT — see
+`LICENSE` (portions derived from
 [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)).
 
 ## What was cut vs cc-connect
@@ -41,7 +41,7 @@ Architecture and engineering rules are inherited from cc-connect (MIT). See
 ## Layout
 
 ```
-cmd/in-one-chat      entry point, CLI, daemon, plugin hooks
+cmd/omp-lark-bridge      entry point, CLI, daemon, plugin hooks
 config/              TOML config parsing
 core/                engine, interfaces, i18n, cards, sessions, cron
 agent/omp            the omp coding harness adapter (RPC long session)
@@ -62,19 +62,19 @@ daemon/              systemd/launchd service
 ```bash
 make build
 cp config.example.toml config.toml   # fill in app_id / app_secret / work_dir
-./in-one-chat --config config.toml
+./omp-lark-bridge --config config.toml
 ```
 
 Point Feishu at the http endpoint, or bootstrap interactively:
 
 ```bash
-./in-one-chat feishu setup --project my-project
+./omp-lark-bridge feishu setup --project my-project
 ```
 
 Run as a service:
 
 ```bash
-./in-one-chat daemon install --work-dir /path/to/config-dir
+./omp-lark-bridge daemon install --work-dir /path/to/config-dir
 ```
 
 ## Configuration
@@ -104,7 +104,7 @@ app_secret = "sec_xxx"
 # allow_from = "*"                     # who may talk to the bot (default: all)
 ```
 
-Global `data_dir` (default `~/.in-one-chat`) holds conversation history and
+Global `data_dir` (default `~/.omp-lark-bridge`) holds conversation history and
 the `omp-sessions/` stores.
 
 ## Slash commands (in chat)
@@ -113,7 +113,7 @@ Sessions: `/new` `/switch` `/list` `/delete` `/history` `/retry`
 Agent: `/model` `/reasoning` `/memory` `/shell` `/skills`
 System: `/help` `/status` `/whoami` `/doctor` `/mode` no-op (fixed yolo),
 plus cron/timer via `/cron` `/timer` and CLI equivalents
-(`in-one-chat cron add`, `in-one-chat timer add`, `in-one-chat send -m "…"`).
+(`omp-lark-bridge cron add`, `omp-lark-bridge timer add`, `omp-lark-bridge send -m "…"`).
 
 Permission prompts never occur (yolo); use `/stop` to abort a running turn.
 
@@ -144,17 +144,17 @@ never shows dead commands. The client caches the list for a few minutes. Set
 
 ## System-prompt injection
 
-Each live omp session is spawned with a compact in-one-chat capability brief
+Each live omp session is spawned with a compact omp-lark-bridge capability brief
 via `--append-system-prompt` (one process per session, so it lands exactly once
 before the session's first message). The brief is Chinese, points the agent at
-`in-one-chat send` / `cron` / `timer` and at `/skill:<name>` invocations, and —
+`omp-lark-bridge send` / `cron` / `timer` and at `/skill:<name>` invocations, and —
 unlike the full `AgentSystemPrompt()` — does **not** repeat the skill list omp
 already discovers itself. Override it per project with
 `append_system_prompt = "…"` under `[projects.agent.options]`; set it to an
 explicit empty string to disable injection entirely.
 
 The bridge also prepends its own directory to the spawned process's PATH, so the
-agent shell can resolve `in-one-chat` even when the bridge was started from a
+agent shell can resolve `omp-lark-bridge` even when the bridge was started from a
 non-PATH location. This applies to linux + windows x64 binaries alike.
 
 ## Cron & timer dashboard
@@ -208,7 +208,7 @@ omp's JSONL RPC protocol (v1):
 ## Build & test
 
 ```bash
-make build         # in-one-chat binary
+make build         # omp-lark-bridge binary
 make test-full     # go test -race ./...
 go test ./...      # quick
 ```

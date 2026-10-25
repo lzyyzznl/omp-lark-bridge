@@ -191,7 +191,7 @@ func (e *Engine) runPendingRestartNotify(req *RestartRequest, firedCh chan struc
 	defer close(firedCh)
 
 	// Recover from any panic inside dispatch (ReconstructReplyCtx / Send) so a
-	// platform-side panic cannot take down the whole in-one-chat process.
+	// platform-side panic cannot take down the whole omp-lark-bridge process.
 	// See #1686 P1-A. Without this defer, a panic in the restart-notify
 	// goroutine kills the daemon because no higher-level recover exists.
 	defer func() {
@@ -435,7 +435,7 @@ type Engine struct {
 	showWorkdirIndicator bool
 	replyFooterEnabled   bool
 
-	// When true, /list etc. only show sessions tracked by in-one-chat,
+	// When true, /list etc. only show sessions tracked by omp-lark-bridge,
 	// hiding sessions created by direct CLI usage in the same work_dir.
 	// Default false = show all sessions.
 	filterExternalSessions bool
@@ -1000,7 +1000,7 @@ func (e *Engine) SetSkipGit(skipGit bool) {
 // prepended to each message before forwarding it to the agent. When enabled,
 // the agent receives a preamble line like:
 //
-//	[in-one-chat sender_id=ou_abc123 platform=feishu]
+//	[omp-lark-bridge sender_id=ou_abc123 platform=feishu]
 //
 // This allows the agent to identify who sent the message and adjust behavior
 // accordingly (e.g. personal task views, role-based access control).
@@ -3989,7 +3989,7 @@ func (e *Engine) getOrCreateWorkspaceAgent(workspace string) (Agent, *SessionMan
 	// this, per-workspace agents silently bypass the project-level
 	// run_as_user config because their opts map is freshly constructed
 	// above, not inherited from the project-level opts that main.go
-	// already decorated. See in-one-chat#496 and the in-one-chat/core/runas.go
+	// already decorated. See omp-lark-bridge#496 and the omp-lark-bridge/core/runas.go
 	// preamble for why run_as_user has to survive this copy.
 	if _, ok := opts["run_as_user"]; !ok {
 		if u := e.runAsUser(); u != "" {
@@ -4121,7 +4121,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 		ccKey = ccSessionKey
 	}
 
-	// Inject per-session env vars so the agent subprocess can call `in-one-chat cron add` etc.
+	// Inject per-session env vars so the agent subprocess can call `omp-lark-bridge cron add` etc.
 	if inj, ok := agent.(SessionEnvInjector); ok {
 		envVars := []string{
 			"CC_PROJECT=" + e.name,
@@ -4164,11 +4164,11 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 
 	// Restore the agent's active provider from the session before starting a
 	// new sub-process. The provider choice is persisted to disk by
-	// `/provider switch`; without restoring it here, a in-one-chat process
+	// `/provider switch`; without restoring it here, a omp-lark-bridge process
 	// restart silently drops the user's choice while keeping the resumed
 	// agent_session_id, producing "model X does not exist" errors when
 	// the model name is sent to the wrong base_url
-	// (in-one-chat internal task t-20260614-qp7xnl).
+	// (omp-lark-bridge internal task t-20260614-qp7xnl).
 	restoreActiveProviderFromSession(agent, session)
 
 	// Resume only when we have a concrete saved agent session ID. If the session
@@ -4177,7 +4177,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 	startSessionID := session.GetAgentSessionID()
 	// Cross-project session leakage guard (issue #599): if a session ID was
 	// inherited from a different project's workspace (e.g. another
-	// in-one-chat project that happens to share a Session row), the agent
+	// omp-lark-bridge project that happens to share a Session row), the agent
 	// can detect the mismatch and we should clear the ID rather than
 	// resume a conversation that has nothing to do with this project.
 	if startSessionID != "" {
@@ -6692,7 +6692,7 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			e.executeSkillCommand(p, msg, skill, args)
 			return true
 		}
-		// Not a in-one-chat command — notify user, then fall through to agent
+		// Not a omp-lark-bridge command — notify user, then fall through to agent
 		e.send(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgUnknownCommand), "/"+cmd))
 		return false
 	}
@@ -6969,7 +6969,7 @@ func (e *Engine) cmdNew(p Platform, msg *Message, args []string) {
 
 // applySessionFilter conditionally filters agent sessions based on the
 // filter_external_sessions config. When disabled (default), all sessions are
-// returned. When enabled, only sessions tracked by in-one-chat are shown.
+// returned. When enabled, only sessions tracked by omp-lark-bridge are shown.
 func (e *Engine) applySessionFilter(sessions []AgentSessionInfo, sm *SessionManager) []AgentSessionInfo {
 	if !e.filterExternalSessions {
 		return sessions
@@ -6977,7 +6977,7 @@ func (e *Engine) applySessionFilter(sessions []AgentSessionInfo, sm *SessionMana
 	return filterOwnedSessions(sessions, sm.KnownAgentSessionIDs())
 }
 
-// filterOwnedSessions removes agent sessions that are not tracked by in-one-chat's
+// filterOwnedSessions removes agent sessions that are not tracked by omp-lark-bridge's
 // session manager. This prevents external CLI sessions in the same work_dir from
 // appearing in /list, /switch, /delete, etc. If the session manager has no tracked
 // agent sessions at all (e.g. first run), all sessions are returned unfiltered.
@@ -10709,10 +10709,10 @@ func (e *Engine) switchProvider(p Platform, msg *Message, sessions *SessionManag
 	s.SetAgentSessionID("", "")
 	s.ClearHistory()
 	// Persist the provider choice so that a subsequent --resume after a
-	// in-one-chat process restart can re-bind the agent's activeIdx; without
+	// omp-lark-bridge process restart can re-bind the agent's activeIdx; without
 	// this the agent reverts to its default provider while the saved
 	// agent_session_id keeps the conversation going, producing "model X
-	// does not exist" errors against the wrong base_url. See in-one-chat
+	// does not exist" errors against the wrong base_url. See omp-lark-bridge
 	// internal task t-20260614-qp7xnl.
 	s.SetActiveProvider(name)
 	sessions.Save()
@@ -11273,7 +11273,7 @@ func normalizeSendWorkDir(workDir, base string) (string, error) {
 }
 
 // SendTTSToSession synthesizes and sends a voice message to an active session.
-// It is used by the local API/CLI so agents can call `in-one-chat send --tts`.
+// It is used by the local API/CLI so agents can call `omp-lark-bridge send --tts`.
 func (e *Engine) SendTTSToSession(sessionKey, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -11289,7 +11289,7 @@ func (e *Engine) SendTTSToSession(sessionKey, text string) error {
 // SendAudiosToSession routes outbound audio attachments to the
 // platform's AudioSender (native voice bubble + transcoding) when
 // supported, falling back to FileSender otherwise. Used by
-// `in-one-chat send --audio`. Mirrors SendToSessionWithAttachments for
+// `omp-lark-bridge send --audio`. Mirrors SendToSessionWithAttachments for
 // audio-typed clips so they don't get dispatched as generic files.
 func (e *Engine) SendAudiosToSession(sessionKey string, audios []FileAttachment) error {
 	if len(audios) == 0 {
@@ -11334,7 +11334,7 @@ func (e *Engine) SendAudiosToSession(sessionKey string, audios []FileAttachment)
 
 // SendVideosToSession routes outbound video attachments to the
 // platform's VideoSender (native video bubble) when supported, falling
-// back to FileSender otherwise. Used by `in-one-chat send --video`.
+// back to FileSender otherwise. Used by `omp-lark-bridge send --video`.
 func (e *Engine) SendVideosToSession(sessionKey string, videos []FileAttachment) error {
 	if len(videos) == 0 {
 		return nil
@@ -15868,7 +15868,7 @@ func (e *Engine) cmdBindStatus(p Platform, replyCtx any, chatID string) {
 	e.reply(p, replyCtx, fmt.Sprintf(e.i18n.T(MsgRelayBound), strings.Join(parts, " ↔ ")))
 }
 
-const ccConnectInstructionMarker = "<!-- in-one-chat-instructions -->"
+const ompLarkBridgeInstructionMarker = "<!-- omp-lark-bridge-instructions -->"
 
 type setupResult int
 
@@ -15901,8 +15901,8 @@ func (e *Engine) setupMemoryFile() (setupResult, string, error) {
 
 	existing, _ := os.ReadFile(filePath)
 	existingText := string(existing)
-	block := "\n" + ccConnectInstructionMarker + "\n" + AgentSystemPrompt() + "\n"
-	if idx := strings.Index(existingText, ccConnectInstructionMarker); idx >= 0 {
+	block := "\n" + ompLarkBridgeInstructionMarker + "\n" + AgentSystemPrompt() + "\n"
+	if idx := strings.Index(existingText, ompLarkBridgeInstructionMarker); idx >= 0 {
 		if strings.Contains(existingText[idx:], AgentSystemPrompt()) {
 			return setupExists, baseName, nil
 		}
@@ -15960,9 +15960,9 @@ func (e *Engine) buildSenderPrompt(content, userID, userName, platform, sessionK
 	}
 	if userName != "" {
 		safeName := strings.NewReplacer(`"`, `'`, "\n", " ", "\r", "").Replace(userName)
-		return fmt.Sprintf("[in-one-chat sender_id=%s sender_name=\"%s\" platform=%s chat_id=%s]\n%s", userID, safeName, platform, chatID, content)
+		return fmt.Sprintf("[omp-lark-bridge sender_id=%s sender_name=\"%s\" platform=%s chat_id=%s]\n%s", userID, safeName, platform, chatID, content)
 	}
-	return fmt.Sprintf("[in-one-chat sender_id=%s platform=%s chat_id=%s]\n%s", userID, platform, chatID, content)
+	return fmt.Sprintf("[omp-lark-bridge sender_id=%s platform=%s chat_id=%s]\n%s", userID, platform, chatID, content)
 }
 
 func extractChannelID(sessionKey string) string {
@@ -16799,7 +16799,7 @@ func (e *Engine) cmdWebStatus(p Platform, msg *Message) {
 
 // restoreActiveProviderFromSession syncs the agent's active provider to the
 // one persisted in the session, but only when the choice survived a
-// in-one-chat process restart (i.e. the in-memory active provider is not
+// omp-lark-bridge process restart (i.e. the in-memory active provider is not
 // already the desired one). It is a no-op when:
 //   - the agent does not implement ProviderSwitcher,
 //   - the session never recorded a provider choice (`/provider switch` was

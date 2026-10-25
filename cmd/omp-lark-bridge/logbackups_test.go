@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/lzyyzznl/in-one-chat/daemon"
+	"github.com/lzyyzznl/omp-lark-bridge/daemon"
 )
 
 func TestResolveLogMaxBackups_FlagWinsOverEnv(t *testing.T) {

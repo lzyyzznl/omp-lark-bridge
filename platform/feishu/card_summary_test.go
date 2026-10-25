@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func cardSummaryContent(t *testing.T, cardJSON string) (string, bool) {

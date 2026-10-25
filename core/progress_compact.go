@@ -16,7 +16,7 @@ const (
 	progressStyleCard    = "card"
 
 	// ProgressCardPayloadPrefix marks a structured payload for card-style progress.
-	ProgressCardPayloadPrefix = "__cc_connect_progress_card_v1__:"
+	ProgressCardPayloadPrefix = "__omp_lark_bridge_progress_card_v1__:"
 
 	// Keep a margin below platform hard limit for markdown wrappers/code fences.
 	compactProgressMaxChars = maxPlatformMessageLen - 200

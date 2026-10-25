@@ -579,7 +579,7 @@ func TestLoad_DefaultsDataDir(t *testing.T) {
 		t.Fatalf("Load() error: %v", err)
 	}
 
-	want := filepath.Join(dir, ".in-one-chat")
+	want := filepath.Join(dir, ".omp-lark-bridge")
 	if cfg.DataDir != want {
 		t.Fatalf("Load() data_dir = %q, want %q", cfg.DataDir, want)
 	}

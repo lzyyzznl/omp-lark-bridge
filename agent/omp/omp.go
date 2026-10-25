@@ -1,5 +1,5 @@
 // Package omp adapts the omp coding harness (Bun/TS CLI, https://omp.sh) as a
-// in-one-chat agent over its JSONL RPC mode (`omp --mode rpc-ui`).
+// omp-lark-bridge agent over its JSONL RPC mode (`omp --mode rpc-ui`).
 //
 // Product decisions (see README design notes):
 //   - long-lived RPC sessions per chat (multi-turn context, steer/abort)
@@ -7,7 +7,7 @@
 //     NOT implement permission prompting or a mode switcher
 //   - the `ask` tool's dialogs ARE supported: set_ask_dialog is enabled and
 //     extension_ui_request frames are rendered as chat question cards
-//   - sessions are stored under the in-one-chat data dir via --session-dir, so
+//   - sessions are stored under the omp-lark-bridge data dir via --session-dir, so
 //     omp's personal ~/.omp store is not polluted
 //
 // The protocol contract is documented in omp's own `omp://rpc.md` /
@@ -25,7 +25,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func init() {
@@ -40,10 +40,10 @@ type Agent struct {
 	cliExtraArgs []string // extra args parsed from cmd after the binary name
 	configEnv    []string // env vars from [projects.agent.options.env]
 	sessionEnv   []string
-	ccDataDir    string // global in-one-chat data dir (session stores + model cache)
+	ccDataDir    string // global omp-lark-bridge data dir (session stores + model cache)
 	mu           sync.RWMutex
 
-	// appendSystemPrompt is the in-one-chat capability brief injected into each
+	// appendSystemPrompt is the omp-lark-bridge capability brief injected into each
 	// live RPC session via --append-system-prompt (one process per session, so
 	// the injection lands exactly once, before the session's first message).
 	appendSystemPrompt string
@@ -85,7 +85,7 @@ func New(opts map[string]any) (core.Agent, error) {
 	}
 
 	// Optional user-provided system prompt fragment injected via
-	// --append-system-prompt; defaults to the compact in-one-chat brief. An
+	// --append-system-prompt; defaults to the compact omp-lark-bridge brief. An
 	// explicitly empty string disables injection (omp then runs with no bridge
 	// brief; it still discovers skills on its own).
 	appendSystemPrompt, explicit := opts["append_system_prompt"].(string)
@@ -227,7 +227,7 @@ func (a *Agent) GlobalMemoryFile() string {
 // `compact` command, which the engine cannot reach as plain text.
 func (a *Agent) CompressCommand() string { return "" }
 
-// HasSystemPromptSupport implements core.SystemPromptSupporter: the in-one-chat
+// HasSystemPromptSupport implements core.SystemPromptSupporter: the omp-lark-bridge
 // capability brief is injected natively via --append-system-prompt at spawn, so
 // the engine need not write it to a memory file.
 func (a *Agent) HasSystemPromptSupport() bool { return true }
@@ -259,7 +259,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
 }
 
-// ListSessions lists the omp session stores this in-one-chat instance owns.
+// ListSessions lists the omp session stores this omp-lark-bridge instance owns.
 func (a *Agent) ListSessions(_ context.Context) ([]core.AgentSessionInfo, error) {
 	a.mu.RLock()
 	ccDataDir := a.ccDataDir

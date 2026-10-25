@@ -21,7 +21,7 @@ import (
 )
 
 // ProjectSettingsUpdate is passed to SetSaveProjectSettings to persist management API PATCH fields.
-// The implementation (typically in cmd/in-one-chat) maps this to config.ProjectSettingsUpdate.
+// The implementation (typically in cmd/omp-lark-bridge) maps this to config.ProjectSettingsUpdate.
 type ProjectSettingsUpdate struct {
 	Language             *string
 	AdminFrom            *string
@@ -65,7 +65,7 @@ type ManagementServer struct {
 	getGlobalSettings    func() map[string]any
 	saveGlobalSettings   func(map[string]any) error
 
-	// Global provider callbacks (set by cmd/in-one-chat)
+	// Global provider callbacks (set by cmd/omp-lark-bridge)
 	listGlobalProviders  func() ([]GlobalProviderInfo, error)
 	addGlobalProvider    func(GlobalProviderInfo) error
 	updateGlobalProvider func(name string, info GlobalProviderInfo) error
@@ -249,7 +249,7 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	// Bridge
 	mux.HandleFunc(prefix+"/bridge/adapters", m.wrap(m.handleBridgeAdapters))
 
-	// Static file serving for in-one-chat-web (SPA)
+	// Static file serving for omp-lark-bridge-web (SPA)
 	return m.withStaticFallback(mux)
 }
 

@@ -1,4 +1,4 @@
-module github.com/lzyyzznl/in-one-chat
+module github.com/lzyyzznl/omp-lark-bridge
 
 go 1.25.0
 

@@ -49,9 +49,9 @@ func AcquireInstanceLock(configPath string) (*InstanceLock, error) {
 	if createErr != nil {
 		pid := readPIDFromLockFile(lockPath)
 		if pid > 0 {
-			return nil, fmt.Errorf("another in-one-chat instance is already running (PID %d) with config %s", pid, configPath)
+			return nil, fmt.Errorf("another omp-lark-bridge instance is already running (PID %d) with config %s", pid, configPath)
 		}
-		return nil, fmt.Errorf("another in-one-chat instance is already running with config %s", configPath)
+		return nil, fmt.Errorf("another omp-lark-bridge instance is already running with config %s", configPath)
 	}
 
 	pid := os.Getpid()

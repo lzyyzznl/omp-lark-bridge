@@ -16,8 +16,8 @@ import (
 )
 
 // DefaultMaxAttachmentSize is the default per-attachment size limit (50 MiB)
-// applied by the /send API and `in-one-chat send` when max_attachment_size_mb
-// is unset. Exported so cmd/in-one-chat can resolve the same default.
+// applied by the /send API and `omp-lark-bridge send` when max_attachment_size_mb
+// is unset. Exported so cmd/omp-lark-bridge can resolve the same default.
 const DefaultMaxAttachmentSize int64 = 50 << 20
 
 // APIServer exposes a local Unix socket API for external tools (e.g. cron jobs)
@@ -45,7 +45,7 @@ type APIServer struct {
 // bubble) instead of FileSender (generic file download). The fields
 // reuse FileAttachment as the wire format because audio/video clips
 // are byte blobs with a name + mime — the dedicated typing happens at
-// the dispatch layer in engine.go. See in-one-chat internal task
+// the dispatch layer in engine.go. See omp-lark-bridge internal task
 // t-20260615-cqjbk1.
 type SendRequest struct {
 	Project    string            `json:"project"`

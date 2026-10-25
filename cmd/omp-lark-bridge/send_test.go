@@ -6,8 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lzyyzznl/in-one-chat/config"
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func TestParseSendArgs_AttachmentsWithoutMessage(t *testing.T) {

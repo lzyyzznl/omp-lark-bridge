@@ -17,10 +17,10 @@ import (
 	"syscall"
 	"time"
 
-	ccconnect "github.com/lzyyzznl/in-one-chat"
-	"github.com/lzyyzznl/in-one-chat/config"
-	"github.com/lzyyzznl/in-one-chat/core"
-	"github.com/lzyyzznl/in-one-chat/daemon"
+	ccconnect "github.com/lzyyzznl/omp-lark-bridge"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
+	"github.com/lzyyzznl/omp-lark-bridge/daemon"
 	// Agent and platform imports are in separate plugin_*.go files
 	// controlled by build tags. See Makefile for selective compilation.
 )
@@ -41,7 +41,7 @@ var globalAPIServer *core.APIServer
 var rootConfigPath string
 
 // defaultResetOnIdleMins is applied when a project does not set
-// reset_on_idle_mins. After this many minutes of user inactivity, in-one-chat
+// reset_on_idle_mins. After this many minutes of user inactivity, omp-lark-bridge
 // rotates to a fresh session for the next message instead of resuming the
 // previous transcript via --continue. This avoids "context drift" where stale
 // chat history (failed commands, debugging noise, abandoned tangents) is
@@ -276,12 +276,12 @@ func main() {
 	}
 
 	if rootOpts.showVersion {
-		fmt.Printf("in-one-chat %s\ncommit:  %s\nbuilt:   %s\n", version, commit, buildTime)
+		fmt.Printf("omp-lark-bridge %s\ncommit:  %s\nbuilt:   %s\n", version, commit, buildTime)
 		return
 	}
 
 	// Subcommands inherit root's --config when they don't pass their own, so
-	// `in-one-chat --config X project create ...` never falls back to the
+	// `omp-lark-bridge --config X project create ...` never falls back to the
 	// default config path.
 	rootConfigPath = rootOpts.configPath
 
@@ -295,7 +295,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	core.VersionInfo = fmt.Sprintf("in-one-chat %s\ncommit: %s\nbuilt: %s", version, commit, buildTime)
+	core.VersionInfo = fmt.Sprintf("omp-lark-bridge %s\ncommit: %s\nbuilt: %s", version, commit, buildTime)
 	core.CurrentVersion = version
 	core.CurrentCommit = commit
 	core.CurrentBuildTime = buildTime
@@ -324,7 +324,7 @@ func main() {
 			os.Exit(1)
 		}
 		fmt.Printf("Created default config at %s\n", configPath)
-		fmt.Println("Please edit this file to add your agent and platform credentials, then run in-one-chat again.")
+		fmt.Println("Please edit this file to add your agent and platform credentials, then run omp-lark-bridge again.")
 		os.Exit(0)
 	}
 
@@ -340,7 +340,7 @@ func main() {
 	if len(cfg.Projects) == 0 {
 		fmt.Fprintf(os.Stderr, "Error: no projects configured in %s\n", configPath)
 		fmt.Fprintln(os.Stderr, "Add at least one [[project]] section to your config.toml, or run:")
-		fmt.Fprintln(os.Stderr, "  in-one-chat init")
+		fmt.Fprintln(os.Stderr, "  omp-lark-bridge init")
 		os.Exit(1)
 	}
 
@@ -1291,7 +1291,7 @@ func main() {
 		apiSrv.Start()
 	}
 
-	slog.Info("in-one-chat is running", "projects", len(engines))
+	slog.Info("omp-lark-bridge is running", "projects", len(engines))
 
 	// After startup, check if we were restarted and queue the success
 	// notification. The engine dispatches it on the first OnPlatformReady
@@ -1401,7 +1401,7 @@ func parseRootCLIOptions(args []string) (rootCLIOptions, error) {
 	fs.SetOutput(os.Stderr)
 	fs.Usage = printUsage
 
-	configPath := fs.String("config", "", "path to config file (default: ./config.toml or ~/.in-one-chat/config.toml)")
+	configPath := fs.String("config", "", "path to config file (default: ./config.toml or ~/.omp-lark-bridge/config.toml)")
 	force := fs.Bool("force", false, "kill any existing instance with the same config before starting")
 	observe := fs.Bool("observe", false, "observe native terminal Claude Code sessions and forward to Slack")
 	observeChannel := fs.String("observe-channel", "", "Slack channel ID to forward terminal observations to (requires --observe)")
@@ -1522,7 +1522,7 @@ func resolveClaudeProjectDir(workDir string) string {
 		return ""
 	}
 	// Claude Code encodes paths by replacing os.PathSeparator with "-"
-	// e.g. /home/leigh/workspace/in-one-chat -> -home-leigh-workspace-in-one-chat
+	// e.g. /home/leigh/workspace/omp-lark-bridge -> -home-leigh-workspace-omp-lark-bridge
 	encoded := strings.ReplaceAll(workDir, string(os.PathSeparator), "-")
 	dir := filepath.Join(homeDir, ".claude", "projects", encoded)
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
@@ -1532,7 +1532,7 @@ func resolveClaudeProjectDir(workDir string) string {
 }
 
 // resolveConfigPath determines which config file to use.
-// Priority: explicit flag → ./config.toml → ~/.in-one-chat/config.toml
+// Priority: explicit flag → ./config.toml → ~/.omp-lark-bridge/config.toml
 func resolveConfigPath(explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -1541,7 +1541,7 @@ func resolveConfigPath(explicit string) string {
 		return "config.toml"
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".in-one-chat", "config.toml")
+		return filepath.Join(home, ".omp-lark-bridge", "config.toml")
 	}
 	return "config.toml"
 }
@@ -1551,8 +1551,8 @@ func bootstrapConfig(path string) error {
 		return err
 	}
 
-	const tmpl = `# in-one-chat configuration
-# Docs: https://github.com/lzyyzznl/in-one-chat
+	const tmpl = `# omp-lark-bridge configuration
+# Docs: https://github.com/lzyyzznl/omp-lark-bridge
 
 [log]
 level = "info"
@@ -1579,7 +1579,7 @@ app_id = "your-feishu-app-id"
 app_secret = "your-feishu-app-secret"
 
 # For more platforms (DingTalk, Telegram, Slack, Discord, LINE, WeChat Work)
-# see: https://github.com/lzyyzznl/in-one-chat/blob/main/config.example.toml
+# see: https://github.com/lzyyzznl/omp-lark-bridge/blob/main/config.example.toml
 `
 	return os.WriteFile(path, []byte(tmpl), 0o644)
 }
@@ -1604,21 +1604,21 @@ func printUsage() {
   Supports: Claude Code, Codex, Cursor, Gemini CLI, Qoder CLI, OpenCode
   Platforms: Feishu, TuiTui, Telegram, Slack, DingTalk, Discord, LINE, WeChat Work, Weixin, QQ, QQ Bot
 
-  GitHub:  https://github.com/lzyyzznl/in-one-chat
-  Docs:    https://github.com/lzyyzznl/in-one-chat/blob/main/INSTALL.md
+  GitHub:  https://github.com/lzyyzznl/omp-lark-bridge
+  Docs:    https://github.com/lzyyzznl/omp-lark-bridge/blob/main/INSTALL.md
 
 Usage:
-  in-one-chat [flags]
-  in-one-chat <command> [args]
+  omp-lark-bridge [flags]
+  omp-lark-bridge <command> [args]
 
 Flags:
-  --config <path>    Path to config file (default: ./config.toml or ~/.in-one-chat/config.toml)
+  --config <path>    Path to config file (default: ./config.toml or ~/.omp-lark-bridge/config.toml)
   --force            Kill any existing instance with the same config before starting
   --version          Print version and exit
   --help             Show this help message
 
 Commands:
-  daemon             Manage in-one-chat as a background service (systemd/launchd/schtasks)
+  daemon             Manage omp-lark-bridge as a background service (systemd/launchd/schtasks)
     install          Install and start the daemon service
     uninstall        Remove the daemon service
     start            Start the daemon
@@ -1677,18 +1677,18 @@ Commands:
   config-example     (deprecated: use 'config example' instead)
 
 Examples:
-  in-one-chat                          Start with default config
-  in-one-chat --config /path/to.toml   Start with a specific config file
-  in-one-chat daemon install           Install as a system service
-  in-one-chat daemon logs -f           Follow daemon logs
-  in-one-chat send -m "hello"          Send a message to the active session
-  in-one-chat cron list                List all scheduled tasks
-  in-one-chat feishu setup             Setup Feishu/Lark bot credentials
-  in-one-chat weixin setup             Setup Weixin (ilink) with QR or --token
-  in-one-chat yuanbao setup            Setup Yuanbao bot with --token app_key:app_secret
-  in-one-chat update                   Update to the latest version
-  in-one-chat config format            Format the config file
-  in-one-chat config example > c.toml  Save example config to a file
+  omp-lark-bridge                          Start with default config
+  omp-lark-bridge --config /path/to.toml   Start with a specific config file
+  omp-lark-bridge daemon install           Install as a system service
+  omp-lark-bridge daemon logs -f           Follow daemon logs
+  omp-lark-bridge send -m "hello"          Send a message to the active session
+  omp-lark-bridge cron list                List all scheduled tasks
+  omp-lark-bridge feishu setup             Setup Feishu/Lark bot credentials
+  omp-lark-bridge weixin setup             Setup Weixin (ilink) with QR or --token
+  omp-lark-bridge yuanbao setup            Setup Yuanbao bot with --token app_key:app_secret
+  omp-lark-bridge update                   Update to the latest version
+  omp-lark-bridge config format            Format the config file
+  omp-lark-bridge config example > c.toml  Save example config to a file
 
 `, v, updateHint)
 }

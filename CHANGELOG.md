@@ -58,7 +58,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Fixed
 
-- `go test ./cmd/in-one-chat` no longer hangs for 10 minutes:
+- `go test ./cmd/omp-lark-bridge` no longer hangs for 10 minutes:
   `captureStderr` read the pipe only after `printUsage` returned, so the usage
   text (larger than the pipe buffer) deadlocked the writer. It now drains
   concurrently — the package runs in ~1.2s. Path assertions in the core/config
@@ -103,7 +103,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [v0.1.0] - 2026-10-24
 
-Initial release: a slim cc-connect bridge for Feishu/Lark ⇄ omp.
+Initial release: a slim omp-lark-bridge bridge for Feishu/Lark ⇄ omp.
 
 ### Added
 
@@ -131,8 +131,8 @@ Initial release: a slim cc-connect bridge for Feishu/Lark ⇄ omp.
 
 ### Changed
 
-- Module path `github.com/lzyyzznl/in-one-chat`; binary name `in-one-chat`;
-  default data dir `~/.in-one-chat`.
+- Module path `github.com/lzyyzznl/omp-lark-bridge`; binary name `omp-lark-bridge`;
+  default data dir `~/.omp-lark-bridge`.
 - Branded CLI help text and version output.
 
-[v0.1.0]: https://github.com/lzyyzznl/in-one-chat/releases/tag/v0.1.0
+[v0.1.0]: https://github.com/lzyyzznl/omp-lark-bridge/releases/tag/v0.1.0

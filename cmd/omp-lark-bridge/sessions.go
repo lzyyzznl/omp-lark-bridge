@@ -11,7 +11,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 // sessionFileData mirrors the unexported sessionSnapshot in core/session.go
@@ -101,7 +101,7 @@ func runSessions(args []string) {
 		}
 		if id == "" {
 			fmt.Fprintln(os.Stderr, "Error: session ID is required")
-			fmt.Fprintln(os.Stderr, "Usage: in-one-chat sessions show <session-id> [-n N]")
+			fmt.Fprintln(os.Stderr, "Usage: omp-lark-bridge sessions show <session-id> [-n N]")
 			os.Exit(1)
 		}
 		runSessionsShow(dataDir, id, limit)
@@ -143,9 +143,9 @@ func resolveDataDir(flagValue string) string {
 		return flagValue
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".in-one-chat")
+		return filepath.Join(home, ".omp-lark-bridge")
 	}
-	return ".in-one-chat"
+	return ".omp-lark-bridge"
 }
 
 func loadAllSessions(dataDir string) ([]sessionRecord, error) {
@@ -292,7 +292,7 @@ func runSessionsShow(dataDir, id string, limit int) {
 
 	if record == nil {
 		fmt.Fprintf(os.Stderr, "Error: session %q not found\n", id)
-		fmt.Fprintln(os.Stderr, "Use 'in-one-chat sessions list' to see available sessions.")
+		fmt.Fprintln(os.Stderr, "Use 'omp-lark-bridge sessions list' to see available sessions.")
 		os.Exit(1)
 	}
 
@@ -419,7 +419,7 @@ func truncate(s string, maxLen int) string {
 }
 
 func printSessionsUsage() {
-	fmt.Println(`Usage: in-one-chat sessions [command] [options]
+	fmt.Println(`Usage: omp-lark-bridge sessions [command] [options]
 
 Browse and manage session history.
 
@@ -430,7 +430,7 @@ Commands:
   prune [project] [--merge]  Remove duplicate sessions per chat
 
 Options:
-  --data-dir <path>  Data directory (default: ~/.in-one-chat)
+  --data-dir <path>  Data directory (default: ~/.omp-lark-bridge)
   -h, --help         Show this help
 
 Session ID formats for 'show':
@@ -445,12 +445,12 @@ Prune options:
              --merge is also set.
 
 Examples:
-  in-one-chat sessions                           Interactive TUI browser
-  in-one-chat sessions list                      List all sessions
-  in-one-chat sessions show "mybot:s1"           Show all messages in session
-  in-one-chat sessions show "#1" -n 20           Show last 20 messages of first session
-  in-one-chat sessions prune                     Remove empty duplicate sessions
-  in-one-chat sessions prune --empty             Same as above, explicit form
-  in-one-chat sessions prune --merge             Merge duplicates, keeping most recent
-  in-one-chat sessions prune mybot --merge       Prune specific project`)
+  omp-lark-bridge sessions                           Interactive TUI browser
+  omp-lark-bridge sessions list                      List all sessions
+  omp-lark-bridge sessions show "mybot:s1"           Show all messages in session
+  omp-lark-bridge sessions show "#1" -n 20           Show last 20 messages of first session
+  omp-lark-bridge sessions prune                     Remove empty duplicate sessions
+  omp-lark-bridge sessions prune --empty             Same as above, explicit form
+  omp-lark-bridge sessions prune --merge             Merge duplicates, keeping most recent
+  omp-lark-bridge sessions prune mybot --merge       Prune specific project`)
 }

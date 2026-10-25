@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lzyyzznl/in-one-chat/config"
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 type stubMainAgent struct {

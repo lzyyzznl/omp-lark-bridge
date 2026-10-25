@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"time"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 // skillCacheTTL bounds how long the `omp skill list` result is reused, so

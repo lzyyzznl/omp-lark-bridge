@@ -14,8 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/lzyyzznl/in-one-chat/config"
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func runSend(args []string) {
@@ -32,7 +32,7 @@ func runSend(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -202,7 +202,7 @@ func parseSendArgs(args []string) (core.SendRequest, string, error) {
 	// req.Files would force the engine to dispatch them via FileSender —
 	// that loses the native voice-bubble / video-bubble path on platforms
 	// that implement AudioSender / VideoSender (e.g. Feishu's ffmpeg
-	// transcode for mp3 → opus). See in-one-chat internal task
+	// transcode for mp3 → opus). See omp-lark-bridge internal task
 	// t-20260615-cqjbk1.
 	req.Files = files
 	req.Audios = audioFiles
@@ -281,7 +281,7 @@ func attachmentMatchesMediaType(mimeType, fileName, mediaType string) bool {
 }
 
 // loadSendConfigBestEffort loads config.toml — resolved the same way the
-// daemon resolves it — so the standalone `in-one-chat send` subcommand (a
+// daemon resolves it — so the standalone `omp-lark-bridge send` subcommand (a
 // separate process that otherwise has no config) can honour
 // max_attachment_size_mb. Errors are ignored and nil is returned, so a missing
 // or invalid config never breaks sending; the caller then falls back to the
@@ -352,23 +352,23 @@ func resolveSocketPath(dataDir string) string {
 		return filepath.Join(envDataDir, "run", "api.sock")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".in-one-chat", "run", "api.sock")
+		return filepath.Join(home, ".omp-lark-bridge", "run", "api.sock")
 	}
-	return filepath.Join(".in-one-chat", "run", "api.sock")
+	return filepath.Join(".omp-lark-bridge", "run", "api.sock")
 }
 
 func printSendUsage() {
-	fmt.Println(`Usage: in-one-chat send [options] <message>
-       in-one-chat send [options] -m <message>
-       in-one-chat send [options] --stdin < file
-       in-one-chat send [options] --image <path>
-       in-one-chat send [options] --file <path>
-       in-one-chat send [options] --audio <path>
-       in-one-chat send [options] --video <path>
-       in-one-chat send [options] --tts <text>
-       echo "msg" | in-one-chat send [options] --stdin
+	fmt.Println(`Usage: omp-lark-bridge send [options] <message>
+       omp-lark-bridge send [options] -m <message>
+       omp-lark-bridge send [options] --stdin < file
+       omp-lark-bridge send [options] --image <path>
+       omp-lark-bridge send [options] --file <path>
+       omp-lark-bridge send [options] --audio <path>
+       omp-lark-bridge send [options] --video <path>
+       omp-lark-bridge send [options] --tts <text>
+       echo "msg" | omp-lark-bridge send [options] --stdin
 
-Send a message, attachment, or synthesized voice message to an active in-one-chat session.
+Send a message, attachment, or synthesized voice message to an active omp-lark-bridge session.
 
 Options:
   -m, --message <text>     Message to send (preferred over positional args)
@@ -384,18 +384,18 @@ Options:
       --at-all             @ everyone (DingTalk)
   -p, --project <name>     Target project (optional if only one project)
   -s, --session <key>      Target session key (optional, picks first active)
-      --data-dir <path>    Data directory (default: ~/.in-one-chat)
+      --data-dir <path>    Data directory (default: ~/.omp-lark-bridge)
   -h, --help               Show this help
 
 Examples:
-  in-one-chat send "Daily summary: ..."
-  in-one-chat send -m "Build completed successfully"
-  in-one-chat send --message "Chart generated" --image /tmp/chart.png
-  in-one-chat send --file /tmp/report.pdf
-  in-one-chat send --video /tmp/demo.mp4
-  in-one-chat send --audio /tmp/voice.opus
-  in-one-chat send --tts "Hello from in-one-chat"
-  in-one-chat send --stdin <<'EOF'
+  omp-lark-bridge send "Daily summary: ..."
+  omp-lark-bridge send -m "Build completed successfully"
+  omp-lark-bridge send --message "Chart generated" --image /tmp/chart.png
+  omp-lark-bridge send --file /tmp/report.pdf
+  omp-lark-bridge send --video /tmp/demo.mp4
+  omp-lark-bridge send --audio /tmp/voice.opus
+  omp-lark-bridge send --tts "Hello from omp-lark-bridge"
+  omp-lark-bridge send --stdin <<'EOF'
     Long message with "special" chars, $variables, and newlines
   EOF`)
 }

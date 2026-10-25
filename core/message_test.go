@@ -71,11 +71,11 @@ func TestInjectedAgentEnv(t *testing.T) {
 // this test asserts every file lands inside attachDir, with no escapees.
 func TestSaveFilesToDisk_RejectsPathTraversal(t *testing.T) {
 	workDir := t.TempDir()
-	attachDir := filepath.Join(workDir, ".in-one-chat", "attachments")
+	attachDir := filepath.Join(workDir, ".omp-lark-bridge", "attachments")
 
 	files := []FileAttachment{
 		// The original repro: walks two levels up out of attachments and
-		// out of .in-one-chat/, landing directly in workDir.
+		// out of .omp-lark-bridge/, landing directly in workDir.
 		{FileName: "../../escape.txt", Data: []byte("payload")},
 		// Three levels up — would land in workDir's parent without the fix.
 		{FileName: "../../../way-up.txt", Data: []byte("payload")},
@@ -122,12 +122,12 @@ func TestSaveFilesToDisk_RejectsPathTraversal(t *testing.T) {
 }
 
 // TestSaveFilesToDisk_RelativeWorkDirReturnsAbsolutePaths guards the
-// regression from issue #1459: when workDir is relative (e.g. ".in-one-chat"
+// regression from issue #1459: when workDir is relative (e.g. ".omp-lark-bridge"
 // or "project/sub"), SaveFilesToDisk used to return relative paths that did
 // not match where the file actually landed once the agent process started
 // from a different cwd. The fix absolutizes workDir before joining, so the
 // returned paths are usable from anywhere — including the spawned agent
-// process whose cwd may differ from in-one-chat's.
+// process whose cwd may differ from omp-lark-bridge's.
 func TestSaveFilesToDisk_RelativeWorkDirReturnsAbsolutePaths(t *testing.T) {
 	// Build a real directory under t.TempDir() and feed a relative path
 	// to SaveFilesToDisk. The returned paths must be absolute regardless
@@ -167,7 +167,7 @@ func TestSaveFilesToDisk_RelativeWorkDirReturnsAbsolutePaths(t *testing.T) {
 
 // TestSaveFilesToDisk_AbsoluteWorkDirReturnsAbsolutePaths confirms the
 // common case (deploys with an absolute workDir) keeps working — no
-// regression for users who already configured in-one-chat with absolute
+// regression for users who already configured omp-lark-bridge with absolute
 // paths. The returned path is the abs version of the input joined with
 // the standard attachments directory.
 func TestSaveFilesToDisk_AbsoluteWorkDirReturnsAbsolutePaths(t *testing.T) {
@@ -210,7 +210,7 @@ func TestSaveFilesToDisk_EmptyWorkDirFallsBackToCwd(t *testing.T) {
 	if !filepath.IsAbs(got[0]) {
 		t.Errorf("empty workDir yielded non-absolute path %q", got[0])
 	}
-	wantPrefix := filepath.Join(cwd, ".in-one-chat", "attachments") + string(filepath.Separator)
+	wantPrefix := filepath.Join(cwd, ".omp-lark-bridge", "attachments") + string(filepath.Separator)
 	if !strings.HasPrefix(got[0], wantPrefix) {
 		t.Errorf("empty workDir path %q did not fall back to cwd-based attachDir %q", got[0], wantPrefix)
 	}
@@ -244,7 +244,7 @@ func TestSaveFilesToDisk_SameNameInOneCall(t *testing.T) {
 		}
 	}
 
-	entries, err := os.ReadDir(filepath.Join(workDir, ".in-one-chat", "attachments", "message-1"))
+	entries, err := os.ReadDir(filepath.Join(workDir, ".omp-lark-bridge", "attachments", "message-1"))
 	if err != nil {
 		t.Fatalf("read message attachment directory: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestSaveFilesToDisk_NoSubdirBackwardsCompat(t *testing.T) {
 	if len(first) != 1 {
 		t.Fatalf("first legacy save returned %d paths, want 1", len(first))
 	}
-	wantPath := filepath.Join(workDir, ".in-one-chat", "attachments", "legacy.txt")
+	wantPath := filepath.Join(workDir, ".omp-lark-bridge", "attachments", "legacy.txt")
 	if first[0] != wantPath {
 		t.Fatalf("legacy path = %q, want %q", first[0], wantPath)
 	}
@@ -346,7 +346,7 @@ func TestAppendFileRefs_AbsolutizesRelativePaths(t *testing.T) {
 	// and verify each one is an absolute path. This is the load-bearing check:
 	// the prompt handed to the agent must always point at real on-disk
 	// locations, never bare relative paths that only resolve from the
-	// in-one-chat process's cwd.
+	// omp-lark-bridge process's cwd.
 	listStart := strings.Index(got, "please read them: ")
 	if listStart < 0 {
 		t.Fatalf("AppendFileRefs output missing the file-ref list marker: %q", got)

@@ -20,10 +20,10 @@ import (
 )
 
 const (
-	githubReleasesAPI = "https://api.github.com/repos/lzyyzznl/in-one-chat/releases"
-	giteeReleasesAPI  = "https://gitee.com/api/v5/repos/cg33/in-one-chat/releases"
-	githubDownload    = "https://github.com/lzyyzznl/in-one-chat/releases/download"
-	giteeDownload     = "https://gitee.com/cg33/in-one-chat/releases/download"
+	githubReleasesAPI = "https://api.github.com/repos/lzyyzznl/omp-lark-bridge/releases"
+	giteeReleasesAPI  = "https://gitee.com/api/v5/repos/cg33/omp-lark-bridge/releases"
+	githubDownload    = "https://github.com/lzyyzznl/omp-lark-bridge/releases/download"
+	giteeDownload     = "https://gitee.com/cg33/omp-lark-bridge/releases/download"
 )
 
 type ReleaseInfo struct {
@@ -102,7 +102,7 @@ func fetchReleasesFrom(apiURL string) ([]ReleaseInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "in-one-chat-updater")
+	req.Header.Set("User-Agent", "omp-lark-bridge-updater")
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := client.Do(req)
@@ -132,7 +132,7 @@ func SelfUpdate(tag string, preferGitee bool) error {
 	if goos == "windows" {
 		ext = ".zip"
 	}
-	filename := fmt.Sprintf("in-one-chat-%s-%s-%s%s", tag, goos, goarch, ext)
+	filename := fmt.Sprintf("omp-lark-bridge-%s-%s-%s%s", tag, goos, goarch, ext)
 
 	giteeURL := fmt.Sprintf("%s/%s/%s", giteeDownload, tag, filename)
 	githubURL := fmt.Sprintf("%s/%s/%s", githubDownload, tag, filename)
@@ -183,7 +183,7 @@ func downloadFile(url string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	req.Header.Set("User-Agent", "in-one-chat-updater")
+	req.Header.Set("User-Agent", "omp-lark-bridge-updater")
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -216,11 +216,11 @@ func extractBinaryFromTarGz(data []byte) ([]byte, error) {
 			return nil, err
 		}
 		name := filepath.Base(hdr.Name)
-		if strings.HasPrefix(name, "in-one-chat") && hdr.Typeflag == tar.TypeReg {
+		if strings.HasPrefix(name, "omp-lark-bridge") && hdr.Typeflag == tar.TypeReg {
 			return io.ReadAll(tr)
 		}
 	}
-	return nil, fmt.Errorf("in-one-chat binary not found in archive")
+	return nil, fmt.Errorf("omp-lark-bridge binary not found in archive")
 }
 
 func extractBinaryFromZip(data []byte) ([]byte, error) {
@@ -230,7 +230,7 @@ func extractBinaryFromZip(data []byte) ([]byte, error) {
 	}
 	for _, f := range r.File {
 		name := filepath.Base(f.Name)
-		if strings.HasPrefix(name, "in-one-chat") && !f.FileInfo().IsDir() {
+		if strings.HasPrefix(name, "omp-lark-bridge") && !f.FileInfo().IsDir() {
 			rc, err := f.Open()
 			if err != nil {
 				return nil, err
@@ -239,7 +239,7 @@ func extractBinaryFromZip(data []byte) ([]byte, error) {
 			return io.ReadAll(rc)
 		}
 	}
-	return nil, fmt.Errorf("in-one-chat binary not found in zip archive")
+	return nil, fmt.Errorf("omp-lark-bridge binary not found in zip archive")
 }
 
 func replaceBinary(newBinary []byte) error {
@@ -253,7 +253,7 @@ func replaceBinary(newBinary []byte) error {
 	}
 
 	dir := filepath.Dir(execPath)
-	tmpFile, err := os.CreateTemp(dir, "in-one-chat-update-*")
+	tmpFile, err := os.CreateTemp(dir, "omp-lark-bridge-update-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
 	}

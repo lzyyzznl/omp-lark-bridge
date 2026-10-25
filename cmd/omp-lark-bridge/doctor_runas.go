@@ -15,16 +15,16 @@ import (
 	"sync"
 	"time"
 
-	"github.com/lzyyzznl/in-one-chat/config"
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
-// runDoctor dispatches `in-one-chat doctor ...`. Today the only subcommand
+// runDoctor dispatches `omp-lark-bridge doctor ...`. Today the only subcommand
 // is `user-isolation`, but this function is the growth point for future
 // diagnostics.
 func runDoctor(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: in-one-chat doctor <subcommand>")
+		fmt.Fprintln(os.Stderr, "usage: omp-lark-bridge doctor <subcommand>")
 		fmt.Fprintln(os.Stderr, "subcommands:")
 		fmt.Fprintln(os.Stderr, "  user-isolation   audit run_as_user projects and emit an isolation report")
 		os.Exit(2)
@@ -45,7 +45,7 @@ func runDoctorUserIsolation(args []string) {
 	fs := flag.NewFlagSet("doctor user-isolation", flag.ExitOnError)
 	configPath := fs.String("config", "", "path to config file (default: auto-discover)")
 	projectFilter := fs.String("project", "", "limit audit to a single project name")
-	outPath := fs.String("out", "", "path to write JSON report (default: ~/.in-one-chat/audits/<timestamp>-<project>.json per project)")
+	outPath := fs.String("out", "", "path to write JSON report (default: ~/.omp-lark-bridge/audits/<timestamp>-<project>.json per project)")
 	printScript := fs.Bool("print-script", false, "print the embedded probe script and exit")
 	_ = fs.Parse(args)
 
@@ -286,11 +286,11 @@ func writeHumanReport(w *strings.Builder, r core.IsolationReport) {
 	}
 }
 
-// defaultAuditDir returns ~/.in-one-chat/audits for the supervisor user.
+// defaultAuditDir returns ~/.omp-lark-bridge/audits for the supervisor user.
 func defaultAuditDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".in-one-chat", "audits"), nil
+	return filepath.Join(home, ".omp-lark-bridge", "audits"), nil
 }

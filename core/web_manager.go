@@ -11,7 +11,7 @@ import (
 func GenerateToken(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		return fmt.Sprintf("in-one-chat-%d", time.Now().UnixNano())
+		return fmt.Sprintf("omp-lark-bridge-%d", time.Now().UnixNano())
 	}
 	return hex.EncodeToString(b)
 }

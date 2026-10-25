@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func TestDefaultAuditDir_HomeSuffix(t *testing.T) {
@@ -14,8 +14,8 @@ func TestDefaultAuditDir_HomeSuffix(t *testing.T) {
 	if err != nil {
 		t.Fatalf("defaultAuditDir error: %v", err)
 	}
-	if !strings.HasSuffix(dir, "/.in-one-chat/audits") {
-		t.Errorf("audit dir = %q, want suffix /.in-one-chat/audits", dir)
+	if !strings.HasSuffix(dir, "/.omp-lark-bridge/audits") {
+		t.Errorf("audit dir = %q, want suffix /.omp-lark-bridge/audits", dir)
 	}
 }
 

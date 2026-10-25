@@ -28,7 +28,7 @@ func ParseLanguage(raw string) Language {
 
 // I18n provides internationalized messages.
 //
-// All exported methods are safe to call from multiple goroutines: in-one-chat
+// All exported methods are safe to call from multiple goroutines: omp-lark-bridge
 // fans out platform message handlers concurrently, all of which can call
 // DetectAndSet (writes `detected`) and T / CurrentLang (read `lang`/`detected`)
 // at the same time. Without the mutex `go test -race` flags real data races
@@ -990,18 +990,18 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "🌐 Idioma actual: **%s**\n\nUso: /lang <en|zh|zh-TW|ja|es|auto>",
 	},
 	MsgUnknownCommand: {
-		LangEnglish:            "`%s` is not a in-one-chat command, forwarding to agent...",
-		LangChinese:            "`%s` 不是 in-one-chat 命令，已转发给 Agent 处理...",
-		LangTraditionalChinese: "`%s` 不是 in-one-chat 命令，已轉發給 Agent 處理...",
-		LangJapanese:           "`%s` は in-one-chat のコマンドではありません。エージェントに転送します...",
-		LangSpanish:            "`%s` no es un comando de in-one-chat, reenviando al agente...",
+		LangEnglish:            "`%s` is not a omp-lark-bridge command, forwarding to agent...",
+		LangChinese:            "`%s` 不是 omp-lark-bridge 命令，已转发给 Agent 处理...",
+		LangTraditionalChinese: "`%s` 不是 omp-lark-bridge 命令，已轉發給 Agent 處理...",
+		LangJapanese:           "`%s` は omp-lark-bridge のコマンドではありません。エージェントに転送します...",
+		LangSpanish:            "`%s` no es un comando de omp-lark-bridge, reenviando al agente...",
 	},
 	MsgWelcome: {
-		LangEnglish:            "👋 Hi! I'm in-one-chat, bridging you to **%s**.\n\nJust send a message to chat with the agent. Type /help to see built-in commands.",
-		LangChinese:            "👋 你好！我是 in-one-chat，已为你连接到 **%s**。\n\n直接发送消息即可与 Agent 对话。输入 /help 查看内置命令。",
-		LangTraditionalChinese: "👋 你好！我是 in-one-chat，已為你連接到 **%s**。\n\n直接發送訊息即可與 Agent 對話。輸入 /help 查看內建命令。",
-		LangJapanese:           "👋 こんにちは！in-one-chat が **%s** に接続しました。\n\nメッセージを送信すればエージェントと会話できます。/help で組み込みコマンド一覧を確認できます。",
-		LangSpanish:            "👋 ¡Hola! Soy in-one-chat, conectándote con **%s**.\n\nEnvía un mensaje para chatear con el agente. Usa /help para ver los comandos integrados.",
+		LangEnglish:            "👋 Hi! I'm omp-lark-bridge, bridging you to **%s**.\n\nJust send a message to chat with the agent. Type /help to see built-in commands.",
+		LangChinese:            "👋 你好！我是 omp-lark-bridge，已为你连接到 **%s**。\n\n直接发送消息即可与 Agent 对话。输入 /help 查看内置命令。",
+		LangTraditionalChinese: "👋 你好！我是 omp-lark-bridge，已為你連接到 **%s**。\n\n直接發送訊息即可與 Agent 對話。輸入 /help 查看內建命令。",
+		LangJapanese:           "👋 こんにちは！omp-lark-bridge が **%s** に接続しました。\n\nメッセージを送信すればエージェントと会話できます。/help で組み込みコマンド一覧を確認できます。",
+		LangSpanish:            "👋 ¡Hola! Soy omp-lark-bridge, conectándote con **%s**.\n\nEnvía un mensaje para chatear con el agente. Usa /help para ver los comandos integrados.",
 	},
 	MsgHelp: {
 		LangEnglish: "📖 Available Commands\n\n" +
@@ -1038,9 +1038,9 @@ var messages = map[MsgKey]map[Language]string{
 			"/doctor\n  Run system diagnostics\n\n" +
 			"/usage\n  Show account/model quota usage\n\n" +
 			"/upgrade\n  Check for updates and self-update\n\n" +
-			"/restart\n  Restart in-one-chat service\n\n" +
+			"/restart\n  Restart omp-lark-bridge service\n\n" +
 			"/status\n  Show system status\n\n" +
-			"/version\n  Show in-one-chat version\n\n" +
+			"/version\n  Show omp-lark-bridge version\n\n" +
 			"/whoami\n  Show your User ID (for allow_from / admin_from)\n\n" +
 			"/help\n  Show this help\n\n" +
 			"Tip: Commands support prefix matching, e.g. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
@@ -1081,9 +1081,9 @@ var messages = map[MsgKey]map[Language]string{
 			"/doctor\n  运行系统诊断\n\n" +
 			"/usage\n  查看账号/模型限额使用情况\n\n" +
 			"/upgrade\n  检查更新并自动升级\n\n" +
-			"/restart\n  重启 in-one-chat 服务\n\n" +
+			"/restart\n  重启 omp-lark-bridge 服务\n\n" +
 			"/status\n  查看系统状态\n\n" +
-			"/version\n  查看 in-one-chat 版本\n\n" +
+			"/version\n  查看 omp-lark-bridge 版本\n\n" +
 			"/whoami\n  查看你的 User ID（用于 allow_from / admin_from 配置）\n\n" +
 			"/help\n  显示此帮助\n\n" +
 			"提示：命令支持前缀匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
@@ -1123,9 +1123,9 @@ var messages = map[MsgKey]map[Language]string{
 			"/doctor\n  執行系統診斷\n\n" +
 			"/usage\n  查看帳號/模型限額使用情況\n\n" +
 			"/upgrade\n  檢查更新並自動升級\n\n" +
-			"/restart\n  重啟 in-one-chat 服務\n\n" +
+			"/restart\n  重啟 omp-lark-bridge 服務\n\n" +
 			"/status\n  查看系統狀態\n\n" +
-			"/version\n  查看 in-one-chat 版本\n\n" +
+			"/version\n  查看 omp-lark-bridge 版本\n\n" +
 			"/whoami\n  查看你的 User ID（用於 allow_from / admin_from 設定）\n\n" +
 			"/help\n  顯示此說明\n\n" +
 			"提示：命令支持前綴匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
@@ -1164,9 +1164,9 @@ var messages = map[MsgKey]map[Language]string{
 			"/doctor\n  システム診断を実行\n\n" +
 			"/usage\n  アカウント/モデル使用量を表示\n\n" +
 			"/upgrade\n  アップデートを確認して自動更新\n\n" +
-			"/restart\n  in-one-chat サービスを再起動\n\n" +
+			"/restart\n  omp-lark-bridge サービスを再起動\n\n" +
 			"/status\n  システム状態を表示\n\n" +
-			"/version\n  in-one-chat のバージョンを表示\n\n" +
+			"/version\n  omp-lark-bridge のバージョンを表示\n\n" +
 			"/whoami\n  あなたの User ID を表示（allow_from / admin_from 設定用）\n\n" +
 			"/help\n  このヘルプを表示\n\n" +
 			"ヒント：コマンドはプレフィックスマッチに対応しています。例: `/pro l` = `/provider list`、`/sw 2` = `/switch 2`。\n\n" +
@@ -1205,9 +1205,9 @@ var messages = map[MsgKey]map[Language]string{
 			"/doctor\n  Ejecutar diagnósticos del sistema\n\n" +
 			"/usage\n  Mostrar uso de cuota de cuenta/modelo\n\n" +
 			"/upgrade\n  Buscar actualizaciones y auto-actualizar\n\n" +
-			"/restart\n  Reiniciar el servicio in-one-chat\n\n" +
+			"/restart\n  Reiniciar el servicio omp-lark-bridge\n\n" +
 			"/status\n  Mostrar estado del sistema\n\n" +
-			"/version\n  Mostrar versión de in-one-chat\n\n" +
+			"/version\n  Mostrar versión de omp-lark-bridge\n\n" +
 			"/whoami\n  Mostrar tu User ID (para allow_from / admin_from)\n\n" +
 			"/help\n  Mostrar esta ayuda\n\n" +
 			"Consejo: Los comandos admiten coincidencia por prefijo, ej. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
@@ -1216,11 +1216,11 @@ var messages = map[MsgKey]map[Language]string{
 			"Modos de permisos: default / edit / plan / yolo",
 	},
 	MsgHelpTitle: {
-		LangEnglish:            "in-one-chat Help",
-		LangChinese:            "in-one-chat 帮助",
-		LangTraditionalChinese: "in-one-chat 說明",
-		LangJapanese:           "in-one-chat ヘルプ",
-		LangSpanish:            "in-one-chat Ayuda",
+		LangEnglish:            "omp-lark-bridge Help",
+		LangChinese:            "omp-lark-bridge 帮助",
+		LangTraditionalChinese: "omp-lark-bridge 說明",
+		LangJapanese:           "omp-lark-bridge ヘルプ",
+		LangSpanish:            "omp-lark-bridge Ayuda",
 	},
 	MsgHelpSessionSection: {
 		LangEnglish: "**Session Management**\n" +
@@ -1497,11 +1497,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Este agente no soporta el cambio de proveedor.",
 	},
 	MsgProviderNone: {
-		LangEnglish:            "No provider configured. Using agent's default environment.\n\nAdd providers in `config.toml` or via `in-one-chat provider add`.",
-		LangChinese:            "未配置 Provider，使用 Agent 默认环境。\n\n可在 `config.toml` 中添加或使用 `in-one-chat provider add` 命令。",
-		LangTraditionalChinese: "未配置 Provider，使用 Agent 預設環境。\n\n可在 `config.toml` 中新增或使用 `in-one-chat provider add` 命令。",
-		LangJapanese:           "プロバイダが設定されていません。エージェントのデフォルト環境を使用します。\n\n`config.toml` または `in-one-chat provider add` でプロバイダを追加してください。",
-		LangSpanish:            "No hay proveedor configurado. Usando el entorno predeterminado del agente.\n\nAgregue proveedores en `config.toml` o mediante `in-one-chat provider add`.",
+		LangEnglish:            "No provider configured. Using agent's default environment.\n\nAdd providers in `config.toml` or via `omp-lark-bridge provider add`.",
+		LangChinese:            "未配置 Provider，使用 Agent 默认环境。\n\n可在 `config.toml` 中添加或使用 `omp-lark-bridge provider add` 命令。",
+		LangTraditionalChinese: "未配置 Provider，使用 Agent 預設環境。\n\n可在 `config.toml` 中新增或使用 `omp-lark-bridge provider add` 命令。",
+		LangJapanese:           "プロバイダが設定されていません。エージェントのデフォルト環境を使用します。\n\n`config.toml` または `omp-lark-bridge provider add` でプロバイダを追加してください。",
+		LangSpanish:            "No hay proveedor configurado. Usando el entorno predeterminado del agente.\n\nAgregue proveedores en `config.toml` o mediante `omp-lark-bridge provider add`.",
 	},
 	MsgProviderCurrent: {
 		LangEnglish:            "📡 Active provider: **%s**\n\nUse `/provider list` to see all, `/provider switch <name>` to switch.",
@@ -1518,11 +1518,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "📡 Proveedores\n\n",
 	},
 	MsgProviderListEmpty: {
-		LangEnglish:            "No providers configured.\n\nAdd providers in `config.toml` or via `in-one-chat provider add`.",
-		LangChinese:            "未配置 Provider。\n\n可在 `config.toml` 中添加或使用 `in-one-chat provider add` 命令。",
-		LangTraditionalChinese: "未配置 Provider。\n\n可在 `config.toml` 中新增或使用 `in-one-chat provider add` 命令。",
-		LangJapanese:           "プロバイダが設定されていません。\n\n`config.toml` または `in-one-chat provider add` で追加してください。",
-		LangSpanish:            "No hay proveedores configurados.\n\nAgregue proveedores en `config.toml` o mediante `in-one-chat provider add`.",
+		LangEnglish:            "No providers configured.\n\nAdd providers in `config.toml` or via `omp-lark-bridge provider add`.",
+		LangChinese:            "未配置 Provider。\n\n可在 `config.toml` 中添加或使用 `omp-lark-bridge provider add` 命令。",
+		LangTraditionalChinese: "未配置 Provider。\n\n可在 `config.toml` 中新增或使用 `omp-lark-bridge provider add` 命令。",
+		LangJapanese:           "プロバイダが設定されていません。\n\n`config.toml` または `omp-lark-bridge provider add` で追加してください。",
+		LangSpanish:            "No hay proveedores configurados.\n\nAgregue proveedores en `config.toml` o mediante `omp-lark-bridge provider add`.",
 	},
 	MsgProviderSwitchHint: {
 		LangEnglish:            "`/provider switch <name>` to switch | `/provider clear` to reset",
@@ -1823,11 +1823,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "El programador de tareas no está disponible.",
 	},
 	MsgCronUsage: {
-		LangEnglish:            "Usage:\n/cron add <min> <hour> <day> <month> <weekday> <prompt>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron session <id> <reuse|new>  (default reuse = same session every run)\n/cron setup — write in-one-chat instructions to agent memory file",
-		LangChinese:            "用法：\n/cron add <分> <时> <日> <月> <周> <任务描述>\n/cron list\n/cron exec <id> 立即执行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 静音/取消静音\n/cron session <id> <reuse|new>  默认 reuse：永远用同一个会话\n/cron setup — 将 in-one-chat 指令写入 agent 记忆文件",
-		LangTraditionalChinese: "用法：\n/cron add <分> <時> <日> <月> <週> <任務描述>\n/cron list\n/cron exec <id> 立即執行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 靜音/取消靜音\n/cron session <id> <reuse|new>  預設 reuse：永遠用同一個會話\n/cron setup — 將 in-one-chat 指令寫入 agent 記憶檔案",
-		LangJapanese:           "使い方:\n/cron add <分> <時> <日> <月> <曜日> <タスク内容>\n/cron list\n/cron exec <id> 今すぐ実行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> ミュート/解除\n/cron session <id> <reuse|new>  既定 reuse：常に同じセッション\n/cron setup — in-one-chat の指示をエージェントのメモリファイルに書き込む",
-		LangSpanish:            "Uso:\n/cron add <min> <hora> <día> <mes> <día_semana> <tarea>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron session <id> <reuse|new>  (por defecto reuse = misma sesión siempre)\n/cron setup — escribir las instrucciones de in-one-chat en el archivo de memoria del agente",
+		LangEnglish:            "Usage:\n/cron add <min> <hour> <day> <month> <weekday> <prompt>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron session <id> <reuse|new>  (default reuse = same session every run)\n/cron setup — write omp-lark-bridge instructions to agent memory file",
+		LangChinese:            "用法：\n/cron add <分> <时> <日> <月> <周> <任务描述>\n/cron list\n/cron exec <id> 立即执行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 静音/取消静音\n/cron session <id> <reuse|new>  默认 reuse：永远用同一个会话\n/cron setup — 将 omp-lark-bridge 指令写入 agent 记忆文件",
+		LangTraditionalChinese: "用法：\n/cron add <分> <時> <日> <月> <週> <任務描述>\n/cron list\n/cron exec <id> 立即執行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> 靜音/取消靜音\n/cron session <id> <reuse|new>  預設 reuse：永遠用同一個會話\n/cron setup — 將 omp-lark-bridge 指令寫入 agent 記憶檔案",
+		LangJapanese:           "使い方:\n/cron add <分> <時> <日> <月> <曜日> <タスク内容>\n/cron list\n/cron exec <id> 今すぐ実行\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id> ミュート/解除\n/cron session <id> <reuse|new>  既定 reuse：常に同じセッション\n/cron setup — omp-lark-bridge の指示をエージェントのメモリファイルに書き込む",
+		LangSpanish:            "Uso:\n/cron add <min> <hora> <día> <mes> <día_semana> <tarea>\n/cron list\n/cron exec <id>\n/cron del <id>\n/cron enable <id> · /cron disable <id>\n/cron mute <id> · /cron unmute <id>\n/cron session <id> <reuse|new>  (por defecto reuse = misma sesión siempre)\n/cron setup — escribir las instrucciones de omp-lark-bridge en el archivo de memoria del agente",
 	},
 	MsgCronAddUsage: {
 		LangEnglish:            "Usage: /cron add [--new-session] <min> <hour> <day> <month> <weekday> <prompt>\nExample: /cron add 0 6 * * * Collect GitHub trending data and send me a summary\nDefault: every run continues this chat's session (--new-session to start a fresh one each run)",
@@ -2164,7 +2164,7 @@ var messages = map[MsgKey]map[Language]string{
 	},
 
 	MsgStatusTitle: {
-		LangEnglish: "in-one-chat Status\n\n" +
+		LangEnglish: "omp-lark-bridge Status\n\n" +
 			"Project: %s\n" +
 			"Agent: %s\n" +
 			"Work Dir: %s\n" +
@@ -2172,7 +2172,7 @@ var messages = map[MsgKey]map[Language]string{
 			"Uptime: %s\n" +
 			"Language: %s\n" +
 			"%s" + "%s" + "%s" + "%s" + "%s" + "%s",
-		LangChinese: "in-one-chat 状态\n\n" +
+		LangChinese: "omp-lark-bridge 状态\n\n" +
 			"项目: %s\n" +
 			"Agent: %s\n" +
 			"工作目录: %s\n" +
@@ -2180,7 +2180,7 @@ var messages = map[MsgKey]map[Language]string{
 			"运行时间: %s\n" +
 			"语言: %s\n" +
 			"%s" + "%s" + "%s" + "%s" + "%s" + "%s",
-		LangTraditionalChinese: "in-one-chat 狀態\n\n" +
+		LangTraditionalChinese: "omp-lark-bridge 狀態\n\n" +
 			"項目: %s\n" +
 			"Agent: %s\n" +
 			"工作目錄: %s\n" +
@@ -2188,7 +2188,7 @@ var messages = map[MsgKey]map[Language]string{
 			"運行時間: %s\n" +
 			"語言: %s\n" +
 			"%s" + "%s" + "%s" + "%s" + "%s" + "%s",
-		LangJapanese: "in-one-chat ステータス\n\n" +
+		LangJapanese: "omp-lark-bridge ステータス\n\n" +
 			"プロジェクト: %s\n" +
 			"エージェント: %s\n" +
 			"作業ディレクトリ: %s\n" +
@@ -2196,7 +2196,7 @@ var messages = map[MsgKey]map[Language]string{
 			"稼働時間: %s\n" +
 			"言語: %s\n" +
 			"%s" + "%s" + "%s" + "%s" + "%s" + "%s",
-		LangSpanish: "Estado de in-one-chat\n\n" +
+		LangSpanish: "Estado de omp-lark-bridge\n\n" +
 			"Proyecto: %s\n" +
 			"Agente: %s\n" +
 			"Directorio: %s\n" +
@@ -2551,8 +2551,8 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese: "次へ →", LangSpanish: "Siguiente →",
 	},
 	MsgCardTitleStatus: {
-		LangEnglish: "in-one-chat Status", LangChinese: "in-one-chat 状态", LangTraditionalChinese: "in-one-chat 狀態",
-		LangJapanese: "in-one-chat ステータス", LangSpanish: "Estado de in-one-chat",
+		LangEnglish: "omp-lark-bridge Status", LangChinese: "omp-lark-bridge 状态", LangTraditionalChinese: "omp-lark-bridge 狀態",
+		LangJapanese: "omp-lark-bridge ステータス", LangSpanish: "Estado de omp-lark-bridge",
 	},
 	MsgCardTitleLanguage: {
 		LangEnglish: "Language", LangChinese: "语言", LangTraditionalChinese: "語言",
@@ -2984,18 +2984,18 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "\n✅ %d aprobados  ⚠️ %d advertencias  ❌ %d fallidos",
 	},
 	MsgRestarting: {
-		LangEnglish:            "🔄 Restarting in-one-chat...",
-		LangChinese:            "🔄 正在重启 in-one-chat...",
-		LangTraditionalChinese: "🔄 正在重啟 in-one-chat...",
-		LangJapanese:           "🔄 in-one-chat を再起動中...",
-		LangSpanish:            "🔄 Reiniciando in-one-chat...",
+		LangEnglish:            "🔄 Restarting omp-lark-bridge...",
+		LangChinese:            "🔄 正在重启 omp-lark-bridge...",
+		LangTraditionalChinese: "🔄 正在重啟 omp-lark-bridge...",
+		LangJapanese:           "🔄 omp-lark-bridge を再起動中...",
+		LangSpanish:            "🔄 Reiniciando omp-lark-bridge...",
 	},
 	MsgRestartSuccess: {
-		LangEnglish:            "✅ in-one-chat restarted successfully.",
-		LangChinese:            "✅ in-one-chat 重启成功。",
-		LangTraditionalChinese: "✅ in-one-chat 重啟成功。",
-		LangJapanese:           "✅ in-one-chat の再起動が完了しました。",
-		LangSpanish:            "✅ in-one-chat se reinició correctamente.",
+		LangEnglish:            "✅ omp-lark-bridge restarted successfully.",
+		LangChinese:            "✅ omp-lark-bridge 重启成功。",
+		LangTraditionalChinese: "✅ omp-lark-bridge 重啟成功。",
+		LangJapanese:           "✅ omp-lark-bridge の再起動が完了しました。",
+		LangSpanish:            "✅ omp-lark-bridge se reinició correctamente.",
 	},
 	MsgUpgradeChecking: {
 		LangEnglish:            "🔍 Checking for updates...",
@@ -3612,25 +3612,25 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "✅ ¡Enlace exitoso! Grupo actual: %s\n\nAhora puede pedir a este bot que consulte a %s.\nEjemplo: \"Pregunta a %s sobre ...\"",
 	},
 	MsgRelaySetupHint: {
-		LangEnglish:            "\n\n⚠️ This agent does not auto-inject in-one-chat instructions.\nPlease run `/bind setup` or `/cron setup` to write instructions to %s.",
-		LangChinese:            "\n\n⚠️ 当前 agent 不会自动注入 in-one-chat 指令。\n请运行 `/bind setup` 或 `/cron setup` 将指令写入 %s。",
-		LangTraditionalChinese: "\n\n⚠️ 當前 agent 不會自動注入 in-one-chat 指令。\n請執行 `/bind setup` 或 `/cron setup` 將指令寫入 %s。",
-		LangJapanese:           "\n\n⚠️ このエージェントは in-one-chat の指示を自動注入しません。\n`/bind setup` または `/cron setup` を実行して %s に指示を書き込んでください。",
-		LangSpanish:            "\n\n⚠️ Este agente no inyecta automáticamente las instrucciones de in-one-chat.\nEjecute `/bind setup` o `/cron setup` para escribirlas en %s.",
+		LangEnglish:            "\n\n⚠️ This agent does not auto-inject omp-lark-bridge instructions.\nPlease run `/bind setup` or `/cron setup` to write instructions to %s.",
+		LangChinese:            "\n\n⚠️ 当前 agent 不会自动注入 omp-lark-bridge 指令。\n请运行 `/bind setup` 或 `/cron setup` 将指令写入 %s。",
+		LangTraditionalChinese: "\n\n⚠️ 當前 agent 不會自動注入 omp-lark-bridge 指令。\n請執行 `/bind setup` 或 `/cron setup` 將指令寫入 %s。",
+		LangJapanese:           "\n\n⚠️ このエージェントは omp-lark-bridge の指示を自動注入しません。\n`/bind setup` または `/cron setup` を実行して %s に指示を書き込んでください。",
+		LangSpanish:            "\n\n⚠️ Este agente no inyecta automáticamente las instrucciones de omp-lark-bridge.\nEjecute `/bind setup` o `/cron setup` para escribirlas en %s.",
 	},
 	MsgRelaySetupOK: {
-		LangEnglish:            "✅ in-one-chat instructions written to %s\nThe agent can now use relay, cron, and attachment send-back.",
-		LangChinese:            "✅ in-one-chat 指令已写入 %s\nagent 现在可以使用中继、定时任务和附件回传功能了。",
-		LangTraditionalChinese: "✅ in-one-chat 指令已寫入 %s\nagent 現在可以使用中繼、定時任務和附件回傳功能了。",
-		LangJapanese:           "✅ in-one-chat の指示を %s に書き込みました。\nエージェントがリレー、cron、添付ファイル返送を使えるようになりました。",
-		LangSpanish:            "✅ Instrucciones de in-one-chat escritas en %s\nEl agente ahora puede usar relay, cron y reenvío de adjuntos.",
+		LangEnglish:            "✅ omp-lark-bridge instructions written to %s\nThe agent can now use relay, cron, and attachment send-back.",
+		LangChinese:            "✅ omp-lark-bridge 指令已写入 %s\nagent 现在可以使用中继、定时任务和附件回传功能了。",
+		LangTraditionalChinese: "✅ omp-lark-bridge 指令已寫入 %s\nagent 現在可以使用中繼、定時任務和附件回傳功能了。",
+		LangJapanese:           "✅ omp-lark-bridge の指示を %s に書き込みました。\nエージェントがリレー、cron、添付ファイル返送を使えるようになりました。",
+		LangSpanish:            "✅ Instrucciones de omp-lark-bridge escritas en %s\nEl agente ahora puede usar relay, cron y reenvío de adjuntos.",
 	},
 	MsgRelaySetupExists: {
-		LangEnglish:            "ℹ️ in-one-chat instructions already exist in %s — no changes made.",
-		LangChinese:            "ℹ️ in-one-chat 指令已存在于 %s 中，无需重复写入。",
-		LangTraditionalChinese: "ℹ️ in-one-chat 指令已存在於 %s 中，無需重複寫入。",
-		LangJapanese:           "ℹ️ in-one-chat の指示は既に %s に存在します。変更はありません。",
-		LangSpanish:            "ℹ️ Las instrucciones de in-one-chat ya existen en %s — sin cambios.",
+		LangEnglish:            "ℹ️ omp-lark-bridge instructions already exist in %s — no changes made.",
+		LangChinese:            "ℹ️ omp-lark-bridge 指令已存在于 %s 中，无需重复写入。",
+		LangTraditionalChinese: "ℹ️ omp-lark-bridge 指令已存在於 %s 中，無需重複寫入。",
+		LangJapanese:           "ℹ️ omp-lark-bridge の指示は既に %s に存在します。変更はありません。",
+		LangSpanish:            "ℹ️ Las instrucciones de omp-lark-bridge ya existen en %s — sin cambios.",
 	},
 	MsgRelaySetupNoMemory: {
 		LangEnglish:            "❌ This agent does not support instruction files.",
@@ -3640,18 +3640,18 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "❌ Este agente no soporta archivos de instrucciones.",
 	},
 	MsgSetupNative: {
-		LangEnglish:            "✅ This agent natively supports in-one-chat instructions — no setup needed.",
-		LangChinese:            "✅ 当前 agent 已原生支持 in-one-chat 指令，无需额外配置。",
-		LangTraditionalChinese: "✅ 當前 agent 已原生支持 in-one-chat 指令，無需額外配置。",
-		LangJapanese:           "✅ このエージェントは in-one-chat の指示をネイティブサポートしています。セットアップ不要です。",
-		LangSpanish:            "✅ Este agente soporta nativamente las instrucciones de in-one-chat — no se necesita configuración.",
+		LangEnglish:            "✅ This agent natively supports omp-lark-bridge instructions — no setup needed.",
+		LangChinese:            "✅ 当前 agent 已原生支持 omp-lark-bridge 指令，无需额外配置。",
+		LangTraditionalChinese: "✅ 當前 agent 已原生支持 omp-lark-bridge 指令，無需額外配置。",
+		LangJapanese:           "✅ このエージェントは omp-lark-bridge の指示をネイティブサポートしています。セットアップ不要です。",
+		LangSpanish:            "✅ Este agente soporta nativamente las instrucciones de omp-lark-bridge — no se necesita configuración.",
 	},
 	MsgCronSetupOK: {
-		LangEnglish:            "✅ in-one-chat instructions written to %s\nThe agent can now use relay, cron, and attachment send-back.",
-		LangChinese:            "✅ in-one-chat 指令已写入 %s\nagent 现在可以使用中继、定时任务和附件回传功能了。",
-		LangTraditionalChinese: "✅ in-one-chat 指令已寫入 %s\nagent 現在可以使用中繼、定時任務和附件回傳功能了。",
-		LangJapanese:           "✅ in-one-chat の指示を %s に書き込みました。\nエージェントがリレー、cron、添付ファイル返送を使えるようになりました。",
-		LangSpanish:            "✅ Instrucciones de in-one-chat escritas en %s\nEl agente ahora puede usar relay, cron y reenvío de adjuntos.",
+		LangEnglish:            "✅ omp-lark-bridge instructions written to %s\nThe agent can now use relay, cron, and attachment send-back.",
+		LangChinese:            "✅ omp-lark-bridge 指令已写入 %s\nagent 现在可以使用中继、定时任务和附件回传功能了。",
+		LangTraditionalChinese: "✅ omp-lark-bridge 指令已寫入 %s\nagent 現在可以使用中繼、定時任務和附件回傳功能了。",
+		LangJapanese:           "✅ omp-lark-bridge の指示を %s に書き込みました。\nエージェントがリレー、cron、添付ファイル返送を使えるようになりました。",
+		LangSpanish:            "✅ Instrucciones de omp-lark-bridge escritas en %s\nEl agente ahora puede usar relay, cron y reenvío de adjuntos.",
 	},
 	MsgSearchUsage: {
 		LangEnglish:            "Usage: /search <keyword>\nSearch sessions by name or ID.",
@@ -3865,11 +3865,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Buscar actualizaciones y auto-actualizar",
 	},
 	MsgBuiltinCmdRestart: {
-		LangEnglish:            "Restart in-one-chat service",
-		LangChinese:            "重启 in-one-chat 服务",
-		LangTraditionalChinese: "重啟 in-one-chat 服務",
-		LangJapanese:           "in-one-chat サービスを再起動",
-		LangSpanish:            "Reiniciar el servicio in-one-chat",
+		LangEnglish:            "Restart omp-lark-bridge service",
+		LangChinese:            "重启 omp-lark-bridge 服务",
+		LangTraditionalChinese: "重啟 omp-lark-bridge 服務",
+		LangJapanese:           "omp-lark-bridge サービスを再起動",
+		LangSpanish:            "Reiniciar el servicio omp-lark-bridge",
 	},
 	MsgBuiltinCmdStatus: {
 		LangEnglish:            "Show system status",
@@ -3886,11 +3886,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Mostrar uso de cuota de cuenta/modelo",
 	},
 	MsgBuiltinCmdVersion: {
-		LangEnglish:            "Show in-one-chat version",
-		LangChinese:            "查看 in-one-chat 版本",
-		LangTraditionalChinese: "查看 in-one-chat 版本",
-		LangJapanese:           "in-one-chat のバージョンを表示",
-		LangSpanish:            "Mostrar versión de in-one-chat",
+		LangEnglish:            "Show omp-lark-bridge version",
+		LangChinese:            "查看 omp-lark-bridge 版本",
+		LangTraditionalChinese: "查看 omp-lark-bridge 版本",
+		LangJapanese:           "omp-lark-bridge のバージョンを表示",
+		LangSpanish:            "Mostrar versión de omp-lark-bridge",
 	},
 	MsgBuiltinCmdHelp: {
 		LangEnglish:            "Show this help",

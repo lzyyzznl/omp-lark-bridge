@@ -522,7 +522,7 @@ func (a *runAsTestAgent) GetRunAsEnv() []string {
 //
 // Before the fix: per-workspace agents were created with opts containing
 // only work_dir/model/mode. The project-level run_as_user injected into
-// proj.Agent.Options by cmd/in-one-chat/main.go was not propagated, so
+// proj.Agent.Options by cmd/omp-lark-bridge/main.go was not propagated, so
 // spawned sessions used the legacy (supervisor-user) path despite the
 // preflight saying otherwise.
 //
@@ -604,7 +604,7 @@ func TestMultiWorkspaceAgent_PropagatesRunAsUser(t *testing.T) {
 // TestMultiWorkspaceAgent_NoPropagationWhenParentHasNoRunAs verifies that
 // workspace agents do not get spurious run_as_user or run_as_env entries
 // when the parent agent does not report them. This is the "isolation not
-// configured" path — the vast majority of in-one-chat deployments, which
+// configured" path — the vast majority of omp-lark-bridge deployments, which
 // must remain unchanged.
 func TestMultiWorkspaceAgent_NoPropagationWhenParentHasNoRunAs(t *testing.T) {
 	baseDir := t.TempDir()

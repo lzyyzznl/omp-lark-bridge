@@ -10,7 +10,7 @@ import (
 
 // RotatingWriter is a thread-safe io.Writer that appends to a log file
 // and rotates it when the file exceeds maxSize. Up to maxBackups rotated
-// copies are kept (in-one-chat.log.1 .. in-one-chat.log.N); the oldest is
+// copies are kept (omp-lark-bridge.log.1 .. omp-lark-bridge.log.N); the oldest is
 // discarded on each rotation. The maximum disk usage is therefore
 // (1 + maxBackups) × maxSize.
 //

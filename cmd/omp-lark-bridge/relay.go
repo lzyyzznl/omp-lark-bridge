@@ -92,7 +92,7 @@ func runRelaySend(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -127,16 +127,16 @@ func runRelaySend(args []string) {
 }
 
 func printRelayUsage() {
-	fmt.Println(`Usage: in-one-chat relay <command> [options]
+	fmt.Println(`Usage: omp-lark-bridge relay <command> [options]
 
 Commands:
   send      Send a message to another bot via relay
 
-Run 'in-one-chat relay <command> --help' for details.`)
+Run 'omp-lark-bridge relay <command> --help' for details.`)
 }
 
 func printRelaySendUsage() {
-	fmt.Println(`Usage: in-one-chat relay send [options] [<target_project> <message>]
+	fmt.Println(`Usage: omp-lark-bridge relay send [options] [<target_project> <message>]
 
 Send a message to another bot and wait for the response.
 
@@ -145,10 +145,10 @@ Options:
   -t, --to <project>         Target bot project name
   -s, --session-key <key>    Session key (auto-detected from CC_SESSION_KEY env)
   -m, --message <text>       Message to send
-      --data-dir <path>      Data directory (default: ~/.in-one-chat)
+      --data-dir <path>      Data directory (default: ~/.omp-lark-bridge)
   -h, --help                 Show this help
 
 Examples:
-  in-one-chat relay send --to claude-bot "What's the weather today?"
-  in-one-chat relay send claude-bot What is the weather today`)
+  omp-lark-bridge relay send --to claude-bot "What's the weather today?"
+  omp-lark-bridge relay send claude-bot What is the weather today`)
 }

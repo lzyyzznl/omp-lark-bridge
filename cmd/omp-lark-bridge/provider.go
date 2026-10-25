@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/lzyyzznl/in-one-chat/config"
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 	_ "modernc.org/sqlite"
 )
 
@@ -44,7 +44,7 @@ func runProviderCommand(args []string) {
 }
 
 func printProviderUsage() {
-	fmt.Println(`Usage: in-one-chat provider <command> [options]
+	fmt.Println(`Usage: omp-lark-bridge provider <command> [options]
 
 Commands:
   add      Add a new API provider to a project
@@ -55,14 +55,14 @@ Commands:
   global   Manage global shared providers
 
 Examples:
-  in-one-chat provider add --project my-backend --name relay --api-key sk-xxx
-  in-one-chat provider add --project my-backend --name bedrock --env CLAUDE_CODE_USE_BEDROCK=1,AWS_PROFILE=bedrock
-  in-one-chat provider list --project my-backend
-  in-one-chat provider remove --project my-backend --name relay
-  in-one-chat provider import --project my-backend
-  in-one-chat provider presets
-  in-one-chat provider global list
-  in-one-chat provider global add --name minimaxi --api-key sk-xxx --base-url https://api.minimaxi.chat/v1`)
+  omp-lark-bridge provider add --project my-backend --name relay --api-key sk-xxx
+  omp-lark-bridge provider add --project my-backend --name bedrock --env CLAUDE_CODE_USE_BEDROCK=1,AWS_PROFILE=bedrock
+  omp-lark-bridge provider list --project my-backend
+  omp-lark-bridge provider remove --project my-backend --name relay
+  omp-lark-bridge provider import --project my-backend
+  omp-lark-bridge provider presets
+  omp-lark-bridge provider global list
+  omp-lark-bridge provider global add --name minimaxi --api-key sk-xxx --base-url https://api.minimaxi.chat/v1`)
 }
 
 // initConfigPath resolves the config path and sets config.ConfigPath.
@@ -585,7 +585,7 @@ func runProviderPresets(args []string) {
 
 func runProviderGlobal(args []string) {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, `Usage: in-one-chat provider global <command>
+		fmt.Fprintln(os.Stderr, `Usage: omp-lark-bridge provider global <command>
 
 Commands:
   list     List global providers
@@ -621,7 +621,7 @@ func runGlobalProviderList(args []string) {
 	}
 	if len(providers) == 0 {
 		fmt.Println("No global providers configured.")
-		fmt.Println("\nAdd one with: in-one-chat provider global add --name <name> --api-key <key>")
+		fmt.Println("\nAdd one with: omp-lark-bridge provider global add --name <name> --api-key <key>")
 		return
 	}
 

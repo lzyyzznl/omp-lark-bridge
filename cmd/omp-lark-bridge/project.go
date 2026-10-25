@@ -7,7 +7,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/lzyyzznl/in-one-chat/config"
+	"github.com/lzyyzznl/omp-lark-bridge/config"
 )
 
 func runProjectCommand(args []string) {
@@ -37,7 +37,7 @@ func runProjectCommand(args []string) {
 }
 
 func printProjectUsage() {
-	fmt.Println(`Usage: in-one-chat project <command> [options]
+	fmt.Println(`Usage: omp-lark-bridge project <command> [options]
 
 项目是多飞书通道绑定到不同工作目录的载体：每个项目是一个独立的 omp agent
 （独立 work_dir = 会话启动文件夹 + 独立飞书应用）。定时任务挂靠项目，
@@ -59,14 +59,14 @@ Options:
   --disabled-commands <list> 禁用命令列表（逗号分隔）
 
 Examples:
-  in-one-chat project create my-ops --work-dir /srv/ops --model deepseek/deepseek-flash
-  in-one-chat project list
-  in-one-chat project show my-ops
-  in-one-chat project set my-ops --admin-from ou_xxx --allow-from ou_a,ou_b
-  in-one-chat project set my-ops --work-dir ""
-  in-one-chat project remove my-ops
+  omp-lark-bridge project create my-ops --work-dir /srv/ops --model deepseek/deepseek-flash
+  omp-lark-bridge project list
+  omp-lark-bridge project show my-ops
+  omp-lark-bridge project set my-ops --admin-from ou_xxx --allow-from ou_a,ou_b
+  omp-lark-bridge project set my-ops --work-dir ""
+  omp-lark-bridge project remove my-ops
   # 给项目绑定独立飞书应用：
-  in-one-chat feishu bind --project my-ops --app cli_xxx:sec_xxx`)
+  omp-lark-bridge feishu bind --project my-ops --app cli_xxx:sec_xxx`)
 }
 
 func runProjectList(args []string) {
@@ -113,7 +113,7 @@ func runProjectCreate(args []string) {
 	}
 	_ = fs.Parse(args[1:])
 	if name == "" || strings.HasPrefix(name, "-") {
-		fmt.Fprintln(os.Stderr, "Error: project name is required: in-one-chat project create <name>")
+		fmt.Fprintln(os.Stderr, "Error: project name is required: omp-lark-bridge project create <name>")
 		os.Exit(1)
 	}
 	initConfigPath(*configFile)
@@ -146,8 +146,8 @@ func runProjectCreate(args []string) {
 	if *model != "" {
 		fmt.Printf("   默认模型: %s\n", *model)
 	}
-	fmt.Printf("\n下一步：\n  1. 绑定独立飞书应用:  in-one-chat feishu bind --project %s --app app_id:app_secret\n", name)
-	fmt.Printf("  2. 重启: in-one-chat（重启后该项目的飞书机器人上线）\n")
+	fmt.Printf("\n下一步：\n  1. 绑定独立飞书应用:  omp-lark-bridge feishu bind --project %s --app app_id:app_secret\n", name)
+	fmt.Printf("  2. 重启: omp-lark-bridge（重启后该项目的飞书机器人上线）\n")
 }
 
 func runProjectShow(args []string) {
@@ -160,7 +160,7 @@ func runProjectShow(args []string) {
 	}
 	_ = fs.Parse(args[1:])
 	if name == "" || strings.HasPrefix(name, "-") {
-		fmt.Fprintln(os.Stderr, "Error: project name is required: in-one-chat project show <name>")
+		fmt.Fprintln(os.Stderr, "Error: project name is required: omp-lark-bridge project show <name>")
 		os.Exit(1)
 	}
 	initConfigPath(*configFile)
@@ -234,7 +234,7 @@ func runProjectSet(args []string) {
 	}
 	_ = fs.Parse(args[1:])
 	if name == "" || strings.HasPrefix(name, "-") {
-		fmt.Fprintln(os.Stderr, "Error: project name is required: in-one-chat project set <name> [options]")
+		fmt.Fprintln(os.Stderr, "Error: project name is required: omp-lark-bridge project set <name> [options]")
 		os.Exit(1)
 	}
 	initConfigPath(*configFile)
@@ -297,7 +297,7 @@ func runProjectSet(args []string) {
 		// model already printed the only change; skip extra line
 	}
 	fmt.Printf("✅ 项目 %q 已更新：%s\n", name, strings.Join(keysOfBoolMap(set), ", "))
-	fmt.Println("   重启 in-one-chat 后生效")
+	fmt.Println("   重启 omp-lark-bridge 后生效")
 }
 
 func runProjectRemove(args []string) {
@@ -311,7 +311,7 @@ func runProjectRemove(args []string) {
 	}
 	_ = fs.Parse(args[1:])
 	if name == "" || strings.HasPrefix(name, "-") {
-		fmt.Fprintln(os.Stderr, "Error: project name is required: in-one-chat project remove <name>")
+		fmt.Fprintln(os.Stderr, "Error: project name is required: omp-lark-bridge project remove <name>")
 		os.Exit(1)
 	}
 	initConfigPath(*configFile)
@@ -335,7 +335,7 @@ func runProjectRemove(args []string) {
 		os.Exit(1)
 	}
 	fmt.Printf("✅ 项目 %q 已从配置移除（config.toml 中该项目块已删除）\n", name)
-	fmt.Println("   重启 in-one-chat 后生效；其飞书应用不再由本进程托管")
+	fmt.Println("   重启 omp-lark-bridge 后生效；其飞书应用不再由本进程托管")
 }
 
 func splitCSV(s string) []string {

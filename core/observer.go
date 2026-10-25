@@ -42,7 +42,7 @@ func parseObservationLine(line []byte) *observation {
 		return nil
 	}
 
-	// Skip in-one-chat's own sessions
+	// Skip omp-lark-bridge's own sessions
 	if ep, _ := raw["entrypoint"].(string); ep == "sdk-cli" {
 		return nil
 	}

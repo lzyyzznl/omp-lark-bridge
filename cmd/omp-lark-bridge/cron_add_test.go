@@ -8,10 +8,10 @@ import (
 )
 
 // TestPrintCronAddUsage_DocumentsSilent is a help-text guard for the
-// `in-one-chat cron add --silent` flag. The flag is parsed in runCronAdd
-// (cmd/in-one-chat/cron.go) and sets body["silent"] = true on the /cron/add
+// `omp-lark-bridge cron add --silent` flag. The flag is parsed in runCronAdd
+// (cmd/omp-lark-bridge/cron.go) and sets body["silent"] = true on the /cron/add
 // request; if printCronAddUsage ever drifts and stops mentioning it, users
-// who run `in-one-chat cron add --help` will not discover the feature even
+// who run `omp-lark-bridge cron add --help` will not discover the feature even
 // though it still works.
 //
 // This complements TestParseCronEditValue (cron_edit_test.go), which guards
@@ -44,7 +44,7 @@ func TestPrintCronAddUsage_DocumentsSilent(t *testing.T) {
 	if !strings.Contains(help, "Suppress cron start notification") {
 		t.Errorf("printCronAddUsage does not describe --silent; got:\n%s", help)
 	}
-	if !strings.Contains(help, "in-one-chat cron add --cron \"0 9 * * *\" --prompt \"Daily standup reminder\" --silent") {
+	if !strings.Contains(help, "omp-lark-bridge cron add --cron \"0 9 * * *\" --prompt \"Daily standup reminder\" --silent") {
 		t.Errorf("printCronAddUsage does not include --silent example; got:\n%s", help)
 	}
 }

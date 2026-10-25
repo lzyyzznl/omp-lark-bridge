@@ -18,7 +18,7 @@ import (
 )
 
 const (
-	githubRepo   = "lzyyzznl/in-one-chat"
+	githubRepo   = "lzyyzznl/omp-lark-bridge"
 	githubAPI    = "https://api.github.com/repos/" + githubRepo + "/releases/latest"
 	githubAllAPI = "https://api.github.com/repos/" + githubRepo + "/releases"
 	downloadBase = "https://github.com/" + githubRepo + "/releases/download"
@@ -83,7 +83,7 @@ func getUpdateHintIfAvailable() string {
 	}
 
 	if isNewer(cachedVer, version) {
-		return fmt.Sprintf("\n📦 Update available: %s → %s  (run: in-one-chat update)\n", version, cachedVer)
+		return fmt.Sprintf("\n📦 Update available: %s → %s  (run: omp-lark-bridge update)\n", version, cachedVer)
 	}
 	return ""
 }
@@ -96,7 +96,7 @@ func runUpdate() {
 		}
 	}
 
-	fmt.Printf("in-one-chat %s\n", version)
+	fmt.Printf("omp-lark-bridge %s\n", version)
 	if pre {
 		fmt.Println("Checking for updates (including pre-releases)...")
 	} else {
@@ -169,7 +169,7 @@ func runUpdate() {
 	syncNpmPackageVersion(execPath, strings.TrimPrefix(latest, "v"))
 
 	fmt.Printf("Updated to %s\n", latest)
-	fmt.Println("Restart in-one-chat to use the new version.")
+	fmt.Println("Restart omp-lark-bridge to use the new version.")
 }
 
 // fetchRelease returns the latest release. If pre=true, includes pre-releases.
@@ -254,7 +254,7 @@ func fetchLatestStableRelease() (*githubRelease, error) {
 func binaryAssetName(tag string) string {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
-	name := fmt.Sprintf("in-one-chat-%s-%s-%s", tag, goos, goarch)
+	name := fmt.Sprintf("omp-lark-bridge-%s-%s-%s", tag, goos, goarch)
 	if goos == "windows" {
 		name += ".exe"
 	}
@@ -264,14 +264,14 @@ func binaryAssetName(tag string) string {
 func archiveAssetName(tag string) string {
 	goos := runtime.GOOS
 	goarch := runtime.GOARCH
-	base := fmt.Sprintf("in-one-chat-%s-%s-%s", tag, goos, goarch)
+	base := fmt.Sprintf("omp-lark-bridge-%s-%s-%s", tag, goos, goarch)
 	if goos == "windows" {
 		return base + ".zip"
 	}
 	return base + ".tar.gz"
 }
 
-// extractBinaryFromArchive extracts the in-one-chat binary from a .tar.gz or .zip archive.
+// extractBinaryFromArchive extracts the omp-lark-bridge binary from a .tar.gz or .zip archive.
 func extractBinaryFromArchive(archivePath, archiveName string) (string, error) {
 	if strings.HasSuffix(archiveName, ".zip") {
 		return extractFromZip(archivePath)
@@ -304,8 +304,8 @@ func extractFromTarGz(archivePath string) (string, error) {
 		if hdr.Typeflag != tar.TypeReg {
 			continue
 		}
-		if strings.HasPrefix(hdr.Name, "in-one-chat") {
-			tmp, err := os.CreateTemp("", "in-one-chat-update-*")
+		if strings.HasPrefix(hdr.Name, "omp-lark-bridge") {
+			tmp, err := os.CreateTemp("", "omp-lark-bridge-update-*")
 			if err != nil {
 				return "", err
 			}
@@ -329,14 +329,14 @@ func extractFromZip(archivePath string) (string, error) {
 	defer r.Close()
 
 	for _, f := range r.File {
-		if !strings.HasPrefix(f.Name, "in-one-chat") {
+		if !strings.HasPrefix(f.Name, "omp-lark-bridge") {
 			continue
 		}
 		rc, err := f.Open()
 		if err != nil {
 			return "", err
 		}
-		tmp, err := os.CreateTemp("", "in-one-chat-update-*")
+		tmp, err := os.CreateTemp("", "omp-lark-bridge-update-*")
 		if err != nil {
 			rc.Close()
 			return "", err
@@ -375,7 +375,7 @@ func downloadToTemp(url string) (string, error) {
 		return "", fmt.Errorf("download returned HTTP %d", resp.StatusCode)
 	}
 
-	tmp, err := os.CreateTemp("", "in-one-chat-update-*")
+	tmp, err := os.CreateTemp("", "omp-lark-bridge-update-*")
 	if err != nil {
 		return "", err
 	}
@@ -454,9 +454,9 @@ func checkUpdate() {
 		return
 	}
 	if isNewer(release.TagName, version) {
-		hint := "in-one-chat update"
+		hint := "omp-lark-bridge update"
 		if release.Prerelease {
-			hint = "in-one-chat update --pre"
+			hint = "omp-lark-bridge update --pre"
 		}
 		fmt.Fprintf(os.Stderr, "Update available: %s → %s (run: %s)\n", version, release.TagName, hint)
 	}
@@ -560,7 +560,7 @@ func comparePreRelease(a, b string) int {
 }
 
 // syncNpmPackageVersion detects if the binary lives inside an npm package
-// (node_modules/in-one-chat/bin/) and updates the package.json version to
+// (node_modules/omp-lark-bridge/bin/) and updates the package.json version to
 // match the newly installed binary. Without this, the npm wrapper's run.js
 // would see a version mismatch and re-download the old version on next run.
 func syncNpmPackageVersion(execPath, newVer string) {
@@ -582,7 +582,7 @@ func syncNpmPackageVersion(execPath, newVer string) {
 	}
 
 	name, _ := pkg["name"].(string)
-	if name != "in-one-chat" {
+	if name != "omp-lark-bridge" {
 		return
 	}
 
@@ -604,7 +604,7 @@ func syncNpmPackageVersion(execPath, newVer string) {
 	if err := os.WriteFile(pkgJSON, out, 0o644); err != nil {
 		slog.Warn("update: failed to sync npm package.json version", "error", err)
 		fmt.Println("⚠️  Note: npm package version not synced. If the next run re-downloads an old version,")
-		fmt.Println("   please run: npm update -g in-one-chat")
+		fmt.Println("   please run: npm update -g omp-lark-bridge")
 	} else {
 		slog.Debug("update: synced npm package.json version", "old", oldVer, "new", newVer)
 	}

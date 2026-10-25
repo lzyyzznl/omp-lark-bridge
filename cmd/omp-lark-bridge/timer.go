@@ -145,7 +145,7 @@ func runTimerAdd(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -216,7 +216,7 @@ func runTimerList(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -309,7 +309,7 @@ func runTimerDel(args []string) {
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -347,13 +347,13 @@ func runTimerInfo(args []string) {
 
 	if id == "" {
 		fmt.Fprintln(os.Stderr, "Error: timer ID is required")
-		fmt.Fprintln(os.Stderr, "Usage: in-one-chat timer info <id>")
+		fmt.Fprintln(os.Stderr, "Usage: omp-lark-bridge timer info <id>")
 		os.Exit(1)
 	}
 
 	sockPath := resolveSocketPath(dataDir)
 	if _, err := os.Stat(sockPath); os.IsNotExist(err) {
-		fmt.Fprintf(os.Stderr, "Error: in-one-chat is not running (socket not found: %s)\n", sockPath)
+		fmt.Fprintf(os.Stderr, "Error: omp-lark-bridge is not running (socket not found: %s)\n", sockPath)
 		os.Exit(1)
 	}
 
@@ -391,7 +391,7 @@ func runTimerInfo(args []string) {
 }
 
 func printTimerUsage() {
-	fmt.Println(`Usage: in-one-chat timer <command> [options]
+	fmt.Println(`Usage: omp-lark-bridge timer <command> [options]
 
 Commands:
   add       Create a one-shot timer
@@ -399,11 +399,11 @@ Commands:
   info <id> Show detailed info of a timer
   del <id>  Cancel a timer
 
-Run 'in-one-chat timer <command> --help' for details.`)
+Run 'omp-lark-bridge timer <command> --help' for details.`)
 }
 
 func printTimerAddUsage() {
-	fmt.Println(`Usage: in-one-chat timer add [options] <delay> <prompt>
+	fmt.Println(`Usage: omp-lark-bridge timer add [options] <delay> <prompt>
 
 Create a one-shot timer (fires once after the specified delay).
 
@@ -418,12 +418,12 @@ Options:
       --session-mode <mode>  reuse (default) or new-per-run
       --timeout-mins <n>     Max minutes to wait per run (0 = no limit; default 30)
       --mute                 Suppress all messages (start + result)
-      --data-dir <path>      Data directory (default: ~/.in-one-chat)
+      --data-dir <path>      Data directory (default: ~/.omp-lark-bridge)
   -h, --help                 Show this help
 
 Examples:
-  in-one-chat timer add --delay 2h --prompt "Check PR status"
-  in-one-chat timer add --delay 30m --exec "df -h" --desc "Disk check"
-  in-one-chat timer add --at "2026-05-16T09:00" --prompt "Morning standup reminder"
-  in-one-chat timer add 2h Check PR status`)
+  omp-lark-bridge timer add --delay 2h --prompt "Check PR status"
+  omp-lark-bridge timer add --delay 30m --exec "df -h" --desc "Disk check"
+  omp-lark-bridge timer add --at "2026-05-16T09:00" --prompt "Morning standup reminder"
+  omp-lark-bridge timer add 2h Check PR status`)
 }

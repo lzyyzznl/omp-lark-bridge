@@ -1,7 +1,7 @@
-# in-one-chat · 定时任务看板
+# omp-lark-bridge · 定时任务看板
 
-面向 in-one-chat 的 **cron 管理看板**（React + Vite，粗野主义风格），
-通过 in-one-chat 自带的 HTTP Management API（`/api/v1/cron`）读写定时任务。
+面向 omp-lark-bridge 的 **cron 管理看板**（React + Vite，粗野主义风格），
+通过 omp-lark-bridge 自带的 HTTP Management API（`/api/v1/cron`）读写定时任务。
 
 ```
 web/
@@ -28,7 +28,7 @@ web/
    token = "<你自己的随机串>"   # 前端请求要用，别用默认值
    cors_origins = ["http://localhost:5173"]
    ```
-   重启 in-one-chat。
+   重启 omp-lark-bridge。
 
 2. 安装依赖并启动：
    ```bash
@@ -75,7 +75,7 @@ location / {
 
 ## API 对齐
 
-对接 in-one-chat `core/management.go` 的 REST：
+对接 omp-lark-bridge `core/management.go` 的 REST：
 `GET/POST /api/v1/cron`、`PATCH/DELETE /api/v1/cron/{id}`、
 `POST /api/v1/cron/{id}/exec`。响应统一 `{ok, data}` / `{ok:false, error}`，
 认证用 `Authorization: Bearer <token>`（或 `?token=`）。

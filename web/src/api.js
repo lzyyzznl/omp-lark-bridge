@@ -1,4 +1,4 @@
-// in-one-chat management API 封装。
+// omp-lark-bridge management API 封装。
 // 端点全部形如 {ok, data} / {ok:false, error}（见 core/management.go）。
 // base：默认相对路径走 vite dev proxy（/api/v1 → 127.0.0.1:31990），
 // 生产可 VITE_API_BASE 指向同源反代地址或绝对地址。
@@ -22,7 +22,7 @@ async function request(path, { method = 'GET', body } = {}) {
   try {
     res = await fetch(`${BASE}${path}`, { method, headers, body: body ? JSON.stringify(body) : undefined })
   } catch {
-    throw new Error('无法连接 management API —— 确认 in-one-chat 已开启 [management]，且地址正确（右上角「设置」）')
+    throw new Error('无法连接 management API —— 确认 omp-lark-bridge 已开启 [management]，且地址正确（右上角「设置」）')
   }
 
   let data = null

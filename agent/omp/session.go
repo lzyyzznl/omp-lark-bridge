@@ -17,7 +17,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/google/uuid"
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 const (
@@ -82,9 +82,9 @@ func ompSessionsRoot(ccDataDir string) string {
 		return filepath.Join(ccDataDir, "omp-sessions")
 	}
 	if home, err := os.UserHomeDir(); err == nil {
-		return filepath.Join(home, ".in-one-chat", "omp-sessions")
+		return filepath.Join(home, ".omp-lark-bridge", "omp-sessions")
 	}
-	return ".in-one-chat-omp-sessions"
+	return ".omp-lark-bridge-omp-sessions"
 }
 
 func sanitizeSessionName(sessionID string) string {
@@ -338,7 +338,7 @@ func (s *ompSession) saveImage(img core.ImageAttachment, messageID string, idx i
 	if len(img.Data) == 0 {
 		return ""
 	}
-	dir := filepath.Join(s.dir, ".in-one-chat", "images")
+	dir := filepath.Join(s.dir, ".omp-lark-bridge", "images")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		slog.Warn("omp: mkdir images failed", "error", err)
 		return ""
@@ -1118,7 +1118,7 @@ func dirHasSessionData(dir string) bool {
 }
 
 // buildSpawnArgs assembles the omp rpc-ui CLI args. A non-empty systemPrompt
-// (live sessions only) adds --append-system-prompt so the in-one-chat brief is
+// (live sessions only) adds --append-system-prompt so the omp-lark-bridge brief is
 // injected once per session process; query-only processes pass "".
 func buildSpawnArgs(sessionDir, workDir string, extraArgs []string, systemPrompt string) []string {
 	args := append([]string{
@@ -1138,8 +1138,8 @@ func buildSpawnArgs(sessionDir, workDir string, extraArgs []string, systemPrompt
 	return args
 }
 
-// prependSelfDirToPath puts the in-one-chat bridge's own directory at the front
-// of PATH in childEnv, so the agent shell can resolve `in-one-chat` even when
+// prependSelfDirToPath puts the omp-lark-bridge bridge's own directory at the front
+// of PATH in childEnv, so the agent shell can resolve `omp-lark-bridge` even when
 // the bridge was started from a non-PATH location (the single binary provides
 // the send/cron/timer commands the injected brief references). It is a no-op
 // when the directory is already listed.

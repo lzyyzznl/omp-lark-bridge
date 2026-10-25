@@ -129,7 +129,7 @@ export default function ProjectsPage({ onToast }) {
               <button className="btn btn-sm btn-green" onClick={create} disabled={busy || !newName.trim()}>创建</button>
               <button className="btn btn-sm" onClick={() => setShowNew(false)}>取消</button>
             </div>
-            <div className="help">每个项目 = 独立 omp（独立 work_dir）+ 独立飞书应用。创建后：<code>in-one-chat feishu bind --project {newName || '&lt;name&gt;'} --app app_id:app_secret</code></div>
+            <div className="help">每个项目 = 独立 omp（独立 work_dir）+ 独立飞书应用。创建后：<code>omp-lark-bridge feishu bind --project {newName || '&lt;name&gt;'} --app app_id:app_secret</code></div>
           </div>
         )}
       </div>
@@ -171,7 +171,7 @@ export default function ProjectsPage({ onToast }) {
                 <button className="btn btn-sm btn-solid" onClick={save} disabled={busy}>保存设置</button>
                 <button className="btn btn-sm btn-red" onClick={() => removeProj(selected)} disabled={busy}>删除项目</button>
               </div>
-              <div className="help">飞书绑定：CLI <code>in-one-chat feishu bind --project {selected} --app app_id:app_secret</code>，或编辑 config.toml 的 platforms.options。（本项目页不落凭证）</div>
+              <div className="help">飞书绑定：CLI <code>omp-lark-bridge feishu bind --project {selected} --app app_id:app_secret</code>，或编辑 config.toml 的 platforms.options。（本项目页不落凭证）</div>
             </div>
           </>
         )}

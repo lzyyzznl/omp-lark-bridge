@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 // captureWriteCloser records the frames the session writes to omp's stdin.

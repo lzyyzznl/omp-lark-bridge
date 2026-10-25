@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 // slashCommandTestServer stubs the token endpoint plus the app_slash_commands

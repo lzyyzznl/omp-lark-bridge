@@ -32,7 +32,7 @@ type bridgeCapabilitiesSnapshot struct {
 type bridgeCapabilitiesHost struct {
 	ID               string `json:"id"`
 	Hostname         string `json:"hostname,omitempty"`
-	CCConnectVersion string `json:"cc_connect_version,omitempty"`
+	BridgeVersion string `json:"bridge_version,omitempty"`
 	Commit           string `json:"commit,omitempty"`
 	BuildTime        string `json:"build_time,omitempty"`
 }
@@ -135,7 +135,7 @@ func (bs *BridgeServer) buildCapabilitiesSnapshot() bridgeCapabilitiesSnapshot {
 		Host: bridgeCapabilitiesHost{
 			ID:               hostName,
 			Hostname:         hostName,
-			CCConnectVersion: CurrentVersion,
+			BridgeVersion: CurrentVersion,
 			Commit:           CurrentCommit,
 			BuildTime:        CurrentBuildTime,
 		},

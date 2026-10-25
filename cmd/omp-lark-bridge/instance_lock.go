@@ -10,7 +10,7 @@ import (
 )
 
 // InstanceLock provides a file-based exclusive lock to prevent multiple
-// in-one-chat instances with the same config from running simultaneously.
+// omp-lark-bridge instances with the same config from running simultaneously.
 type InstanceLock struct {
 	file     *os.File
 	path     string
@@ -52,9 +52,9 @@ func AcquireInstanceLock(configPath string) (*InstanceLock, error) {
 		// Try to read PID from lock file for better error message
 		pid := readPIDFromLockFile(lockPath)
 		if pid > 0 {
-			return nil, fmt.Errorf("another in-one-chat instance is already running (PID %d) with config %s", pid, configPath)
+			return nil, fmt.Errorf("another omp-lark-bridge instance is already running (PID %d) with config %s", pid, configPath)
 		}
-		return nil, fmt.Errorf("another in-one-chat instance is already running with config %s", configPath)
+		return nil, fmt.Errorf("another omp-lark-bridge instance is already running with config %s", configPath)
 	}
 
 	// Write our PID to the lock file for diagnostics

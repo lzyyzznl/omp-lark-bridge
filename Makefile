@@ -1,6 +1,6 @@
-APP        := in-one-chat
-MODULE     := github.com/lzyyzznl/in-one-chat
-CMD        := ./cmd/in-one-chat
+APP        := omp-lark-bridge
+MODULE     := github.com/lzyyzznl/omp-lark-bridge
+CMD        := ./cmd/omp-lark-bridge
 DIST       := dist
 
 VERSION := v0.1.0

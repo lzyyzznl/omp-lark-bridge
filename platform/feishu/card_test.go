@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func decodeRenderedCard(t *testing.T, card *core.Card) map[string]any {

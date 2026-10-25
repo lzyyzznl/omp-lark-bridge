@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/lzyyzznl/in-one-chat/core"
+	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
 func TestParseSessionKey(t *testing.T) {

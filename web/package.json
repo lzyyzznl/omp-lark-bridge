@@ -1,9 +1,9 @@
 {
-  "name": "in-one-chat-web",
+  "name": "omp-lark-bridge-web",
   "private": true,
   "version": "0.1.0",
   "type": "module",
-  "description": "in-one-chat 定时任务管理看板（粗野主义）",
+  "description": "omp-lark-bridge 定时任务管理看板（粗野主义）",
   "scripts": {
     "dev": "vite",
     "build": "vite build",

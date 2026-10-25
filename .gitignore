@@ -1,8 +1,8 @@
 # ============================================================================
 # Binary outputs
 # ============================================================================
-/in-one-chat
-in-one-chat.bak-*
+/omp-lark-bridge
+omp-lark-bridge.bak-*
 *.exe
 *.exe~
 *.dll
@@ -46,8 +46,8 @@ config.*.toml
 # Instance lock files (created at startup, released on shutdown)
 *.toml.lock
 
-# in-one-chat runtime state
-.in-one-chat/
+# omp-lark-bridge runtime state
+.omp-lark-bridge/
 
 # npm / pnpm (for npm package distribution and web admin)
 .npmrc
@@ -152,6 +152,6 @@ secrets/
 credentials/
 
 .codex
-in-one-chat-new
+omp-lark-bridge-new
 # ws test dumps (written into cwd by feishu ws tests)
 test_ws_*.json

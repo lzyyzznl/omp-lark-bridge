@@ -114,15 +114,15 @@ func TestSyncNpmPackageVersion_NormalizesVPrefix(t *testing.T) {
 	// Regression test: old package.json stored version as "v1.0.0" but newVer
 	// is already stripped to "1.0.0". They should be treated as equal.
 	dir := t.TempDir()
-	ccConnectDir := filepath.Join(dir, "node_modules", "in-one-chat")
-	binDir := filepath.Join(ccConnectDir, "bin")
+	bridgeDir := filepath.Join(dir, "node_modules", "omp-lark-bridge")
+	binDir := filepath.Join(bridgeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	execPath := filepath.Join(binDir, "in-one-chat")
+	execPath := filepath.Join(binDir, "omp-lark-bridge")
 
-	pkgJSON := filepath.Join(ccConnectDir, "package.json")
-	pkgData := `{"name": "in-one-chat", "version": "v1.0.0"}`
+	pkgJSON := filepath.Join(bridgeDir, "package.json")
+	pkgData := `{"name": "omp-lark-bridge", "version": "v1.0.0"}`
 	if err := os.WriteFile(pkgJSON, []byte(pkgData), 0o644); err != nil {
 		t.Fatalf("write pkg.json: %v", err)
 	}
@@ -147,15 +147,15 @@ func TestSyncNpmPackageVersion_NormalizesVPrefix(t *testing.T) {
 
 func TestSyncNpmPackageVersion_UpdatesWhenDifferent(t *testing.T) {
 	dir := t.TempDir()
-	ccConnectDir := filepath.Join(dir, "node_modules", "in-one-chat")
-	binDir := filepath.Join(ccConnectDir, "bin")
+	bridgeDir := filepath.Join(dir, "node_modules", "omp-lark-bridge")
+	binDir := filepath.Join(bridgeDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
-	execPath := filepath.Join(binDir, "in-one-chat")
+	execPath := filepath.Join(binDir, "omp-lark-bridge")
 
-	pkgJSON := filepath.Join(ccConnectDir, "package.json")
-	pkgData := `{"name": "in-one-chat", "version": "v0.9.0"}`
+	pkgJSON := filepath.Join(bridgeDir, "package.json")
+	pkgData := `{"name": "omp-lark-bridge", "version": "v0.9.0"}`
 	if err := os.WriteFile(pkgJSON, []byte(pkgData), 0o644); err != nil {
 		t.Fatalf("write pkg.json: %v", err)
 	}

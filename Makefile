@@ -139,3 +139,15 @@ release:
 	GOOS=$(GOOS) GOARCH=$(GOARCH) CGO_ENABLED=0 \
 		go build $(_TAGS_FLAG) -ldflags "$(LDFLAGS)" -o $(OUT) $(CMD)
 	@echo "Built: $(OUT)"
+REPO := lzyyzznl/omp-lark-bridge
+
+# Build cross-platform dist then publish binaries to a GitHub Release so
+# skills/omp-lark-bridge/install.sh can fetch them on any machine (gh auth required).
+.PHONY: release-publish
+release-publish: release-all
+	@if ! gh release view $(VERSION) --repo $(REPO) >/dev/null 2>&1; then \
+		gh release create $(VERSION) --repo $(REPO) --title "$(APP) $(VERSION)" \
+			--notes "Prebuilt binaries for skills/omp-lark-bridge/install.sh"; \
+	fi
+	@gh release upload $(VERSION) --repo $(REPO) --clobber dist/$(APP)-*.tar.gz dist/*.zip
+	@echo "Published $(VERSION) to GitHub Release."

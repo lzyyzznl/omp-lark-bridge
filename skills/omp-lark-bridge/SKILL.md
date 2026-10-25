@@ -60,13 +60,15 @@ omp-lark-bridge agents del <name>           # 仅 user scope 可写/删
 
 - 桥不怕命令失败重试：直接跑 `omp-lark-bridge --help` 即可；产物源码在仓库根（`make build` 生成）。
 
-## 环境要求
+## 环境要求（首次使用先装二进制）
 
-本技能假设 `omp-lark-bridge` 二进制在 PATH 中（agent 执行命令的 shell 看不到就报「路径不存在」）。若 `command -v omp-lark-bridge` 为空：
+本技能假设 `omp-lark-bridge` 二进制在 PATH 中（agent 执行命令的 shell 看不到就报「路径不存在」）。
+
+**新机器 / 报路径不存在时，先自动安装** —— 下载匹配本机平台的预编译二进制并加入 PATH：
 
 ```bash
-cd <仓库根> && make build          # 生成 ./omp-lark-bridge
-mkdir -p ~/.local/bin && ln -sfn "$PWD/omp-lark-bridge" ~/.local/bin/omp-lark-bridge
+cd ~/.agents/skills/omp-lark-bridge   # 或技能实际所在目录
+bash install.sh                       # 需 gh 已认证（私有仓库）；go install 为兜底
 ```
 
-或 `go install github.com/lzyyzznl/omp-lark-bridge/cmd/omp-lark-bridge`。装好后先 `omp-lark-bridge --version` 确认。
+装好后开新 shell（PATH 已写入 rc），`omp-lark-bridge --version` 确认。手动方式：源码 `make build` 后把产物软链到 `~/.local/bin`，或 `go install github.com/lzyyzznl/omp-lark-bridge/cmd/omp-lark-bridge`。

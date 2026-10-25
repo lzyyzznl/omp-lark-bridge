@@ -82,6 +82,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   桥不读技能正文。cron/timer 任务 prompt 以 `/<技能名>` 开头时同样展开。上一版
   因 omp 未实现旧 `SkillProvider` 扫描而删除的框架，现按 omp 协议重新接通
   （`SkillProvider{ListSkills}`；未实现该接口的 agent 自动隐藏 `/skills`）。
+### Changed
+- 技能跨机可自举：`skills/omp-lark-bridge/install.sh` 一键下载匹配本机平台
+  （linux/darwin × amd64/arm64）的 GitHub Release 预编译二进制并注册进
+  PATH（~/.profile/.bashrc/.zshrc），go install 为兜底；`make release-publish`
+  发版上传资产。SKILL.md 增加「环境要求（首次使用先装二进制）」。
 
 ### Fixed
 

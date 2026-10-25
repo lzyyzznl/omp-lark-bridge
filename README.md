@@ -142,6 +142,21 @@ bot no longer advertises (stale capabilities, renamed commands), so the panel
 never shows dead commands. The client caches the list for a few minutes. Set
 `slash_commands = false` to opt out.
 
+## System-prompt injection
+
+Each live omp session is spawned with a compact in-one-chat capability brief
+via `--append-system-prompt` (one process per session, so it lands exactly once
+before the session's first message). The brief is Chinese, points the agent at
+`in-one-chat send` / `cron` / `timer` and at `/skill:<name>` invocations, and —
+unlike the full `AgentSystemPrompt()` — does **not** repeat the skill list omp
+already discovers itself. Override it per project with
+`append_system_prompt = "…"` under `[projects.agent.options]`; set it to an
+explicit empty string to disable injection entirely.
+
+The bridge also prepends its own directory to the spawned process's PATH, so the
+agent shell can resolve `in-one-chat` even when the bridge was started from a
+non-PATH location. This applies to linux + windows x64 binaries alike.
+
 ## Cron & timer dashboard
 
 `/cron` and `/timer` render a paged card (8 jobs per page) with a per-job status

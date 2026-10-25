@@ -127,6 +127,13 @@ work_dir = "/path/to/your/workspace"
 # cmd = "omp"
 # env = ["MY_VAR=value"]
 
+# Optional: system-prompt fragment injected into each session via
+# --append-system-prompt. Omitted → the compact in-one-chat brief (Chinese);
+# an explicitly empty string disables injection entirely.
+# 可选：注入每个会话的系统提示片段（经 --append-system-prompt）。
+# 省略 → 内置精简版 in-one-chat 能力说明（中文）；显式留空字符串 → 完全不注入。
+# append_system_prompt = ""
+
 # ============================================================
 # Feishu / Lark / 飞书
 # ============================================================

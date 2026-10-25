@@ -231,6 +231,30 @@ Use this sparingly; when in doubt, send a brief reply instead.
 `
 }
 
+// CompactSystemPrompt returns a short in-one-chat capability brief for agents
+// that inject it natively (SystemPromptSupporter), e.g. omp via
+// --append-system-prompt. Unlike AgentSystemPrompt() it omits the cron/timer
+// reference tables and send flag reference — the agent can query /cron, /timer
+// and /skills for detail — and stays small enough for per-session injection.
+func CompactSystemPrompt() string {
+	return `你运行在 in-one-chat 桥中，本桥把你连接到聊天平台（如飞书）。你的文字回复会自动送达用户 —— 正常直接回复即可，普通回复不要调用 in-one-chat send。
+
+需要把生成的图片/文件/语音发给用户时：
+  in-one-chat send --image /绝对路径.png   （也可用 --file / --audio）
+  in-one-chat send --tts "要朗读的文字"
+send --tts / --audio 成功后，若无必要文字确认，直接回复 NO_REPLY 即可。
+
+定时任务分两种，按需求选：
+  in-one-chat cron add --cron "分 时 日 月 周" --prompt "..."   # 周期重复
+  in-one-chat timer add --delay 2h --prompt "..."              # 一次性/指定未来时间
+告知用户用 /cron 或 /timer 查看/管理该任务。
+
+本轮无需可见回复时，在回复末尾单独一行写上 NO_REPLY（不区分大小写），桥会吞掉标记后的内容不再送达。
+
+CC_PROJECT 和 CC_SESSION_KEY 已注入环境，不要重复传 --project / --session-key。
+在本对话中：` + "`/skills`" + ` 列出已发现的技能；` + "`/skill:<名称> 参数...`" + ` 原样调用某一技能（桥会透传给 omp 解析技能正文）。`
+}
+
 // SystemPromptSupporter is an optional marker interface for agents that
 // natively inject AgentSystemPrompt() (e.g., via --append-system-prompt).
 // Agents that do NOT implement this need the instructions written to their

@@ -107,7 +107,7 @@ func sanitizeSessionName(sessionID string) string {
 	return defaultSessionName
 }
 
-func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, ccDataDir, sessionID string, env []string) (*ompSession, error) {
+func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, ccDataDir, sessionID string, env []string, systemPrompt string) (*ompSession, error) {
 	sctx, cancel := context.WithCancel(ctx)
 
 	// The store directory is a stable container for every conversation of this
@@ -115,7 +115,7 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 	// (see enterSession), so the directory must NOT be derived from the agent
 	// session id: that produced a fresh empty directory per restart and made
 	// resume impossible.
-	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env)
+	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env, systemPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -1117,11 +1117,61 @@ func dirHasSessionData(dir string) bool {
 	return false
 }
 
+// buildSpawnArgs assembles the omp rpc-ui CLI args. A non-empty systemPrompt
+// (live sessions only) adds --append-system-prompt so the in-one-chat brief is
+// injected once per session process; query-only processes pass "".
+func buildSpawnArgs(sessionDir, workDir string, extraArgs []string, systemPrompt string) []string {
+	args := append([]string{
+		// rpc-ui (not rpc) is required for the `ask` tool's tool UI: plain rpc
+		// never emits extension_ui_request tool dialogs, so `ask` would resolve
+		// to its defaults without ever reaching the user (verified against
+		// omp 18.12.6: set_ask_dialog succeeds but no ask frame follows).
+		"--mode", "rpc-ui",
+		"--approval-mode", "yolo",
+		"--session-dir", sessionDir,
+		"--cwd", workDir,
+	}, extraArgs...)
+
+	if systemPrompt != "" {
+		args = append(args, "--append-system-prompt", systemPrompt)
+	}
+	return args
+}
+
+// prependSelfDirToPath puts the in-one-chat bridge's own directory at the front
+// of PATH in childEnv, so the agent shell can resolve `in-one-chat` even when
+// the bridge was started from a non-PATH location (the single binary provides
+// the send/cron/timer commands the injected brief references). It is a no-op
+// when the directory is already listed.
+func prependSelfDirToPath(childEnv []string, sep string) []string {
+	self, err := os.Executable()
+	if err != nil {
+		return childEnv
+	}
+	dir := filepath.Dir(self)
+
+	for i, kv := range childEnv {
+		key, val, ok := strings.Cut(kv, "=")
+		if !ok || key != "PATH" {
+			continue
+		}
+		for _, p := range strings.Split(val, sep) {
+			if p == dir {
+				return childEnv // already on PATH
+			}
+		}
+		out := append([]string{}, childEnv...)
+		out[i] = "PATH=" + dir + sep + val
+		return out
+	}
+	return append([]string{"PATH=" + dir}, childEnv...)
+}
+
 // spawnOmpProcess launches an omp rpc-ui process and waits for the `ready`
 // handshake. It does NOT begin/resume any conversation: live sessions call
 // enterSession next, while query-only callers (model discovery) just send a
 // command and tear the process down.
-func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string) (*ompSession, error) {
+func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string, systemPrompt string) (*ompSession, error) {
 	sctx, cancel := context.WithCancel(ctx)
 
 	// The store directory is a stable container for every conversation of this
@@ -1135,19 +1185,11 @@ func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDi
 		return nil, fmt.Errorf("omp: mkdir session store: %w", err)
 	}
 
-	args := append([]string{
-		// rpc-ui (not rpc) is required for the `ask` tool's tool UI: plain rpc
-		// never emits extension_ui_request tool dialogs, so `ask` would resolve
-		// to its defaults without ever reaching the user (verified against
-		// omp 18.12.6: set_ask_dialog succeeds but no ask frame follows).
-		"--mode", "rpc-ui",
-		"--approval-mode", "yolo",
-		"--session-dir", sessionDir,
-		"--cwd", workDir,
-	}, extraArgs...)
+	args := buildSpawnArgs(sessionDir, workDir, extraArgs, systemPrompt)
 
 	fullEnv := append([]string{"PI_NO_TITLE=1"}, os.Environ()...)
 	fullEnv = append(fullEnv, env...)
+	fullEnv = prependSelfDirToPath(fullEnv, string(os.PathListSeparator))
 
 	cmd := exec.CommandContext(sctx, bin, args...)
 	cmd.Dir = workDir
@@ -1216,7 +1258,7 @@ func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDi
 // callers can fall back to the configured model.
 func discoverLoadedModels(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string) []core.ModelOption {
 	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env)
+	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env, "")
 	if err != nil {
 		cancel()
 		slog.Warn("omp: model discovery spawn failed", "error", err)

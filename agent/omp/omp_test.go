@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -476,4 +477,71 @@ func TestParseModelsResponse(t *testing.T) {
 			t.Errorf("%s: parseModelsResponse = %v, want %v", tt.name, names, tt.want)
 		}
 	}
+}
+
+func TestBuildSpawnArgs_AppendsSystemPromptForLiveSessions(t *testing.T) {
+	args := buildSpawnArgs("/store", "/work", []string{"--extra"}, "in-one-chat brief")
+	found := false
+	for i, a := range args {
+		if a == "--append-system-prompt" {
+			if i+1 >= len(args) || args[i+1] != "in-one-chat brief" {
+				t.Fatalf("--append-system-prompt missing its value: %v", args)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("live session args must include --append-system-prompt: %v", args)
+	}
+}
+
+func TestBuildSpawnArgs_SkipsInjectionForQueryProcess(t *testing.T) {
+	args := buildSpawnArgs("/store", "/work", nil, "")
+	for _, a := range args {
+		if a == "--append-system-prompt" {
+			t.Fatalf("query-only process must not inject system prompt: %v", args)
+		}
+	}
+}
+
+func TestPrependSelfDirToPath_AddsBridgeDir(t *testing.T) {
+	env := []string{"HOME=/home/u", "PATH=/usr/bin:/bin"}
+	out := prependSelfDirToPath(env, ":")
+	if len(out) != 2 {
+		t.Fatalf("env length = %d, want 2", len(out))
+	}
+	selfDir := filepath.Dir(mustExecutable(t))
+	want := "PATH=" + selfDir + ":/usr/bin:/bin"
+	if out[1] != want {
+		t.Fatalf("PATH = %q, want %q", out[1], want)
+	}
+}
+
+func TestPrependSelfDirToPath_AlreadyPresentSkips(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Dir(self)
+	env := []string{"PATH=" + dir + ":/usr/bin"}
+	out := prependSelfDirToPath(env, ":")
+	if len(out) != 1 || out[0] != "PATH="+dir+":/usr/bin" {
+		t.Fatalf("already-present PATH must not change: %v", out)
+	}
+}
+
+func TestPrependSelfDirToPath_NoPathAppends(t *testing.T) {
+	out := prependSelfDirToPath([]string{}, ":")
+	if len(out) != 1 || !strings.HasPrefix(out[0], "PATH=") {
+		t.Fatalf("missing PATH must be appended: %v", out)
+	}
+}
+
+func mustExecutable(t *testing.T) string {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatalf("os.Executable: %v", err)
+	}
+	return self
 }

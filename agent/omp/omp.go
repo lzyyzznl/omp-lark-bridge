@@ -43,6 +43,11 @@ type Agent struct {
 	ccDataDir    string // global in-one-chat data dir (session stores + model cache)
 	mu           sync.RWMutex
 
+	// appendSystemPrompt is the in-one-chat capability brief injected into each
+	// live RPC session via --append-system-prompt (one process per session, so
+	// the injection lands exactly once, before the session's first message).
+	appendSystemPrompt string
+
 	// One-shot cron overrides consumed by the next StartSession. Only
 	// ExecuteCronJob's CronOverrideApplier path sets them (cron jobs pin their
 	// own model / thinking level and always run in a fresh session).
@@ -79,13 +84,23 @@ func New(opts map[string]any) (core.Agent, error) {
 		return nil, fmt.Errorf("omp: %q CLI not found in PATH, install from: https://omp.sh", cmd)
 	}
 
+	// Optional user-provided system prompt fragment injected via
+	// --append-system-prompt; defaults to the compact in-one-chat brief. An
+	// explicitly empty string disables injection (omp then runs with no bridge
+	// brief; it still discovers skills on its own).
+	appendSystemPrompt, explicit := opts["append_system_prompt"].(string)
+	if !explicit {
+		appendSystemPrompt = core.CompactSystemPrompt()
+	}
+
 	return &Agent{
-		workDir:      workDir,
-		model:        model,
-		cmd:          cmd,
-		cliExtraArgs: extraArgs,
-		configEnv:    core.ParseConfigEnv(opts),
-		ccDataDir:    ccDataDir,
+		workDir:            workDir,
+		model:              model,
+		cmd:                cmd,
+		cliExtraArgs:       extraArgs,
+		configEnv:          core.ParseConfigEnv(opts),
+		ccDataDir:          ccDataDir,
+		appendSystemPrompt: appendSystemPrompt,
 	}, nil
 }
 
@@ -212,6 +227,11 @@ func (a *Agent) GlobalMemoryFile() string {
 // `compact` command, which the engine cannot reach as plain text.
 func (a *Agent) CompressCommand() string { return "" }
 
+// HasSystemPromptSupport implements core.SystemPromptSupporter: the in-one-chat
+// capability brief is injected natively via --append-system-prompt at spawn, so
+// the engine need not write it to a memory file.
+func (a *Agent) HasSystemPromptSupport() bool { return true }
+
 // -- sessions --
 
 func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentSession, error) {
@@ -221,6 +241,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraArgs := append([]string{}, a.cliExtraArgs...)
 	workDir := a.workDir
 	ccDataDir := a.ccDataDir
+	appendSystemPrompt := a.appendSystemPrompt
 	extraEnv := append([]string{}, a.configEnv...)
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
@@ -235,7 +256,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	a.pendingModel, a.pendingThinking = "", ""
 	a.overrideMu.Unlock()
 
-	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, ccDataDir, sessionID, extraEnv)
+	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
 }
 
 // ListSessions lists the omp session stores this in-one-chat instance owns.

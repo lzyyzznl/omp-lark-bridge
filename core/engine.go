@@ -1435,6 +1435,15 @@ func (e *Engine) ActiveSessionKeys() []string {
 	return keys
 }
 
+// CronOverrideApplier is optionally implemented by agents that support
+// per-run model / thinking-level overrides for cron jobs. The engine calls it
+// before a cron job runs in its own fresh session so the agent can apply the
+// job's model and thinking level to that session's startup (e.g. omp's
+// set_model / set_thinking_level RPC frames).
+type CronOverrideApplier interface {
+	ApplyCronOverrides(model, thinkingLevel string)
+}
+
 // ExecuteCronJob runs a cron job by injecting a synthetic message into the engine.
 // It finds the platform that owns the session key, reconstructs a reply context,
 // and processes the message as if the user sent it.
@@ -1509,16 +1518,18 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		}
 	}
 
-	// Wrap platform to discard all outgoing messages when muted
+	// Wrap platform to discard all outgoing messages when muted or result-only.
+	// Result-only still delivers the final answer once after execution (below),
+	// so the run itself streams into the void.
 	effectivePlatform := targetPlatform
-	if job.Mute {
+	if job.Mute || job.ResultOnly {
 		effectivePlatform = &mutePlatform{targetPlatform}
 	}
 
 	// Notify user that a cron job is executing (unless silent/muted)
 	// Note: this notification uses targetPlatform directly, not the tracking wrapper,
 	// so it won't count as a "meaningful delivery" for empty response detection.
-	if !job.Mute {
+	if !job.Mute && !job.ResultOnly {
 		silent := false
 		if e.cronScheduler != nil {
 			silent = e.cronScheduler.IsSilent(job)
@@ -1537,6 +1548,9 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	}
 
 	if job.IsShellJob() {
+		// ponytail: result-only on shell jobs behaves as mute — executeCronShell
+		// streams via the (muted) platform; surfacing one-shot output would need a
+		// rewrite of its multiple send points. Prompt jobs get the real result-only.
 		return e.executeCronShell(effectivePlatform, replyCtx, job)
 	}
 
@@ -1600,6 +1614,12 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	} else {
 		useNewSession = job.UsesNewSessionPerRun()
 	}
+	// A job that pins its own model or thinking level runs in a fresh session:
+	// applying it to the shared active session would leak the cron's model into
+	// the user's ongoing chat (and reuse cannot safely switch models mid-run).
+	if job.Model != "" || job.ThinkingLevel != "" {
+		useNewSession = true
+	}
 
 	if useNewSession {
 		msg.SessionKey = runSessionKey
@@ -1612,6 +1632,11 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 			iKey = workspaceDir + ":" + iKey
 		}
 		prevHistLen := session.HistoryLen()
+		// Let the agent apply the job's model / thinking level to the session
+		// it is about to start. Ignored by agents that do not implement it.
+		if applier, ok := agent.(CronOverrideApplier); ok {
+			applier.ApplyCronOverrides(job.Model, job.ThinkingLevel)
+		}
 		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
 		e.cleanupInteractiveState(iKey)
 		// Empty-response detection via session history delta: processInteractiveMessageWith
@@ -1619,9 +1644,13 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		// (prevHistLen+2). This approach correctly detects empty responses across all
 		// delivery modes (plain text, cards, rich cards, DingTalk AI streaming) because
 		// AddHistory("assistant",...) is called before any platform-specific rendering path.
-		if !job.Mute && session.HistoryLen() < prevHistLen+2 {
+		if !job.Mute && !job.ResultOnly && session.HistoryLen() < prevHistLen+2 {
 			return fmt.Errorf("cron job %q produced an empty response", job.ID)
 		}
+		if job.ResultOnly {
+			e.deliverCronResultOnly(targetPlatform, replyCtx, session)
+		}
+		e.recordCronLastSession(job, session)
 		return nil
 	}
 
@@ -1637,13 +1666,48 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	prevHistLen := session.HistoryLen()
 	e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
 	// Same empty-response detection as the useNewSession path above.
-	if !job.Mute && session.HistoryLen() < prevHistLen+2 {
+	if !job.Mute && !job.ResultOnly && session.HistoryLen() < prevHistLen+2 {
 		return fmt.Errorf("cron job %q produced an empty response", job.ID)
 	}
+	if job.ResultOnly {
+		e.deliverCronResultOnly(targetPlatform, replyCtx, session)
+	}
+	e.recordCronLastSession(job, session)
 	return nil
 }
 
-// ExecuteTimerJob fires a one-shot timer job: resolves the platform, sends a
+// recordCronLastSession persists the transcript id of a finished cron run to
+// the store (surviving the job snapshot RunJobNow executes against). It also
+// appends to the job's session history so the web cron-session viewer can list
+// every transcript the job has run in.
+func (e *Engine) recordCronLastSession(job *CronJob, session *Session) {
+	id := cronSessionTranscriptID(session)
+	job.LastSessionID = id // best-effort on the caller's copy (tests assert on it)
+	if id != "" {
+		found := false
+		for _, sid := range job.SessionIDs {
+			if sid == id {
+				found = true
+				break
+			}
+		}
+		if !found {
+			job.SessionIDs = append(job.SessionIDs, id)
+		}
+	}
+	if e.cronScheduler != nil && id != "" {
+		e.cronScheduler.Store().AppendSessionID(job.ID, id)
+	}
+}
+
+// deliverCronResultOnly sends the final assistant answer once for a result-only
+// cron job, after the silent run has finished streaming into the void.
+func (e *Engine) deliverCronResultOnly(targetPlatform Platform, replyCtx any, session *Session) {
+	if text := session.LastAssistantText(); text != "" {
+		e.send(targetPlatform, replyCtx, text)
+	}
+}
+
 // notification (unless muted), and either runs a shell command or injects a
 // synthetic message into the agent session.
 func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
@@ -17005,4 +17069,15 @@ func restoreActiveProviderFromSession(agent Agent, session *Session) {
 	}
 	slog.Info("restored active provider from session",
 		"session_id", session.ID, "provider", want)
+}
+
+// cronSessionTranscriptID extracts the transcript file base name from a
+// session's agent session id (an absolute .jsonl path for omp). Empty when the
+// agent keeps no on-disk transcript, so cron jobs keep running regardless.
+func cronSessionTranscriptID(s *Session) string {
+	id := s.GetAgentSessionID()
+	if id == "" || !strings.HasSuffix(strings.ToLower(id), ".jsonl") {
+		return ""
+	}
+	return strings.TrimSuffix(filepath.Base(id), filepath.Ext(id))
 }

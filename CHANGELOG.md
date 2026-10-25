@@ -7,6 +7,18 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ### Added
 
+- 多项目管理（模型 A：每项目 = 独立 omp agent/工作目录 + 独立飞书应用）：
+  - CLI `project list|create|show|set|remove`（`--config` 可放 root 位，子命令继承，
+    不再回落默认配置污染真实 config；`project create`/`set` 支持 model，
+    `remove` 需确认或 `--yes`）。
+  - 管理 API `GET/PATCH/DELETE /projects/{name}`、`POST /projects/{name}/add-platform`：
+    PATCH 支持 model，`GET` 详情含 model/work_dir/settings/platform_configs。
+  - Web 项目管理页（两栏：项目列表 + 详情/编辑）：新建（feishu 槽位 + work_dir）、
+    编辑 work_dir/model/admin_from/allow_from/disabled_commands、删除；改配置重启生效。
+- 定时任务通知模式：cron 任务新增 `result_only`（web/API「仅发结果」）——
+  执行过程静音（复用 mutePlatform 丢弃过程推送与开始通知），结束后把最终
+  assistant 结果投递一次；与 `mute`（全静音）互斥。shell 型任务 result_only
+  等效 mute。（提示：新增 type 为 omp 的项目不会破坏「项目是最大颗粒度下挂 n 个定时任务」模型。）
 - omp `ask` tool dialogs now render in chat: the adapter enables
   `set_ask_dialog`, turns `extension_ui_request{method:"ask"}` into engine
   question cards (Feishu buttons; multi-select answers by numbers) and replies
@@ -28,6 +40,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   the active session (typed command; no card button).
 - Chat-list preview: settled cards set `config.summary` from the answer's first
   body line (Feishu otherwise shows `生成中` forever).
+- 会话查看页改为「定时任务 → 该任务的会话」两级视图：左侧列出全部定时任务
+  （显示名下会话数），选中后右侧只显示该任务执行过的会话（`CronJob` 每次
+  执行累积 `session_ids`，旧任务回退 `last_session_id`），普通聊天的
+  transcript 不再混入；任务名下的每个会话可展开查看完整足迹并可一键复制文本。
+- 会话足迹里的工具调用重新设计（借鉴 agentsview）：`toolCall` 与其后的
+  `toolResult` 按 `toolCallId` 配对，渲染为一行紧凑卡片——结果状态点
+  （成功绿/失败红/运行中）+ 工具名 + 意图/参数摘要 + 结果大小，点击展开
+  才显示参数与结果全文；`toolResult` 消息不再作为散落的大段纯文本输出。
 
 ### Fixed
 

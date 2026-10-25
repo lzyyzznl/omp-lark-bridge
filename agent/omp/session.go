@@ -107,7 +107,7 @@ func sanitizeSessionName(sessionID string) string {
 	return defaultSessionName
 }
 
-func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, ccDataDir, sessionID string, env []string) (*ompSession, error) {
+func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, ccDataDir, sessionID string, env []string) (*ompSession, error) {
 	sctx, cancel := context.WithCancel(ctx)
 
 	// The store directory is a stable container for every conversation of this
@@ -115,89 +115,15 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 	// (see enterSession), so the directory must NOT be derived from the agent
 	// session id: that produced a fresh empty directory per restart and made
 	// resume impossible.
-	sessionDir := ompSessionStoreDir(ccDataDir, "")
-	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
-		cancel()
-		return nil, fmt.Errorf("omp: mkdir session store: %w", err)
-	}
-
-	args := append([]string{
-		// rpc-ui (not rpc) is required for the `ask` tool's tool UI: plain rpc
-		// never emits extension_ui_request tool dialogs, so `ask` would resolve
-		// to its defaults without ever reaching the user (verified against
-		// omp 18.12.6: set_ask_dialog succeeds but no ask frame follows).
-		"--mode", "rpc-ui",
-		"--approval-mode", "yolo",
-		"--session-dir", sessionDir,
-		"--cwd", workDir,
-	}, extraArgs...)
-
-	fullEnv := append([]string{"PI_NO_TITLE=1"}, os.Environ()...)
-	fullEnv = append(fullEnv, env...)
-
-	cmd := exec.CommandContext(sctx, bin, args...)
-	cmd.Dir = workDir
-	cmd.Env = fullEnv
-
-	stdin, err := cmd.StdinPipe()
+	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("omp: stdin pipe: %w", err)
-	}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("omp: stdout pipe: %w", err)
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("omp: stderr pipe: %w", err)
-	}
-
-	s := &ompSession{
-		ctx:        sctx,
-		cancel:     cancel,
-		bin:        bin,
-		args:       args,
-		env:        fullEnv,
-		dir:        workDir,
-		cmd:        cmd,
-		stdin:      stdin,
-		stderr:     stderr,
-		ready:      make(chan struct{}),
-		events:     make(chan core.Event, 512),
-		sessionDir: sessionDir,
-		pending:    make(map[string]chan map[string]any),
-		asks:       make(map[string]*ompPendingAsk),
-	}
-
-	if err := cmd.Start(); err != nil {
-		cancel()
-		return nil, fmt.Errorf("omp: start %s: %w", bin, err)
-	}
-	s.alive.Store(true)
-
-	go s.readLoop(stdout)
-	go s.drainStderr()
-	go s.waitExit()
-
-	// Wait for the omp `ready` handshake before the caller sends anything.
-	select {
-	case <-s.ready:
-	case <-time.After(readyTimeout):
-		cancel()
-		return nil, fmt.Errorf("omp: timed out waiting for rpc ready frame; args=%v", args)
-	}
-	if s.readyErr != nil {
-		cancel()
-		return nil, fmt.Errorf("omp: rpc handshake: %w", s.readyErr)
+		return nil, err
 	}
 
 	// Begin/resume the omp-side session inside the running process. sessionID
 	// is whatever CurrentSessionID() reported last time: an absolute session file
 	// path (current builds) or a bare id / directory name (legacy).
-	if err := s.enterSession(model, sessionID); err != nil {
+	if err := s.enterSession(model, thinking, sessionID); err != nil {
 		cancel()
 		return nil, err
 	}
@@ -217,7 +143,7 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 // the id/file must come from get_state — without that this adapter persisted an
 // empty AgentSessionID and every daemon restart silently began a blank
 // conversation.
-func (s *ompSession) enterSession(model, resumeTarget string) error {
+func (s *ompSession) enterSession(model, thinking, resumeTarget string) error {
 	kind, value := planEnterSession(resumeTarget, s.sessionDir)
 	if err := s.enterWithFallback(kind, value); err != nil {
 		return err
@@ -232,7 +158,22 @@ func (s *ompSession) enterSession(model, resumeTarget string) error {
 		} else {
 			mp["modelId"] = model
 		}
-		return s.writeFrame(mp)
+		if err := s.writeFrame(mp); err != nil {
+			return err
+		}
+		// A missing/invalid model is not fatal: omp rejects it with
+		// `Model not found: <provider>/<id>` — warn and keep the session on its
+		// default model so the job still runs (cron requirement).
+		if _, err := s.waitResponse(pid); err != nil {
+			slog.Warn("omp: set_model failed, falling back to default model", "model", model, "error", err)
+		}
+	}
+	if thinking != "" {
+		// set_thinking_level is lenient (verified on omp 18.12.6: unsupported
+		// levels are accepted and clamped), so no response check needed.
+		if err := s.writeFrame(map[string]any{"id": uuid.NewString(), "type": "set_thinking_level", "level": thinking}); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -1174,4 +1115,147 @@ func dirHasSessionData(dir string) bool {
 		}
 	}
 	return false
+}
+
+// spawnOmpProcess launches an omp rpc-ui process and waits for the `ready`
+// handshake. It does NOT begin/resume any conversation: live sessions call
+// enterSession next, while query-only callers (model discovery) just send a
+// command and tear the process down.
+func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string) (*ompSession, error) {
+	sctx, cancel := context.WithCancel(ctx)
+
+	// The store directory is a stable container for every conversation of this
+	// project. Per-conversation identity is carried by the session *file* path
+	// (see enterSession), so the directory must NOT be derived from the agent
+	// session id: that produced a fresh empty directory per restart and made
+	// resume impossible.
+	sessionDir := ompSessionStoreDir(ccDataDir, "")
+	if err := os.MkdirAll(sessionDir, 0o755); err != nil {
+		cancel()
+		return nil, fmt.Errorf("omp: mkdir session store: %w", err)
+	}
+
+	args := append([]string{
+		// rpc-ui (not rpc) is required for the `ask` tool's tool UI: plain rpc
+		// never emits extension_ui_request tool dialogs, so `ask` would resolve
+		// to its defaults without ever reaching the user (verified against
+		// omp 18.12.6: set_ask_dialog succeeds but no ask frame follows).
+		"--mode", "rpc-ui",
+		"--approval-mode", "yolo",
+		"--session-dir", sessionDir,
+		"--cwd", workDir,
+	}, extraArgs...)
+
+	fullEnv := append([]string{"PI_NO_TITLE=1"}, os.Environ()...)
+	fullEnv = append(fullEnv, env...)
+
+	cmd := exec.CommandContext(sctx, bin, args...)
+	cmd.Dir = workDir
+	cmd.Env = fullEnv
+
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("omp: stdin pipe: %w", err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("omp: stdout pipe: %w", err)
+	}
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("omp: stderr pipe: %w", err)
+	}
+
+	s := &ompSession{
+		ctx:        sctx,
+		cancel:     cancel,
+		bin:        bin,
+		args:       args,
+		env:        fullEnv,
+		dir:        workDir,
+		cmd:        cmd,
+		stdin:      stdin,
+		stderr:     stderr,
+		ready:      make(chan struct{}),
+		events:     make(chan core.Event, 512),
+		sessionDir: sessionDir,
+		pending:    make(map[string]chan map[string]any),
+		asks:       make(map[string]*ompPendingAsk),
+	}
+
+	if err := cmd.Start(); err != nil {
+		cancel()
+		return nil, fmt.Errorf("omp: start %s: %w", bin, err)
+	}
+	s.alive.Store(true)
+
+	go s.readLoop(stdout)
+	go s.drainStderr()
+	go s.waitExit()
+
+	// Wait for the omp `ready` handshake before the caller sends anything.
+	select {
+	case <-s.ready:
+	case <-time.After(readyTimeout):
+		cancel()
+		return nil, fmt.Errorf("omp: timed out waiting for rpc ready frame; args=%v", args)
+	}
+	if s.readyErr != nil {
+		cancel()
+		return nil, fmt.Errorf("omp: rpc handshake: %w", s.readyErr)
+	}
+
+	return s, nil
+}
+
+// discoverLoadedModels spawns a throwaway omp rpc process and asks for the
+// available model list (get_available_models). It returns nil on any failure so
+// callers can fall back to the configured model.
+func discoverLoadedModels(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string) []core.ModelOption {
+	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env)
+	if err != nil {
+		cancel()
+		slog.Warn("omp: model discovery spawn failed", "error", err)
+		return nil
+	}
+	defer func() {
+		_ = s.Close()
+		cancel()
+	}()
+
+	pid := uuid.NewString()
+	if err := s.writeFrame(map[string]any{"id": pid, "type": "get_available_models"}); err != nil {
+		return nil
+	}
+	resp, err := s.waitResponse(pid)
+	if err != nil {
+		return nil
+	}
+	data, _ := resp["data"].(map[string]any)
+	return parseModelsResponse(data)
+}
+
+// parseModelsResponse converts a get_available_models response payload into
+// model options, using the `provider/id` form that omp's set_model expects.
+func parseModelsResponse(data map[string]any) []core.ModelOption {
+	var out []core.ModelOption
+	raw, _ := data["models"].([]any)
+	for _, it := range raw {
+		m, ok := it.(map[string]any)
+		if !ok {
+			continue
+		}
+		provider, _ := m["provider"].(string)
+		id, _ := m["id"].(string)
+		if provider == "" || id == "" {
+			continue
+		}
+		name, _ := m["name"].(string)
+		out = append(out, core.ModelOption{Name: provider + "/" + id, Desc: name})
+	}
+	return out
 }

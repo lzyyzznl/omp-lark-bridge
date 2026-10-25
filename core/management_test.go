@@ -3010,3 +3010,105 @@ func TestMgmt_SetupWeixinPoll_RejectsMalformedAPIURL(t *testing.T) {
 		}
 	}
 }
+
+type stubTranscriptAgent struct {
+	stubAgent
+	dir string
+}
+
+func (a *stubTranscriptAgent) SessionDir() string { return a.dir }
+
+func TestMgmt_Transcripts_ListAndRead(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("2026-01-01_a.jsonl", "{\"type\":\"session\",\"id\":\"a\"}\n{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n")
+	write("2026-01-02_b.jsonl", "{\"type\":\"message\",\"message\":{\"role\":\"assistant\",\"content\":[{\"type\":\"text\",\"text\":\"yo\"}}]}}\n")
+
+	agent := &stubTranscriptAgent{dir: dir}
+	sm := NewSessionManager("")
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = sm
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+
+	do := func(path string) (int, []byte) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, req)
+		return rr.Code, rr.Body.Bytes()
+	}
+
+	// 列表：按 mtime 倒序，含 id/name
+	code, body := do("/api/v1/projects/test-project/transcripts")
+	if code != http.StatusOK {
+		t.Fatalf("list: status = %d, want 200 (body=%s)", code, body)
+	}
+	var lst struct {
+		Data struct {
+			Transcripts []struct {
+				ID   string `json:"id"`
+				Name string `json:"name"`
+			} `json:"transcripts"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &lst); err != nil {
+		t.Fatalf("list: unmarshal: %v", err)
+	}
+	if len(lst.Data.Transcripts) != 2 {
+		t.Fatalf("list: got %d transcripts, want 2", len(lst.Data.Transcripts))
+	}
+
+	// 读取单条：两行都解析（含内部 content 结构）
+	code, body = do("/api/v1/projects/test-project/transcripts/2026-01-01_a")
+	if code != http.StatusOK {
+		t.Fatalf("read: status = %d, want 200 (body=%s)", code, body)
+	}
+	var got struct {
+		Data struct {
+			Transcript []map[string]any `json:"transcript"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &got); err != nil {
+		t.Fatalf("read: unmarshal: %v", err)
+	}
+	if len(got.Data.Transcript) != 2 {
+		t.Fatalf("read: got %d events, want 2", len(got.Data.Transcript))
+	}
+
+	// 路径穿越拒绝
+	if code, _ := do("/api/v1/projects/test-project/transcripts/..%2F..%2Fetc%2Fpasswd"); code != http.StatusBadRequest {
+		t.Errorf("path traversal: status = %d, want 400", code)
+	}
+	// 不存在返回 404
+	if code, _ := do("/api/v1/projects/test-project/transcripts/2026-01-01_nope"); code != http.StatusNotFound {
+		t.Errorf("missing: status = %d, want 404", code)
+	}
+}
+
+func TestReadTranscriptEvents_SkipsMalformed(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "s.jsonl")
+	// 1 正常 + 1 非 JSON + 1 空行 + 1 JSON 但数组结构（非对象）——最后一行跳过
+	content := "{\"type\":\"session\",\"id\":\"s\"}\n{not json}\n\n[1,2]\n"
+	if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	events, err := readTranscriptEvents(p)
+	if err != nil {
+		t.Fatalf("readTranscriptEvents() error = %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want 1 (malformed/blank/non-object skipped)", len(events))
+	}
+	if events[0]["type"] != "session" {
+		t.Errorf("event type = %v, want session", events[0]["type"])
+	}
+}

@@ -3374,6 +3374,7 @@ type ProjectSettingsUpdate struct {
 	ShowWorkdirIndicator *bool
 	ReplyFooter          *bool
 	InjectSender         *bool
+	Model                *string
 	PlatformAllowFrom    map[string]string
 }
 
@@ -3463,6 +3464,17 @@ func SaveProjectSettings(projectName string, update ProjectSettingsUpdate) error
 			v := *update.InjectSender
 			proj.InjectSender = &v
 		}
+		if update.Model != nil {
+			if proj.Agent.Options == nil {
+				proj.Agent.Options = map[string]any{}
+			}
+			m := strings.TrimSpace(*update.Model)
+			if m == "" {
+				delete(proj.Agent.Options, "model")
+			} else {
+				proj.Agent.Options["model"] = m
+			}
+		}
 		if update.WorkDir != nil || update.Mode != nil {
 			if proj.Agent.Options == nil {
 				proj.Agent.Options = map[string]any{}
@@ -3536,6 +3548,9 @@ func GetProjectConfigDetails(projectName string) map[string]any {
 			}
 			if mode, ok := p.Agent.Options["mode"].(string); ok && strings.TrimSpace(mode) != "" {
 				result["mode"] = mode
+			}
+			if model, ok := p.Agent.Options["model"].(string); ok && strings.TrimSpace(model) != "" {
+				result["model"] = model
 			}
 		}
 		if p.ShowContextIndicator != nil {

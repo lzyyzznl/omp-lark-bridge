@@ -1,10 +1,16 @@
 package omp
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
+	"io"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lzyyzznl/in-one-chat/core"
@@ -232,5 +238,242 @@ func TestToolStartFallsBackToIntent(t *testing.T) {
 	s.handleToolStart(map[string]any{"toolName": "todo", "intent": "Updating todo list"})
 	if ev := <-s.events; ev.ToolInput != "Updating todo list" {
 		t.Fatalf("tool input = %q, want the intent fallback", ev.ToolInput)
+	}
+}
+
+// fakeOmpRPC drives enterSession against an in-process omp protocol peer so
+// the real writeFrame → waitResponse round-trip is exercised without spawning
+// the CLI. respond() maps each incoming command frame to a response frame.
+//
+// Deterministic by construction: no io.Pipe or OS pipes — the peer is a single
+// goroutine fed by a buffered channel writer, and each response is routed
+// straight into waitResponse's pending slot (spinning until it is registered,
+// which the caller's own goroutine does immediately after writeFrame).
+func fakeOmpRPC(t *testing.T, respond func(req map[string]any) map[string]any) (*ompSession, func() []map[string]any) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	cmdCh := make(chan []byte, 16)
+
+	var mu sync.Mutex
+	cmds := []map[string]any{}
+
+	s := &ompSession{
+		ctx:        ctx,
+		cancel:     cancel,
+		stdin:      &chanWriteCloser{ch: cmdCh},
+		stderr:     io.NopCloser(bytes.NewReader(nil)),
+		ready:      make(chan struct{}),
+		events:     make(chan core.Event, 16),
+		sessionDir: t.TempDir(),
+		pending:    make(map[string]chan map[string]any),
+	}
+	s.alive.Store(true)
+
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case line, ok := <-cmdCh:
+				if !ok {
+					return
+				}
+				var req map[string]any
+				if err := json.Unmarshal(line, &req); err != nil {
+					continue
+				}
+				mu.Lock()
+				cmds = append(cmds, req)
+				mu.Unlock()
+				resp := respond(req)
+				if resp == nil {
+					continue
+				}
+				id, _ := req["id"].(string)
+				if id == "" {
+					continue
+				}
+				resp["id"] = id
+				for {
+					s.pMu.Lock()
+					ch, ok := s.pending[id]
+					s.pMu.Unlock()
+					if ok {
+						ch <- resp
+						break
+					}
+					select {
+					case <-ctx.Done():
+						return
+					case <-time.After(time.Millisecond):
+					}
+				}
+			}
+		}
+	}()
+	t.Cleanup(cancel)
+	return s, func() []map[string]any {
+		mu.Lock()
+		defer mu.Unlock()
+		out := make([]map[string]any, len(cmds))
+		copy(out, cmds)
+		return out
+	}
+}
+
+// chanWriteCloser is an io.WriteCloser that hands each JSON line to the peer
+// goroutine over a buffered channel instead of an OS pipe.
+type chanWriteCloser struct {
+	ch chan<- []byte
+}
+
+func (w *chanWriteCloser) Write(p []byte) (int, error) {
+	w.ch <- append([]byte(nil), p...)
+	return len(p), nil
+}
+
+func (w *chanWriteCloser) Close() error { return nil }
+
+func rpcFrameType(f map[string]any) string {
+	t, _ := f["type"].(string)
+	return t
+}
+
+// set_thinking_level is fire-and-forget (no waitResponse), so the peer goroutine
+// may still be appending it when enterSession returns — poll until it lands.
+func waitForFrame(t *testing.T, cmds func() []map[string]any, want string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		for _, c := range cmds() {
+			if rpcFrameType(c) == want {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %s frame", want)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// A rejected set_model ("Model not found") must NOT fail the session — the job
+// keeps its default model and still runs (cron requirement).
+func TestEnterSession_SetModelFailureFallsBackToDefault(t *testing.T) {
+	ok := func(req map[string]any) map[string]any {
+		switch req["type"] {
+		case "new_session":
+			return map[string]any{"type": "response", "command": "new_session", "success": true, "data": map[string]any{"cancelled": false}}
+		case "get_state":
+			return map[string]any{"type": "response", "command": "get_state", "success": true, "data": map[string]any{"sessionId": "s1", "sessionFile": "/tmp/s1.jsonl"}}
+		case "set_model":
+			return map[string]any{"type": "response", "command": "set_model", "success": false, "error": "Model not found: bogus-prov/no-such-model"}
+		default:
+			return map[string]any{"type": "response", "command": req["type"], "success": true}
+		}
+	}
+	s, cmds := fakeOmpRPC(t, ok)
+	if err := s.enterSession("bogus-prov/no-such-model", "high", ""); err != nil {
+		t.Fatalf("enterSession() error = %v, want nil (fall back to default model)", err)
+	}
+	waitForFrame(t, cmds, "set_thinking_level")
+	types := map[string]bool{}
+	for _, c := range cmds() {
+		types[rpcFrameType(c)] = true
+	}
+	if !types["set_model"] {
+		t.Error("expected a set_model frame")
+	}
+	if !types["set_thinking_level"] {
+		t.Error("expected a set_thinking_level frame even after set_model failure")
+	}
+}
+
+func TestEnterSession_SendsModelAndThinkingLevel(t *testing.T) {
+	ok := func(req map[string]any) map[string]any {
+		return map[string]any{"type": "response", "command": req["type"], "success": true}
+	}
+	s, cmds := fakeOmpRPC(t, ok)
+	if err := s.enterSession("deepseek/deepseek-flash", "high", ""); err != nil {
+		t.Fatalf("enterSession() error = %v", err)
+	}
+	waitForFrame(t, cmds, "set_thinking_level")
+	sawModel, sawThink := false, false
+	for _, c := range cmds() {
+		switch rpcFrameType(c) {
+		case "set_model":
+			if c["provider"] != "deepseek" || c["modelId"] != "deepseek-flash" {
+				t.Errorf("set_model frame = %v, want provider=deepseek modelId=deepseek-flash", c)
+			}
+			sawModel = true
+		case "set_thinking_level":
+			if c["level"] != "high" {
+				t.Errorf("set_thinking_level level = %v, want high", c["level"])
+			}
+			sawThink = true
+		}
+	}
+	if !sawModel || !sawThink {
+		t.Errorf("missing frames: set_model=%v set_thinking_level=%v", sawModel, sawThink)
+	}
+}
+
+func TestEnterSession_NoThinkingFrameWhenEmpty(t *testing.T) {
+	ok := func(req map[string]any) map[string]any {
+		return map[string]any{"type": "response", "command": req["type"], "success": true}
+	}
+	s, cmds := fakeOmpRPC(t, ok)
+	if err := s.enterSession("", "", ""); err != nil {
+		t.Fatalf("enterSession() error = %v", err)
+	}
+	for _, c := range cmds() {
+		if rpcFrameType(c) == "set_thinking_level" {
+			t.Error("unexpected set_thinking_level frame for empty thinking value")
+		}
+	}
+}
+
+func TestParseModelsResponse(t *testing.T) {
+	tests := []struct {
+		name string
+		data map[string]any
+		want []string // expected model names in order
+	}{
+		{
+			name: "full list",
+			data: map[string]any{"models": []any{
+				map[string]any{"provider": "deepseek", "id": "deepseek-flash", "name": "DeepSeek Flash"},
+				map[string]any{"provider": "router", "id": "auto", "name": "Auto"},
+			}},
+			want: []string{"deepseek/deepseek-flash", "router/auto"},
+		},
+		{
+			name: "entries missing provider or id are skipped",
+			data: map[string]any{"models": []any{
+				map[string]any{"id": "no-provider", "name": "x"},
+				map[string]any{"provider": "p", "name": "no-id"},
+			}},
+			want: []string{},
+		},
+		{
+			name: "nil data",
+			data: nil,
+			want: []string{},
+		},
+		{
+			name: "models not an array",
+			data: map[string]any{"models": "oops"},
+			want: []string{},
+		},
+	}
+	for _, tt := range tests {
+		got := parseModelsResponse(tt.data)
+		names := make([]string, len(got))
+		for i, m := range got {
+			names[i] = m.Name
+		}
+		if !reflect.DeepEqual(names, tt.want) {
+			t.Errorf("%s: parseModelsResponse = %v, want %v", tt.name, names, tt.want)
+		}
 	}
 }

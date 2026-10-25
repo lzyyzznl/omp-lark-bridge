@@ -36,6 +36,10 @@ var (
 // it through the engine's reload closure. nil when the API server is disabled.
 var globalAPIServer *core.APIServer
 
+// rootConfigPath carries the root-level --config flag so subcommands that do
+// not pass their own --config still target the same file (never the default).
+var rootConfigPath string
+
 // defaultResetOnIdleMins is applied when a project does not set
 // reset_on_idle_mins. After this many minutes of user inactivity, in-one-chat
 // rotates to a fresh session for the next message instead of resuming the
@@ -214,6 +218,7 @@ var topLevelCommandHandlers = map[string]func([]string){
 		checkUpdate()
 	},
 	"provider":  runProviderCommand,
+	"project":   runProjectCommand,
 	"send":      runSend,
 	"cron":      runCron,
 	"timer":     runTimer,
@@ -274,6 +279,11 @@ func main() {
 		fmt.Printf("in-one-chat %s\ncommit:  %s\nbuilt:   %s\n", version, commit, buildTime)
 		return
 	}
+
+	// Subcommands inherit root's --config when they don't pass their own, so
+	// `in-one-chat --config X project create ...` never falls back to the
+	// default config path.
+	rootConfigPath = rootOpts.configPath
 
 	if runTopLevelCommand(rootOpts.args) {
 		return
@@ -1155,6 +1165,7 @@ func main() {
 				ShowWorkdirIndicator: u.ShowWorkdirIndicator,
 				ReplyFooter:          u.ReplyFooter,
 				InjectSender:         u.InjectSender,
+				Model:                u.Model,
 				PlatformAllowFrom:    u.PlatformAllowFrom,
 			})
 		})

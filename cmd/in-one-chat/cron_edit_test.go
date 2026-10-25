@@ -30,7 +30,9 @@ func TestParseCronEditValue(t *testing.T) {
 		{"silent true (regression)", "silent", "true", true, false},
 		{"silent false (regression)", "silent", "false", false, false},
 		{"silent invalid", "silent", "yes please", nil, true},
-
+		{"result_only true", "result_only", "true", true, false},
+		{"result_only false", "result_only", "false", false, false},
+		{"result_only invalid", "result_only", "maybe", nil, true},
 		// Numeric field.
 		{"timeout_mins zero", "timeout_mins", "0", 0, false},
 		{"timeout_mins positive", "timeout_mins", "60", 60, false},

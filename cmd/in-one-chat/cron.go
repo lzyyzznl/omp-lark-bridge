@@ -57,7 +57,7 @@ func closeCronResponseBody(body io.Closer) {
 }
 
 func runCronAdd(args []string) {
-	var project, sessionKey, cronExpr, prompt, execCmd, desc, dataDir, sessionMode string
+	var project, sessionKey, cronExpr, prompt, execCmd, desc, dataDir, sessionMode, model, thinking string
 	var timeoutMins *int
 	var silent bool
 
@@ -103,6 +103,16 @@ func runCronAdd(args []string) {
 			if i+1 < len(args) {
 				i++
 				sessionMode = args[i]
+			}
+		case "--model":
+			if i+1 < len(args) {
+				i++
+				model = args[i]
+			}
+		case "--thinking", "--thinking-level":
+			if i+1 < len(args) {
+				i++
+				thinking = args[i]
 			}
 		case "--timeout-mins":
 			if i+1 < len(args) {
@@ -171,6 +181,12 @@ func runCronAdd(args []string) {
 	}
 	if sessionMode != "" {
 		body["session_mode"] = sessionMode
+	}
+	if model != "" {
+		body["model"] = model
+	}
+	if thinking != "" {
+		body["thinking_level"] = thinking
 	}
 	if timeoutMins != nil {
 		body["timeout_mins"] = *timeoutMins
@@ -576,7 +592,7 @@ func runCronEdit(args []string) {
 // regression test in cron_edit_test.go.
 func parseCronEditValue(field, valueStr string) (any, error) {
 	switch field {
-	case "enabled", "mute", "silent":
+	case "enabled", "mute", "silent", "result_only":
 		v, err := strconv.ParseBool(valueStr)
 		if err != nil {
 			return nil, fmt.Errorf("%s must be true or false", field)
@@ -635,6 +651,8 @@ Options:
       --desc <text>          Short description
       --session-mode <mode>  reuse (default) or new-per-run — fresh agent session each run
       --timeout-mins <n>     Max minutes to wait per run (0 = no limit; default 30 if omitted)
+      --model <name>         Agent model for this job (blank = default; runs in its own fresh session)
+      --thinking <level>     Thinking level: inherit|off|minimal|low|medium|high|xhigh|max (blank = inherit)
       --silent               Suppress cron start notification
       --data-dir <path>      Data directory (default: ~/.in-one-chat)
   -h, --help                 Show this help

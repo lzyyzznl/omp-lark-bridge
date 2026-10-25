@@ -114,7 +114,6 @@ func TestMutePlatform_DiscardMessages(t *testing.T) {
 	}
 }
 
-
 func TestCronJob_MuteField(t *testing.T) {
 	job := &CronJob{ID: "m1", Mute: false}
 	if job.Mute {
@@ -545,6 +544,82 @@ func TestCronScheduler_RunJobNow_UsesSnapshot(t *testing.T) {
 	t.Fatalf("timed out waiting for snapshot run, sent=%v", platform.getSent())
 }
 
+// transcriptAgentSession is resultAgentSession plus a transcript path reported
+// via EventText, so ExecuteCronJob can resolve a LastSessionID from the agent.
+type transcriptAgentSession struct {
+	*resultAgentSession
+	transcript string
+}
+
+func (s *transcriptAgentSession) Send(prompt string, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	s.sentPrompts = append(s.sentPrompts, prompt)
+	s.sendOnce.Do(func() {
+		if s.transcript != "" {
+			s.events <- Event{Type: EventText, Content: "", SessionID: s.transcript}
+		}
+		s.events <- Event{Type: EventResult, Content: s.result, Done: true}
+	})
+	return nil
+}
+func (s *transcriptAgentSession) CurrentSessionID() string { return s.transcript }
+
+// TestCronScheduler_RunJobNow_PersistsLastSessionID guards the web "会话" jump
+// link: a manual run executes against a job snapshot, so the transcript id must
+// be written back through the store (job.LastSessionID on the copy alone is
+// silently lost).
+func TestCronScheduler_RunJobNow_PersistsLastSessionID(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewCronStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scheduler := NewCronScheduler(store)
+
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	agentSession := &transcriptAgentSession{
+		resultAgentSession: newResultAgentSession("snapshot done"),
+		transcript:         "run-" + time.Now().Format("150405") + ".jsonl",
+	}
+	agent := &resultAgent{session: agentSession}
+
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+	e.cronScheduler = scheduler
+	scheduler.RegisterEngine("test", e)
+
+	job := &CronJob{
+		ID:          "snap2",
+		Project:     "test",
+		SessionKey:  "discord:channel-1:user-1",
+		CronExpr:    "0 6 * * *",
+		Prompt:      "original prompt",
+		Description: "Original description",
+		Enabled:     true,
+		CreatedAt:   time.Now(),
+	}
+	if err := store.Add(job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := scheduler.RunJobNow("snap2"); err != nil {
+		t.Fatalf("RunJobNow() error = %v", err)
+	}
+
+	wantBase := strings.TrimSuffix(filepath.Base(agentSession.transcript), ".jsonl")
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		stored := store.Get("snap2")
+		if stored != nil && !stored.LastRun.IsZero() && stored.LastSessionID == wantBase {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := store.Get("snap2")
+	if got == nil {
+		t.Fatal("stored job not found after run")
+	}
+	t.Fatalf("LastSessionID = %q, want %q (LastRun=%v)", got.LastSessionID, wantBase, got.LastRun)
+}
 func cronJobRunStatus(store *CronStore, id string) (found bool, lastRunSet bool, lastErr string) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -837,5 +912,131 @@ func TestCronScheduler_UpdateJob_EnabledNonBoolPreservesSchedule(t *testing.T) {
 	stored := store.Get(job.ID)
 	if stored == nil || !stored.Enabled {
 		t.Fatalf("stored job state should be unchanged on validation error, got %+v", stored)
+	}
+}
+
+// cronOverrideAgent records ApplyCronOverrides calls so tests can verify the
+// engine hands the job's model/thinking to the agent before a fresh-session run.
+type cronOverrideAgent struct {
+	resultAgent
+	model      string
+	thinking   string
+	applyCalls int
+}
+
+func (a *cronOverrideAgent) ApplyCronOverrides(model, thinking string) {
+	a.model, a.thinking = model, thinking
+	a.applyCalls++
+}
+
+// TestExecuteCronJob_ModelThinkingOverride_ForcesFreshSession covers the cron
+// requirement "pick a model + thinking level per job": a job that pins either
+// must run in its own fresh session (so the shared chat session's model is not
+// mutated) and the engine must hand the override to the agent before it starts.
+func TestExecuteCronJob_ModelThinkingOverride_ForcesFreshSession(t *testing.T) {
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	agent := &cronOverrideAgent{resultAgent: resultAgent{session: newResultAgentSession("override run done")}}
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+
+	job := &CronJob{
+		ID:            "ovr1",
+		Project:       "test",
+		SessionKey:    "discord:channel-1:user-1",
+		CronExpr:      "0 6 * * *",
+		Prompt:        "summarize",
+		Enabled:       true,
+		SessionMode:   "", // default = reuse; the override must still force a fresh session
+		Model:         "deepseek/deepseek-flash",
+		ThinkingLevel: "high",
+		CreatedAt:     time.Now(),
+	}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+
+	if agent.applyCalls != 1 {
+		t.Fatalf("ApplyCronOverrides calls = %d, want 1", agent.applyCalls)
+	}
+	if agent.model != "deepseek/deepseek-flash" {
+		t.Errorf("override model = %q, want deepseek/deepseek-flash", agent.model)
+	}
+	if agent.thinking != "high" {
+		t.Errorf("override thinking = %q, want high", agent.thinking)
+	}
+}
+
+// TestExecuteCronJob_NoOverrideDoesNotApply guards the default path: a plain
+// reuse job must not touch the agent's model/thinking.
+func TestExecuteCronJob_NoOverrideDoesNotApply(t *testing.T) {
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	agent := &cronOverrideAgent{resultAgent: resultAgent{session: newResultAgentSession("plain run")}}
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+
+	job := &CronJob{
+		ID:         "plain1",
+		Project:    "test",
+		SessionKey: "discord:channel-1:user-1",
+		CronExpr:   "0 6 * * *",
+		Prompt:     "summarize",
+		Enabled:    true,
+		CreatedAt:  time.Now(),
+	}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+
+	if agent.applyCalls != 0 {
+		t.Fatalf("ApplyCronOverrides calls = %d, want 0 for a plain reuse job", agent.applyCalls)
+	}
+}
+
+// TestValidateCronJob_ThinkingLevelWhitelist pins the accepted thinking level
+// values so an invalid one fails fast with a 400 instead of a silent job.
+func TestValidateCronJob_ThinkingLevelWhitelist(t *testing.T) {
+	for _, lvl := range []string{"inherit", "off", "minimal", "low", "medium", "high", "xhigh", "max", ""} {
+		j := &CronJob{SessionKey: "discord:ch:u", ThinkingLevel: lvl}
+		if err := validateCronJob(j); err != nil {
+			t.Errorf("validateCronJob(thinking_level=%q) error = %v", lvl, err)
+		}
+	}
+	for _, lvl := range []string{"ultra", "super", "bogus"} {
+		j := &CronJob{SessionKey: "discord:ch:u", ThinkingLevel: lvl}
+		if err := validateCronJob(j); err == nil {
+			t.Errorf("validateCronJob(thinking_level=%q) = nil, want error", lvl)
+		}
+	}
+}
+
+// TestExecuteCronJob_ResultOnly covers the "仅发结果" notification mode: the run
+// streams into a muted platform (no start ping, no process messages) and the
+// final assistant answer is delivered exactly once afterwards.
+func TestExecuteCronJob_ResultOnly(t *testing.T) {
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	agent := &cronOverrideAgent{resultAgent: resultAgent{session: newResultAgentSession("final answer text")}}
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+
+	job := &CronJob{
+		ID:         "result1",
+		Project:    "test",
+		SessionKey: "discord:channel-1:user-1",
+		CronExpr:   "0 6 * * *",
+		Prompt:     "summarize",
+		Enabled:    true,
+		ResultOnly: true,
+		CreatedAt:  time.Now(),
+	}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+
+	sent := platform.getSent()
+	if len(sent) != 1 {
+		t.Fatalf("sent messages = %d, want exactly 1 (final result only); got %v", len(sent), sent)
+	}
+	if sent[0] != "final answer text" {
+		t.Errorf("delivered message = %q, want %q", sent[0], "final answer text")
 	}
 }

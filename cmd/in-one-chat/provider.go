@@ -67,6 +67,9 @@ Examples:
 
 // initConfigPath resolves the config path and sets config.ConfigPath.
 func initConfigPath(flagValue string) {
+	if flagValue == "" {
+		flagValue = rootConfigPath
+	}
 	config.ConfigPath = resolveConfigPath(flagValue)
 }
 

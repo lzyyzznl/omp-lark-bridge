@@ -89,6 +89,20 @@ func (s *Session) AddHistory(role, content string) {
 	})
 }
 
+// LastAssistantText returns the most recent non-empty assistant message text.
+// Used by result-only cron jobs to deliver the final answer after a silent run.
+func (s *Session) LastAssistantText() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.History) - 1; i >= 0; i-- {
+		h := s.History[i]
+		if h.Role == "assistant" && strings.TrimSpace(h.Content) != "" {
+			return h.Content
+		}
+	}
+	return ""
+}
+
 // recordPastAgentSessionID saves the current AgentSessionID to PastAgentSessionIDs
 // so it remains visible in KnownAgentSessionIDs after the ID is replaced or cleared.
 // Must be called with s.mu held.

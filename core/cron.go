@@ -21,23 +21,32 @@ import (
 
 // CronJob represents a persisted scheduled task.
 type CronJob struct {
-	ID          string    `json:"id"`
-	Project     string    `json:"project"`
-	SessionKey  string    `json:"session_key"`
-	CronExpr    string    `json:"cron_expr"`
-	Prompt      string    `json:"prompt"`
-	Exec        string    `json:"exec,omitempty"`     // shell command; mutually exclusive with Prompt
-	WorkDir     string    `json:"work_dir,omitempty"` // working directory for exec; empty = agent work_dir
-	Description string    `json:"description"`
-	Enabled     bool      `json:"enabled"`
-	Silent      *bool     `json:"silent,omitempty"`       // suppress start notification; nil = use global default
-	Mute        bool      `json:"mute,omitempty"`         // suppress ALL messages (start + result); job runs silently
-	SessionMode string    `json:"session_mode,omitempty"` // "" or "reuse" = share active session; "new_per_run" = fresh session each run
-	Mode        string    `json:"mode,omitempty"`         // permission mode override for this job; "" = use project default
-	TimeoutMins *int      `json:"timeout_mins,omitempty"` // nil = default 30m wait; 0 = no limit; >0 = minutes
-	CreatedAt   time.Time `json:"created_at"`
-	LastRun     time.Time `json:"last_run,omitempty"`
-	LastError   string    `json:"last_error,omitempty"`
+	ID            string    `json:"id"`
+	Project       string    `json:"project"`
+	SessionKey    string    `json:"session_key"`
+	CronExpr      string    `json:"cron_expr"`
+	Prompt        string    `json:"prompt"`
+	Exec          string    `json:"exec,omitempty"`     // shell command; mutually exclusive with Prompt
+	WorkDir       string    `json:"work_dir,omitempty"` // working directory for exec; empty = agent work_dir
+	Description   string    `json:"description"`
+	Enabled       bool      `json:"enabled"`
+	Silent        *bool     `json:"silent,omitempty"`         // suppress start notification; nil = use global default
+	Mute          bool      `json:"mute,omitempty"`           // suppress ALL messages (start + result); job runs silently
+	ResultOnly    bool      `json:"result_only,omitempty"`    // deliver only the final assistant result, not the live process
+	SessionMode   string    `json:"session_mode,omitempty"`   // "" or "reuse" = share active session; "new_per_run" = fresh session each run
+	Mode          string    `json:"mode,omitempty"`           // permission mode override for this job; "" = use project default
+	Model         string    `json:"model,omitempty"`          // agent model override for this job; "" = use agent default (missing model falls back to default)
+	ThinkingLevel string    `json:"thinking_level,omitempty"` // thinking/effort for this job; "" = inherit; inherit|off|minimal|low|medium|high|xhigh|max
+	TimeoutMins   *int      `json:"timeout_mins,omitempty"`   // nil = default 30m wait; 0 = no limit; >0 = minutes
+	CreatedAt     time.Time `json:"created_at"`
+	LastRun       time.Time `json:"last_run,omitempty"`
+	LastError     string    `json:"last_error,omitempty"`
+	LastSessionID string    `json:"last_session_id,omitempty"` // last run's agent transcript id (web session viewer)
+	// SessionIDs is the ordered history of transcript ids this job has run in
+	// (most recent last). The web cron session viewer shows exactly these —
+	// non-cron chat transcripts are excluded. Falls back to [LastSessionID]
+	// for jobs saved before this field existed.
+	SessionIDs []string `json:"session_ids,omitempty"`
 	// FailStreak counts consecutive failed runs; reset by the next success. It
 	// drives the dashboard badge and the failure-alert throttle.
 	FailStreak int `json:"fail_streak,omitempty"`
@@ -54,6 +63,13 @@ var (
 	ErrCronJobNotFound     = errors.New("cron job not found")
 	ErrCronProjectNotFound = errors.New("cron project not found")
 )
+
+// validThinkingLevels matches omp's ThinkingLevel set (rpc-wire: inherit|off|minimal|low|medium|high|xhigh|max).
+// "" on a job means "inherit default" and is always valid.
+var validThinkingLevels = map[string]bool{
+	"inherit": true, "off": true, "minimal": true, "low": true,
+	"medium": true, "high": true, "xhigh": true, "max": true,
+}
 
 // ExecutionTimeout returns how long the scheduler waits for the job goroutine to finish.
 // nil TimeoutMins uses 30 minutes. *TimeoutMins == 0 means wait without a time limit.
@@ -109,6 +125,9 @@ func validateCronJob(j *CronJob) error {
 		default:
 			return fmt.Errorf("invalid mode %q (want default, bypassPermissions, acceptEdits, plan, auto, or dontAsk)", j.Mode)
 		}
+	}
+	if j.ThinkingLevel != "" && !validThinkingLevels[j.ThinkingLevel] {
+		return fmt.Errorf("invalid thinking_level %q (want inherit, off, minimal, low, medium, high, xhigh, or max)", j.ThinkingLevel)
 	}
 	if j.TimeoutMins != nil && *j.TimeoutMins < 0 {
 		return fmt.Errorf("timeout_mins must be >= 0")
@@ -219,6 +238,50 @@ func (s *CronStore) ToggleMute(id string) (newState bool, ok bool) {
 	return false, false
 }
 
+// SetLastSessionID records the transcript id of a job's most recent execution.
+// Written via the store (not the caller's job copy) so it survives snapshot
+// isolation in RunJobNow.
+func (s *CronStore) SetLastSessionID(id, sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, j := range s.jobs {
+		if j.ID == id {
+			j.LastSessionID = sessionID
+			if err := s.save(); err != nil {
+				slog.Warn("cron: failed to save last session id", "error", err)
+			}
+			return
+		}
+	}
+}
+
+// AppendSessionID records a run's transcript id in the job's session history:
+// the most-recent id is kept in LastSessionID and SessionIDs gains each new id
+// once (deduped), oldest first. This is the list the web cron-session viewer
+// renders, so only cron-run transcripts appear there.
+func (s *CronStore) AppendSessionID(id, sessionID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, j := range s.jobs {
+		if j.ID == id {
+			j.LastSessionID = sessionID
+			found := false
+			for _, sid := range j.SessionIDs {
+				if sid == sessionID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				j.SessionIDs = append(j.SessionIDs, sessionID)
+			}
+			if err := s.save(); err != nil {
+				slog.Warn("cron: failed to save session history", "error", err)
+			}
+			return
+		}
+	}
+}
 func (s *CronStore) MarkRun(id string, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -358,6 +421,11 @@ func updateJobField(job *CronJob, field string, value any) error {
 	case "mute":
 		if v, ok := value.(bool); ok {
 			job.Mute = v
+			return nil
+		}
+	case "result_only":
+		if v, ok := value.(bool); ok {
+			job.ResultOnly = v
 			return nil
 		}
 	case "session_mode":
@@ -745,7 +813,6 @@ type mutePlatform struct {
 
 func (m *mutePlatform) Reply(_ context.Context, _ any, _ string) error { return nil }
 func (m *mutePlatform) Send(_ context.Context, _ any, _ string) error  { return nil }
-
 
 func GenerateCronID() string {
 	b := make([]byte, 4)

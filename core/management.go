@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -10,6 +12,8 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -29,6 +33,7 @@ type ProjectSettingsUpdate struct {
 	ShowWorkdirIndicator *bool
 	ReplyFooter          *bool
 	InjectSender         *bool
+	Model                *string
 	PlatformAllowFrom    map[string]string
 }
 
@@ -631,6 +636,8 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 		m.handleProjectHeartbeat(w, r, projName, rest)
 	case "users":
 		m.handleProjectUsers(w, r, engine)
+	case "transcripts":
+		m.handleProjectTranscripts(w, r, engine, rest)
 	default:
 		mgmtError(w, http.StatusNotFound, "not found")
 	}
@@ -720,6 +727,7 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			ShowWorkdirIndicator *bool             `json:"show_workdir_indicator"`
 			ReplyFooter          *bool             `json:"reply_footer"`
 			InjectSender         *bool             `json:"inject_sender"`
+			Model                *string           `json:"model"`
 			PlatformAllowFrom    map[string]string `json:"platform_allow_from"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -807,6 +815,7 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 				ShowWorkdirIndicator: body.ShowWorkdirIndicator,
 				ReplyFooter:          body.ReplyFooter,
 				InjectSender:         body.InjectSender,
+				Model:                body.Model,
 				PlatformAllowFrom:    body.PlatformAllowFrom,
 			}
 			if err := m.saveProjectSettings(name, patch); err != nil {
@@ -1537,20 +1546,22 @@ func (m *ManagementServer) handleCron(w http.ResponseWriter, r *http.Request) {
 		}
 
 		job := &CronJob{
-			ID:          GenerateCronID(),
-			Project:     project,
-			SessionKey:  req.SessionKey,
-			CronExpr:    req.CronExpr,
-			Prompt:      req.Prompt,
-			Exec:        req.Exec,
-			WorkDir:     req.WorkDir,
-			Description: req.Description,
-			Enabled:     true,
-			Silent:      req.Silent,
-			SessionMode: NormalizeCronSessionMode(req.SessionMode),
-			Mode:        req.Mode,
-			TimeoutMins: req.TimeoutMins,
-			CreatedAt:   time.Now(),
+			ID:            GenerateCronID(),
+			Project:       project,
+			SessionKey:    req.SessionKey,
+			CronExpr:      req.CronExpr,
+			Prompt:        req.Prompt,
+			Exec:          req.Exec,
+			WorkDir:       req.WorkDir,
+			Description:   req.Description,
+			Enabled:       true,
+			Silent:        req.Silent,
+			SessionMode:   NormalizeCronSessionMode(req.SessionMode),
+			Mode:          req.Mode,
+			Model:         req.Model,
+			ThinkingLevel: req.ThinkingLevel,
+			TimeoutMins:   req.TimeoutMins,
+			CreatedAt:     time.Now(),
 		}
 		if err := m.cronScheduler.AddJob(job); err != nil {
 			mgmtError(w, http.StatusBadRequest, err.Error())
@@ -2001,4 +2012,165 @@ func (m *ManagementServer) handleSkillPresets(w http.ResponseWriter, r *http.Req
 		return
 	}
 	mgmtJSON(w, http.StatusOK, data)
+}
+
+// -- project transcripts (web session viewer) --
+
+// SessionDirProvider is implemented by agents that persist per-conversation
+// transcripts to a disk directory (e.g. omp's <data_dir>/omp-sessions/default).
+type SessionDirProvider interface {
+	SessionDir() string
+}
+
+// handleProjectTranscripts serves the transcript list (rest == "") or a single
+// transcript's JSON event stream (rest = file base name without .jsonl).
+func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *http.Request, e *Engine, rest string) {
+	dirProv, ok := e.agent.(SessionDirProvider)
+	if !ok || dirProv.SessionDir() == "" {
+		mgmtError(w, http.StatusNotImplemented, "agent does not expose session transcripts")
+		return
+	}
+	if rest == "" {
+		m.listTranscripts(w, dirProv.SessionDir())
+		return
+	}
+	m.readTranscript(w, dirProv.SessionDir(), rest)
+}
+
+func (m *ManagementServer) listTranscripts(w http.ResponseWriter, dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": []any{}})
+			return
+		}
+		mgmtError(w, http.StatusInternalServerError, "read session dir: "+err.Error())
+		return
+	}
+	ts := make([]map[string]any, 0, len(entries))
+	for _, ent := range entries {
+		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".jsonl") {
+			continue
+		}
+		info, err := ent.Info()
+		if err != nil {
+			continue
+		}
+		ts = append(ts, map[string]any{
+			"name":       ent.Name(),
+			"id":         strings.TrimSuffix(ent.Name(), ".jsonl"),
+			"title":      transcriptHeadTitle(filepath.Join(dir, ent.Name())),
+			"size":       info.Size(),
+			"updated_at": info.ModTime(),
+		})
+	}
+	sort.Slice(ts, func(i, j int) bool {
+		return ts[i]["updated_at"].(time.Time).After(ts[j]["updated_at"].(time.Time))
+	})
+	mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": ts})
+}
+
+// transcriptHeadTitle extracts the session title from the first
+// {"type":"title","title":...} event by scanning only the head of the file —
+// titles are written near the start, and a full scan per file is too costly
+// for a list endpoint.
+func transcriptHeadTitle(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	buf := make([]byte, 64*1024)
+	sc.Buffer(buf, 256*1024)
+	firstUser := ""
+	for i := 0; sc.Scan() && i < 800; i++ {
+		var ev struct {
+			Type    string `json:"type"`
+			Title   string `json:"title"`
+			Message *struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			continue
+		}
+		switch ev.Type {
+		case "title":
+			if ev.Title != "" {
+				return ev.Title
+			}
+		case "message":
+			if firstUser == "" && ev.Message != nil && ev.Message.Role == "user" {
+				for _, b := range ev.Message.Content {
+					if b.Type == "text" && strings.TrimSpace(b.Text) != "" {
+						firstUser = strings.TrimSpace(b.Text)
+						break
+					}
+				}
+			}
+		}
+	}
+	// No explicit title → surface the session's first user message instead of
+	// a bare filename in the web list.
+	return truncateRune(firstUser, 42)
+}
+
+// truncateRune trims s to at most n runes, appending an ellipsis when cut.
+func truncateRune(s string, n int) string {
+	runes := []rune(strings.TrimSpace(s))
+	if len(runes) <= n {
+		return string(runes)
+	}
+	return string(runes[:n]) + "…"
+}
+
+func (m *ManagementServer) readTranscript(w http.ResponseWriter, dir, id string) {
+	// id must be a plain base name to keep path traversal out of the session dir.
+	if id != filepath.Base(id) {
+		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
+		return
+	}
+	events, err := readTranscriptEvents(filepath.Join(dir, id+".jsonl"))
+	if err != nil {
+		if os.IsNotExist(err) {
+			mgmtError(w, http.StatusNotFound, "transcript not found")
+			return
+		}
+		mgmtError(w, http.StatusInternalServerError, "read transcript: "+err.Error())
+		return
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{"transcript": events})
+}
+
+// readTranscriptEvents parses one JSON event per line from an omp transcript.
+// Malformed lines are skipped so one bad row cannot hide the rest of the session.
+func readTranscriptEvents(path string) ([]map[string]any, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	var events []map[string]any
+	for sc.Scan() {
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var ev map[string]any
+		if err := json.Unmarshal(line, &ev); err != nil {
+			continue
+		}
+		events = append(events, ev)
+	}
+	if err := sc.Err(); err != nil {
+		return nil, err
+	}
+	return events, nil
 }

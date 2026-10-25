@@ -228,11 +228,25 @@ var topLevelCommandHandlers = map[string]func([]string){
 	"agents":    runAgentsCommand,
 	"agent-sid": runAgentSID,
 	"daemon":    runDaemon,
-	"feishu":    runFeishu,
-	"doctor":    runDoctor,
+	"service": func(args []string) {
+		if err := runServiceCommand(args); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+	},
+	"feishu": runFeishu,
+	"doctor": runDoctor,
 }
 
 func main() {
+	// SCM starts us as `--service-run --config <service.json>`; hand over to the
+	// service host before any UI/flag handling (there is no console attached).
+	if configPath, ok := serviceRunConfig(os.Args[1:]); ok {
+		if err := runServiceHost(configPath); err != nil {
+			os.Exit(1)
+		}
+		return
+	}
 
 	checkUpdateAsync()
 	// When started as a daemon (CC_LOG_FILE set), redirect logs to a rotating file.
@@ -1378,6 +1392,33 @@ func main() {
 	}
 
 	slog.Info("bye")
+}
+
+// serviceRunConfig reports whether the process was started by the Windows
+// service control manager and returns the service config path it passed.
+func serviceRunConfig(args []string) (string, bool) {
+	found := false
+	configPath := ""
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--service-run":
+			found = true
+		case "--config":
+			if i+1 < len(args) {
+				i++
+				configPath = args[i]
+			}
+		case "-config":
+			if i+1 < len(args) {
+				i++
+				configPath = args[i]
+			}
+		}
+	}
+	if !found {
+		return "", false
+	}
+	return configPath, true
 }
 
 func runTopLevelCommand(args []string) bool {

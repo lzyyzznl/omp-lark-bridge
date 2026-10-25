@@ -441,3 +441,26 @@ func TestRunTopLevelCommandUnknown(t *testing.T) {
 		t.Fatal("runTopLevelCommand() handled unknown command")
 	}
 }
+
+func TestServiceRunConfigDetectsSCMLaunch(t *testing.T) {
+	cases := []struct {
+		args   []string
+		wantOK bool
+		want   string
+	}{
+		// SCM passes the config file after --service-run.
+		{[]string{"--service-run", "--config", `C:\ProgramData\omp-lark-bridge\service.json`}, true, `C:\ProgramData\omp-lark-bridge\service.json`},
+		{[]string{"--config", "x.json", "--service-run"}, true, "x.json"},
+		{[]string{"--service-run"}, true, ""},
+		// A normal CLI invocation must never be mistaken for the service host.
+		{[]string{"--config", "config.toml"}, false, ""},
+		{[]string{"cron", "list"}, false, ""},
+		{[]string{"--service-runner"}, false, ""},
+	}
+	for _, c := range cases {
+		got, ok := serviceRunConfig(c.args)
+		if ok != c.wantOK || got != c.want {
+			t.Fatalf("serviceRunConfig(%v) = (%q, %v), want (%q, %v)", c.args, got, ok, c.want, c.wantOK)
+		}
+	}
+}

@@ -190,7 +190,6 @@ func TestThinkingFlushedAtTextStart(t *testing.T) {
 	}
 }
 
-
 // Regression: a bursty thinking block that finishes inside the 1.5s throttle
 // window used to strand the reasoning at its first delta with no further
 // trigger (the flow may go straight to a tool call, so the earlier flush-at-
@@ -233,6 +232,7 @@ func TestThinkingConvergesAfterThrottle(t *testing.T) {
 		t.Fatal("convergence timer never flushed the accumulated thinking")
 	}
 }
+
 // The chat card can only show a tool's parameters/result if the adapter
 // forwards them; omp sends them as `args` and `result` on the
 // tool_execution_start/end frames.
@@ -666,9 +666,13 @@ func TestPrependSelfDirToPath_AlreadyPresentSkips(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := filepath.Dir(self)
-	env := []string{"PATH=" + dir + ":/usr/bin"}
-	out := prependSelfDirToPath(env, ":")
-	if len(out) != 1 || out[0] != "PATH="+dir+":/usr/bin" {
+	// Use the platform list separator: a hard-coded ":" would split the
+	// Windows drive letter ("C:\\...") and never match the directory.
+	sep := string(os.PathListSeparator)
+	want := "PATH=" + dir + sep + "/usr/bin"
+	env := []string{want}
+	out := prependSelfDirToPath(env, sep)
+	if len(out) != 1 || out[0] != want {
 		t.Fatalf("already-present PATH must not change: %v", out)
 	}
 }

@@ -58,5 +58,15 @@ omp-lark-bridge agents del <name>           # 仅 user scope 可写/删
 
 ## 兜底
 
-- 桥的命令全量列表：直接跑 `omp-lark-bridge --help`；各子命令 `omp-lark-bridge <命令> --help`。
-- 桥不怕命令失败重试：编译产物在仓库根 `omp-lark-bridge`（`make build` 后生成），PATH 里也可直接调用。
+- 桥不怕命令失败重试：直接跑 `omp-lark-bridge --help` 即可；产物源码在仓库根（`make build` 生成）。
+
+## 环境要求
+
+本技能假设 `omp-lark-bridge` 二进制在 PATH 中（agent 执行命令的 shell 看不到就报「路径不存在」）。若 `command -v omp-lark-bridge` 为空：
+
+```bash
+cd <仓库根> && make build          # 生成 ./omp-lark-bridge
+mkdir -p ~/.local/bin && ln -sfn "$PWD/omp-lark-bridge" ~/.local/bin/omp-lark-bridge
+```
+
+或 `go install github.com/lzyyzznl/omp-lark-bridge/cmd/omp-lark-bridge`。装好后先 `omp-lark-bridge --version` 确认。

@@ -469,10 +469,16 @@ type ReferenceConfig struct {
 
 // ProjectConfig binds one agent (with a specific work_dir) to one or more platforms.
 type ProjectConfig struct {
-	Name    string `toml:"name"`
-	Mode    string `toml:"mode,omitempty"`     // "" or "multi-workspace"
-	BaseDir string `toml:"base_dir,omitempty"` // parent dir for workspaces
-	SkipGit *bool  `toml:"skip_git,omitempty"`
+	// Name is the immutable project ID: it keys the engine, session store,
+	// cron/timer bindings and management API paths. It cannot be changed after
+	// creation; DisplayName is the user-facing label.
+	Name string `toml:"name"`
+	// DisplayName is the user-editable label shown in the UI and API listings.
+	// Empty means "fall back to Name". Changing it takes effect immediately.
+	DisplayName string `toml:"display_name,omitempty"`
+	Mode        string `toml:"mode,omitempty"`     // "" or "multi-workspace"
+	BaseDir     string `toml:"base_dir,omitempty"` // parent dir for workspaces
+	SkipGit     *bool  `toml:"skip_git,omitempty"`
 	// WorkspaceInitAllowLocalPaths allows /workspace init and the conversational
 	// init flow to bind existing local directories. Default false keeps init
 	// limited to git URLs; use /workspace bind or /workspace route for explicit
@@ -3364,6 +3370,7 @@ func extractLineComment(line string) string {
 
 // ProjectSettingsUpdate carries optional field updates for SaveProjectSettings.
 type ProjectSettingsUpdate struct {
+	DisplayName          *string
 	Language             *string
 	AdminFrom            *string
 	DisabledCommands     []string
@@ -3405,6 +3412,9 @@ func SaveProjectSettings(projectName string, update ProjectSettingsUpdate) error
 			continue
 		}
 		proj := &cfg.Projects[i]
+		if update.DisplayName != nil {
+			proj.DisplayName = strings.TrimSpace(*update.DisplayName)
+		}
 		if update.AgentType != nil && *update.AgentType != proj.Agent.Type {
 			newType := *update.AgentType
 			proj.Agent.Type = newType
@@ -3580,6 +3590,9 @@ func GetProjectConfigDetails(projectName string) map[string]any {
 		}
 		result := map[string]any{}
 		result["agent_type"] = p.Agent.Type
+		if p.DisplayName != "" {
+			result["display_name"] = p.DisplayName
+		}
 		if p.Agent.Options != nil {
 			if wd, ok := p.Agent.Options["work_dir"].(string); ok && strings.TrimSpace(wd) != "" {
 				result["work_dir"] = wd
@@ -3713,46 +3726,6 @@ func RemoveProject(projectName string) error {
 	if !found {
 		return fmt.Errorf("project %q not found", projectName)
 	}
-	return saveConfig(cfg)
-}
-
-// RenameProject renames a project block (its unique key in the config). It only
-// rewrites the config file — runtime engines and session files keep the old
-// name until restart; running engines must be restarted to pick up the change.
-func RenameProject(oldName, newName string) error {
-	configMu.Lock()
-	defer configMu.Unlock()
-	if ConfigPath == "" {
-		return fmt.Errorf("config path not set")
-	}
-	newName = strings.TrimSpace(newName)
-	if newName == "" {
-		return fmt.Errorf("new project name must not be empty")
-	}
-	if newName == oldName {
-		return nil
-	}
-	data, err := os.ReadFile(ConfigPath)
-	if err != nil {
-		return fmt.Errorf("read config: %w", err)
-	}
-	cfg := &Config{}
-	if err := toml.Unmarshal(data, cfg); err != nil {
-		return fmt.Errorf("parse config: %w", err)
-	}
-	found := -1
-	for i := range cfg.Projects {
-		if cfg.Projects[i].Name == newName {
-			return fmt.Errorf("project %q already exists", newName)
-		}
-		if cfg.Projects[i].Name == oldName {
-			found = i
-		}
-	}
-	if found < 0 {
-		return fmt.Errorf("project %q not found", oldName)
-	}
-	cfg.Projects[found].Name = newName
 	return saveConfig(cfg)
 }
 

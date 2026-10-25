@@ -25,6 +25,7 @@ import (
 // ProjectSettingsUpdate is passed to SetSaveProjectSettings to persist management API PATCH fields.
 // The implementation (typically in cmd/omp-lark-bridge) maps this to config.ProjectSettingsUpdate.
 type ProjectSettingsUpdate struct {
+	DisplayName          *string
 	Language             *string
 	AdminFrom            *string
 	DisabledCommands     []string
@@ -66,7 +67,6 @@ type ManagementServer struct {
 	setupWeixinSave      func(req WeixinSetupSaveRequest) error
 	addPlatformToProject func(projectName, platType string, opts map[string]any, workDir, agentType string) error
 	removeProject        func(projectName string) error
-	renameProject        func(oldName, newName string) error
 	saveProjectSettings  func(projectName string, update ProjectSettingsUpdate) error
 	rebuildPlatform      func(projectName, platformType, appID, appSecret string) error
 	getProjectConfig     func(projectName string) map[string]any
@@ -120,10 +120,6 @@ func (m *ManagementServer) SetAddPlatformToProject(fn func(string, string, map[s
 
 func (m *ManagementServer) SetRemoveProject(fn func(string) error) {
 	m.removeProject = fn
-}
-
-func (m *ManagementServer) SetRenameProject(fn func(string, string) error) {
-	m.renameProject = fn
 }
 
 func (m *ManagementServer) SetConfigFilePath(path string) {
@@ -608,6 +604,16 @@ func (m *ManagementServer) handleProjects(w http.ResponseWriter, r *http.Request
 			"sessions_count":    0,
 			"heartbeat_enabled": false,
 		}
+		var extra map[string]any
+		if m.getProjectConfig != nil {
+			extra = m.getProjectConfig(name)
+		}
+		if extra != nil {
+			// display_name 可改且立即生效；name 是不可变 ID。
+			if dn, ok := extra["display_name"].(string); ok && dn != "" {
+				entry["display_name"] = dn
+			}
+		}
 		if running {
 			platNames := make([]string, len(e.allPlatforms()))
 			for i, p := range e.allPlatforms() {
@@ -621,20 +627,18 @@ func (m *ManagementServer) handleProjects(w http.ResponseWriter, r *http.Request
 					entry["heartbeat_enabled"] = st.Enabled
 				}
 			}
-		} else if m.getProjectConfig != nil {
-			if extra := m.getProjectConfig(name); extra != nil {
-				if t, ok := extra["agent_type"].(string); ok && t != "" {
-					entry["agent_type"] = t
-				}
-				if pcs, ok := extra["platform_configs"].([]map[string]any); ok {
-					platNames := make([]string, 0, len(pcs))
-					for _, pc := range pcs {
-						if t, ok := pc["type"].(string); ok && t != "" {
-							platNames = append(platNames, t)
-						}
+		} else if extra != nil {
+			if t, ok := extra["agent_type"].(string); ok && t != "" {
+				entry["agent_type"] = t
+			}
+			if pcs, ok := extra["platform_configs"].([]map[string]any); ok {
+				platNames := make([]string, 0, len(pcs))
+				for _, pc := range pcs {
+					if t, ok := pc["type"].(string); ok && t != "" {
+						platNames = append(platNames, t)
 					}
-					entry["platforms"] = platNames
 				}
+				entry["platforms"] = platNames
 			}
 		}
 		projects = append(projects, entry)
@@ -694,10 +698,6 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 					"message":          fmt.Sprintf("project %q removed", projName),
 					"restart_required": true,
 				})
-				return
-			}
-			if r.Method == http.MethodPatch {
-				m.handleProjectRename(w, r, projName)
 				return
 			}
 			m.handleProjectConfigDetail(w, r, projName)
@@ -895,41 +895,7 @@ func (m *ManagementServer) handleProjectBot(w http.ResponseWriter, r *http.Reque
 	}
 }
 
-// handleProjectRename renames a project's key in the config (used for
-// config-only projects without a running engine). Running engines keep the old
-// key until the bridge restarts with the new config, hence restart_required.
-func (m *ManagementServer) handleProjectRename(w http.ResponseWriter, r *http.Request, oldName string) {
-	var body struct {
-		Name *string `json:"name"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		mgmtError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
-		return
-	}
-	if body.Name == nil || strings.TrimSpace(*body.Name) == "" {
-		mgmtError(w, http.StatusBadRequest, "name is required")
-		return
-	}
-	newName := strings.TrimSpace(*body.Name)
-	if newName == oldName {
-		mgmtJSON(w, http.StatusOK, map[string]any{"message": "no change", "name": newName})
-		return
-	}
-	if m.renameProject == nil {
-		mgmtError(w, http.StatusNotImplemented, "project rename not configured")
-		return
-	}
-	if err := m.renameProject(oldName, newName); err != nil {
-		mgmtError(w, http.StatusInternalServerError, "rename project: "+err.Error())
-		return
-	}
-	mgmtJSON(w, http.StatusOK, map[string]any{
-		"message":          fmt.Sprintf("project renamed to %q", newName),
-		"name":             newName,
-		"restart_required": true,
-	})
-}
-
+// handleProjectDetail serves a running project's detail and settings.
 func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Request, name string, e *Engine) {
 	if r.Method == http.MethodGet {
 		platInfos := make([]map[string]any, len(e.allPlatforms()))
@@ -1027,7 +993,7 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			PlatformAppSecret    map[string]string `json:"platform_app_secret"`
 			PlatformAllowFrom    map[string]string `json:"platform_allow_from"`
 			PlatformAppID        map[string]string `json:"platform_app_id"`
-			Name                 *string           `json:"name"`
+			DisplayName          *string           `json:"display_name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1104,6 +1070,7 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 
 		if m.saveProjectSettings != nil {
 			patch := ProjectSettingsUpdate{
+				DisplayName:          body.DisplayName,
 				Language:             body.Language,
 				AdminFrom:            body.AdminFrom,
 				DisabledCommands:     body.DisabledCommands,
@@ -1156,20 +1123,6 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 		} else if len(hotSwapTypes) > 0 {
 			restartRequired = true
 		}
-		// 改名放在其它配置持久化之后：renameProject 换配置里的 key，若先改名
-		// 再 saveProjectSettings(name=旧名) 会找不到项目而丢字段。
-		if body.Name != nil && strings.TrimSpace(*body.Name) != "" && strings.TrimSpace(*body.Name) != name {
-			newName := strings.TrimSpace(*body.Name)
-			if m.renameProject == nil {
-				mgmtError(w, http.StatusNotImplemented, "project rename not configured")
-				return
-			}
-			if err := m.renameProject(name, newName); err != nil {
-				mgmtError(w, http.StatusInternalServerError, "rename project: "+err.Error())
-				return
-			}
-			restartRequired = true
-		}
 		resp := map[string]any{"message": "settings updated"}
 		if hotSwapped {
 			resp["hot_swapped"] = true
@@ -1195,23 +1148,7 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 		// asynchronously because it closes sessions/platforms. Scheduler
 		// registrations are dropped so leftover job entries fail cleanly
 		// ("project not found") instead of running on a stopped engine.
-		m.mu.Lock()
-		removed, wasRunning := m.engines[name]
-		delete(m.engines, name)
-		m.mu.Unlock()
-		if m.cronScheduler != nil {
-			m.cronScheduler.RemoveEngine(name)
-		}
-		if m.timerScheduler != nil {
-			m.timerScheduler.RemoveEngine(name)
-		}
-		if wasRunning {
-			go func() {
-				if err := removed.Stop(); err != nil {
-					slog.Warn("management: engine stop after project removal", "project", name, "error", err)
-				}
-			}()
-		}
+		m.detachEngine(name)
 		mgmtJSON(w, http.StatusOK, map[string]any{
 			"message": fmt.Sprintf("project %q removed", name),
 			"removed": true,
@@ -1220,6 +1157,30 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 	}
 
 	mgmtError(w, http.StatusMethodNotAllowed, "GET, PATCH or DELETE only")
+}
+
+// detachEngine drops a project's running engine from the management map and
+// scheduler registrations, stopping it asynchronously. Used when a project key
+// disappears (delete) or changes (rename), so the UI never lists a stale key
+// next to the new config entry.
+func (m *ManagementServer) detachEngine(name string) {
+	m.mu.Lock()
+	removed, wasRunning := m.engines[name]
+	delete(m.engines, name)
+	m.mu.Unlock()
+	if m.cronScheduler != nil {
+		m.cronScheduler.RemoveEngine(name)
+	}
+	if m.timerScheduler != nil {
+		m.timerScheduler.RemoveEngine(name)
+	}
+	if wasRunning {
+		go func() {
+			if err := removed.Stop(); err != nil {
+				slog.Warn("management: engine stop after project detach", "project", name, "error", err)
+			}
+		}()
+	}
 }
 
 // ── Users endpoints ──────────────────────────────────────────

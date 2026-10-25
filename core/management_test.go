@@ -3454,49 +3454,55 @@ func titleValue(t *testing.T, path string) string {
 	return ev.Title
 }
 
-func TestMgmt_ProjectRename(t *testing.T) {
-	agent := &stubTranscriptAgent{stubAgent: stubAgent{}, dir: t.TempDir()}
-	e := NewEngine("test-project", agent, nil, "", LangEnglish)
-	e.sessions = NewSessionManager("")
-	mgmt := NewManagementServer(0, "", nil)
-	mgmt.RegisterEngine("test-project", e)
+func TestMgmt_ProjectDisplayName(t *testing.T) {
+	mgmt, ts, _ := testManagementServer(t, "")
 
-	var renamedOld, renamedNew string
-	mgmt.SetRenameProject(func(oldName, newName string) error {
-		renamedOld, renamedNew = oldName, newName
+	var saved *string
+	mgmt.SetSaveProjectSettings(func(name string, u ProjectSettingsUpdate) error {
+		if name != "test-project" {
+			t.Errorf("save callback project = %q", name)
+		}
+		if u.DisplayName != nil {
+			v := *u.DisplayName
+			saved = &v
+		}
 		return nil
 	})
+	mgmt.SetGetProjectConfig(func(name string) map[string]any {
+		if name != "test-project" {
+			return nil
+		}
+		return map[string]any{"display_name": "我的机器人", "agent_type": "stub"}
+	})
 
-	mux := http.NewServeMux()
-	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
-	ts := httptest.NewServer(mux)
-	defer ts.Close()
-
-	// 运行中项目改名 → 200 + restart_required，透传 config 回调
-	status, got := doReq(t, http.MethodPatch, ts.URL+"/api/v1/projects/test-project", map[string]any{"name": "new-name"})
+	// PATCH display_name：只保存展示名，不触发重启，也不改内部 ID。
+	status, got := doReq(t, http.MethodPatch, ts.URL+"/api/v1/projects/test-project", map[string]any{"display_name": "我的机器人"})
 	if status != http.StatusOK {
-		t.Fatalf("rename status = %d (%v), want 200", status, got)
+		t.Fatalf("patch status = %d (%v), want 200", status, got)
 	}
-	if renamedOld != "test-project" || renamedNew != "new-name" {
-		t.Errorf("rename callback = %q→%q, want test-project→new-name", renamedOld, renamedNew)
+	if saved == nil || *saved != "我的机器人" {
+		t.Errorf("save callback display_name = %v, want 我的机器人", saved)
 	}
-	if data, _ := got["data"].(map[string]any); data["restart_required"] != true {
-		t.Errorf("rename response missing restart_required: %v", got)
+	if data, _ := got["data"].(map[string]any); data["restart_required"] == true {
+		t.Error("display-name change must not require a restart")
 	}
 
-	// 未运行（config-only）项目改名 → 200
-	status, _ = doReq(t, http.MethodPatch, ts.URL+"/api/v1/projects/not-running", map[string]any{"name": "cfg-renamed"})
+	// 列表同时返回不可变 ID 与可改显示名，且只有一条。
+	status, list := doReq(t, http.MethodGet, ts.URL+"/api/v1/projects", nil)
 	if status != http.StatusOK {
-		t.Errorf("config-only rename status = %d, want 200", status)
+		t.Fatalf("list status = %d (%v)", status, list)
 	}
-	if renamedOld != "not-running" || renamedNew != "cfg-renamed" {
-		t.Errorf("config-only rename callback = %q→%q", renamedOld, renamedNew)
+	data, _ := list["data"].(map[string]any)
+	projects, _ := data["projects"].([]any)
+	if len(projects) != 1 {
+		t.Fatalf("projects = %v, want exactly 1 (ID stays stable, no duplicate)", projects)
 	}
-
-	// 空名 → 400（config-only 走 handleProjectRename 严格校验）
-	status, _ = doReq(t, http.MethodPatch, ts.URL+"/api/v1/projects/not-running", map[string]any{"name": "  "})
-	if status != http.StatusBadRequest {
-		t.Errorf("blank name (config-only) status = %d, want 400", status)
+	entry, _ := projects[0].(map[string]any)
+	if entry["name"] != "test-project" {
+		t.Errorf("name = %v, want immutable ID test-project", entry["name"])
+	}
+	if entry["display_name"] != "我的机器人" {
+		t.Errorf("display_name = %v, want 我的机器人", entry["display_name"])
 	}
 }
 

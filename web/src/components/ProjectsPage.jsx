@@ -22,9 +22,6 @@ export default function ProjectsPage({ onToast }) {
   const [qrModal, setQrModal] = useState(false) // 二维码显示在新建弹窗内
   const [draft, setDraft] = useState(null) // 编辑草稿 {work_dir, model, admin_from, disabled_commands, allow_from}
   const [saved, setSaved] = useState(false) // 最近保存 → 提示
-  const [renameMode, setRenameMode] = useState(false)
-  const [renameVal, setRenameVal] = useState('')
-  const [renameBusy, setRenameBusy] = useState(false)
   const [botDraft, setBotDraft] = useState({}) // { [platformType]: {app_id, app_secret} }；secret 仅输入用，不回显
   const [qr, setQr] = useState(null) // {platform, device_code, interval, expires_in}
   const [qrImg, setQrImg] = useState('')
@@ -56,23 +53,6 @@ export default function ProjectsPage({ onToast }) {
   }
 
   useEffect(() => { load() }, [])
-  const renameProj = async () => {
-    const nv = (renameVal || '').trim()
-    if (!nv) { setError('项目名不能为空'); return }
-    if (nv === selected) { setRenameMode(false); return }
-    setRenameBusy(true)
-    try {
-      await api.patchProject(selected, { name: nv })
-      setRenameMode(false)
-      onToast?.('ok', `项目已改名为「${nv}」，重启后生效`)
-      setSelected(nv)
-      await load()
-    } catch (e) {
-      setError(e.message || '改名失败')
-    } finally {
-      setRenameBusy(false)
-    }
-  }
 
   const select = async (p) => {
     setSelected(p.name)
@@ -81,6 +61,7 @@ export default function ProjectsPage({ onToast }) {
       const d = await api.getProject(p.name)
       setDetail(d)
       setDraft({
+        display_name: d.display_name || '',
         work_dir: d.work_dir || '',
         model: d.model || '',
         admin_from: d.settings?.admin_from || '',
@@ -174,6 +155,8 @@ export default function ProjectsPage({ onToast }) {
     setBusy(true)
     try {
       const fields = {}
+      // 显示名可改且立即生效（内部 ID = selected，不变）。
+      fields.display_name = (draft.display_name || '').trim()
       fields.work_dir = draft.work_dir
       fields.model = draft.model
       fields.admin_from = draft.admin_from
@@ -181,8 +164,10 @@ export default function ProjectsPage({ onToast }) {
       fields.platform_allow_from = { feishu: draft.allow_from }
       const resp = await api.patchProject(selected, fields)
       setSaved(true)
-      onToast?.('ok', `项目 ${selected} 设置已保存${resp?.hot_swapped ? '（已热换生效）' : '（重启后生效）'}`)
-      await select(projects.find((x) => x.name === selected))
+      // 保存后立即刷新左侧列表与详情，无需重启。
+      await load()
+      await select({ name: selected })
+      onToast?.('ok', `项目设置已保存${resp?.hot_swapped ? '（已热换生效）' : ''}`)
     } catch (e) {
       setError(e.message)
     } finally {
@@ -305,7 +290,7 @@ export default function ProjectsPage({ onToast }) {
         {projects !== null && projects.length === 0 && <div className="sess-empty">暂无项目</div>}
         {projects && projects.map((p) => (
           <div key={p.name} className={`sess-item ${selected === p.name ? 'sess-item-on' : ''}`} onClick={() => select(p)} data-prj={p.name}>
-            <div className="sess-item-name">{p.name}{p.running === false && <span className="bot-tag">未运行</span>}</div>
+            <div className="sess-item-name">{p.display_name || p.name}{p.running === false && <span className="bot-tag">未运行</span>}</div>
             <div className="sess-item-sub">
               {p.agent_type || '—'} · {(p.platforms || []).join(', ') || '未绑平台'} · {p.sessions_count || 0} 会话
             </div>
@@ -319,20 +304,7 @@ export default function ProjectsPage({ onToast }) {
         {selected && detail && (
           <>
             <div className="sess-detail-head">
-              <div className="sess-detail-title">
-                {renameMode ? (
-                  <span className="prj-rename">
-                    <input className="input mono" value={renameVal} onChange={(e) => setRenameVal(e.target.value)} placeholder="新项目名" spellCheck={false} />
-                    <button className="btn btn-sm" onClick={renameProj} disabled={renameBusy}>{renameBusy ? '保存中…' : '保存'}</button>
-                    <button className="btn btn-sm btn-ghost" onClick={() => setRenameMode(false)}>取消</button>
-                  </span>
-                ) : (
-                  <>
-                    {selected}
-                    <button className="btn btn-sm btn-ghost prj-rename-btn" title="重命名项目" onClick={() => { setRenameMode(true); setRenameVal(selected) }}>✎ 改名</button>
-                  </>
-                )}
-              </div>
+              <div className="sess-detail-title">{draft?.display_name || selected}</div>
               <div className="sess-detail-sub">
                 {detail.agent_type || '—'} · {detail.work_dir || '默认目录'}
                 {saved && <span className="prj-saved">保存成功，已热换或重启生效</span>}
@@ -342,6 +314,17 @@ export default function ProjectsPage({ onToast }) {
               <div className="prj-note">项目未运行：仅配置已写入，重启服务后启动该通道。下方可继续编辑配置或扫码绑定。</div>
             )}
             <div className="prj-form">
+              <div className="field">
+                <label>项目名称</label>
+                <input
+                  className="input mono"
+                  value={draft?.display_name || ''}
+                  onChange={(e) => setDraft({ ...draft, display_name: e.target.value })}
+                  spellCheck={false}
+                  placeholder={selected}
+                />
+                <div className="help">仅影响显示，保存后立即生效；内部 ID <code>{selected}</code> 不变，定时任务与会话不受影响。留空则显示 ID。</div>
+              </div>
               <div className="field">
                 <label>会话启动文件夹（work_dir）</label>
                 <div className="bot-row">

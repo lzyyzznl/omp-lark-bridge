@@ -194,6 +194,14 @@ export default function SessionsPage({ initialId }) {
   const [typing, setTyping] = useState('')       // 打字机缓冲：未刷入 live 的回复文本增量
   const typingRef = useRef('')
   const flowRef = useRef(null)                   // 消息流容器（自动滚动用）
+  const [stickBottom, setStickBottom] = useState(true)  // 是否跟随底部（用户上滑历史则暂停自动滚动）
+
+  // 滚动容器的滚动监听：离开底部区域时暂停自动跟随并显示「回到底部」，滚回底部后恢复。
+  const onDetailScroll = useCallback(() => {
+    const el = flowRef.current
+    if (!el) return
+    setStickBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 140)
+  }, [])
 
 
   const loadJobs = useCallback(async () => {
@@ -431,8 +439,18 @@ export default function SessionsPage({ initialId }) {
   // 流式逐字追加时自动滚动到底，保证新内容可见。
   useEffect(() => {
     const el = flowRef.current
-    if (el && (sending || live.length)) el.scrollTop = el.scrollHeight
-  }, [live, sending])
+    if (el && stickBottom && (sending || live.length)) el.scrollTop = el.scrollHeight
+  }, [live, sending, stickBottom])
+
+  // 进入/切换会话时滚到最新消息（底部），而非停在最早消息。
+  useEffect(() => {
+    if (!selectedTx) return
+    const t = setTimeout(() => {
+      const el = flowRef.current
+      if (el) el.scrollTop = el.scrollHeight
+    }, 60)
+    return () => clearTimeout(t)
+  }, [selectedTx])
 
   return (
     <div className="sess-page">
@@ -458,7 +476,7 @@ export default function SessionsPage({ initialId }) {
       </div>
 
       {/* 右栏：该任务的会话列表 / 会话详情 */}
-      <div className="sess-detail">
+      <div className="sess-detail" ref={flowRef} onScroll={onDetailScroll}>
         {!selectedJob && <div className="sess-empty">← 选择一个定时任务，查看它名下所有会话</div>}
 
         {selectedJob && !selectedTx && (
@@ -490,7 +508,7 @@ export default function SessionsPage({ initialId }) {
               <div className="sess-detail-title">{txDetail ? (jobTxs?.find((t) => t.id === selectedTx)?.title || selectedTx) : selectedTx}</div>
               <div className="sess-detail-sub">{activeProject} · {selectedTx}</div>
             </div>
-            <div className="t-flow" ref={flowRef}>
+            <div className="t-flow">
               {txLoading && !txDetail && <div className="sess-empty">加载中…</div>}
               {txDetail && rendered.length === 0 && <div className="sess-empty">此会话没有可渲染的事件</div>}
               {txDetail && rendered}
@@ -541,6 +559,20 @@ export default function SessionsPage({ initialId }) {
                 </button>
               </div>
             </div>
+            {!stickBottom && (
+              <button
+                className="sess-back-btn"
+                aria-label="回到最新消息"
+                title="回到最新消息"
+                onClick={() => {
+                  const el = flowRef.current
+                  if (el) el.scrollTop = el.scrollHeight
+                  setStickBottom(true)
+                }}
+              >
+                ↓
+              </button>
+            )}
           </>
         )}
       </div>

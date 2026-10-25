@@ -272,6 +272,13 @@ export default function SessionsPage({ initialId }) {
     }).catch(() => {})
   }, [txDetail, copied])
 
+  // activeProject 必须先于 sendComposer 等 hook 声明（useCallback deps 会在
+  // 每次 render 求值它，置后再引用会触发 TDZ：Cannot access before init）。
+  const activeProject = useMemo(
+    () => jobs?.find((j) => j.id === selectedJob)?.project || '',
+    [jobs, selectedJob],
+  )
+
   // ── 网页继续对话：SSE 流式事件转成 transcript 事件行，实时追加渲染 ──
   // 文本/思考按 delta 累积进当前一条 assistant 消息；工具调用按独立行显示，
   // 其结果由发送结束后的 transcript 刷新补齐（与 toolCall 配对渲染）。
@@ -386,11 +393,6 @@ export default function SessionsPage({ initialId }) {
   const viewEvents = (sending || live.length > 0) ? [...(txDetail || []), ...live] : txDetail
   const toolResults = useMemo(() => (viewEvents ? indexToolResults(viewEvents) : new Map()), [viewEvents])
   const rendered = useMemo(() => (viewEvents || []).map((ev, i) => renderEvent(ev, i, toolResults)), [viewEvents, toolResults])
-
-  const activeProject = useMemo(
-    () => jobs?.find((j) => j.id === selectedJob)?.project || '',
-    [jobs, selectedJob],
-  )
 
   return (
     <div className="sess-page">

@@ -2565,7 +2565,13 @@ func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Req
 			return
 		case EventResult:
 			if ev.Done {
-				sse(map[string]any{"type": "done"})
+				// omp 每次 resume 会 fork 一个新 session 文件（续写在新文件，
+				// 原 transcript 不变），把该 id 回给前端以便切换到续写后的会话。
+				newID := ""
+				if cur := sess.CurrentSessionID(); cur != "" {
+					newID = strings.TrimSuffix(filepath.Base(cur), ".jsonl")
+				}
+				sse(map[string]any{"type": "done", "id": newID})
 				return
 			}
 		}

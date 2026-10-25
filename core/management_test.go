@@ -3375,6 +3375,9 @@ func TestMgmt_Transcripts_Chat(t *testing.T) {
 	if msgs[3]["tool"] != "Bash" || msgs[3]["intent"] != "ls" {
 		t.Errorf("tool_use = %v, want Bash/ls", msgs[3])
 	}
+	if msgs[4]["id"] != "stub-session" {
+		t.Errorf("done id = %q, want stub-session（新 fork 会话 id）", msgs[4]["id"])
+	}
 
 	prompt, images, files, resumeID := sess.snap()
 	if resumeID != filepath.Join(dir, "2026-01-01_a.jsonl") {

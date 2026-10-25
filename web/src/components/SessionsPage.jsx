@@ -347,6 +347,9 @@ export default function SessionsPage({ initialId }) {
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
+      // omp 每次 resume 会 fork 新 session 文件，原始 transcript 不会更新；
+      // done 携带新 id 时切换到续写后的会话，详情页显示完整续篇。
+      let newTxId = ''
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
@@ -362,10 +365,12 @@ export default function SessionsPage({ initialId }) {
             let msg
             try { msg = JSON.parse(data) } catch { continue }
             if (msg.type === 'error') setSendErr(msg.error || '对话出错')
-            else if (msg.type !== 'done') appendLive(msg)
+            else if (msg.type === 'done') newTxId = msg.id || ''
+            else appendLive(msg)
           }
         }
       }
+      if (newTxId && newTxId !== selectedTx) setSelectedTx(newTxId)
     } catch (err) {
       setSendErr(err.message || '发送失败')
     } finally {

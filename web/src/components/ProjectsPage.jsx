@@ -21,6 +21,7 @@ export default function ProjectsPage({ onToast }) {
   const [newBusy, setNewBusy] = useState(false)
   const [qrModal, setQrModal] = useState(false) // 二维码显示在新建弹窗内
   const [draft, setDraft] = useState(null) // 编辑草稿 {work_dir, model, admin_from, disabled_commands, allow_from}
+  const [saved, setSaved] = useState(false) // 最近保存 → 提示
   const [renameMode, setRenameMode] = useState(false)
   const [renameVal, setRenameVal] = useState('')
   const [renameBusy, setRenameBusy] = useState(false)

@@ -191,6 +191,7 @@ export default function SessionsPage({ initialId, onToast }) {
   const [txDetail, setTxDetail] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
   const [titleBusy, setTitleBusy] = useState('')
+  const [copied, setCopied] = useState({})
   const [sending, setSending] = useState(false)     // 网页「继续对话」进行中
   const [composerText, setComposerText] = useState('')
   const [attachments, setAttachments] = useState([]) // {kind:'image'|'file', name, mime, b64}

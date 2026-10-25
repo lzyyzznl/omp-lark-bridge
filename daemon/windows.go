@@ -273,3 +273,8 @@ Unregister-ScheduledTask -TaskName %s -Confirm:$false
 func CheckLinger() (enabled bool, user string) {
 	return false, ""
 }
+
+// RestartServiceAsync is unsupported on Windows.
+func RestartServiceAsync() error {
+	return fmt.Errorf("async restart unsupported on windows")
+}

@@ -469,10 +469,55 @@ func (m *ManagementServer) handleSetupWeixinSave(w http.ResponseWriter, r *http.
 // ── Generic platform add (manual config) ─────────────────────
 
 type AddPlatformRequest struct {
+	// Name is the user-facing display name; only used when creating a project
+	// (the immutable project ID is generated server-side).
+	Name      string         `json:"name"`
 	Type      string         `json:"type"`
 	Options   map[string]any `json:"options"`
 	WorkDir   string         `json:"work_dir"`
 	AgentType string         `json:"agent_type"`
+}
+
+// handleCreateProject creates a project with a server-generated immutable ID.
+// The user-supplied name is stored as the editable display name.
+func (m *ManagementServer) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	var req AddPlatformRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	name := strings.TrimSpace(req.Name)
+	if name == "" {
+		mgmtError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	platType := req.Type
+	if platType == "" {
+		platType = "feishu"
+	}
+	workDir, err := validateProjectWorkDir(req.WorkDir)
+	if err != nil {
+		mgmtError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if m.createProject == nil {
+		mgmtError(w, http.StatusServiceUnavailable, "project creation not configured")
+		return
+	}
+	if req.Options == nil {
+		req.Options = map[string]any{}
+	}
+	id, err := m.createProject(name, platType, req.Options, workDir, req.AgentType)
+	if err != nil {
+		mgmtError(w, http.StatusInternalServerError, "create project: "+err.Error())
+		return
+	}
+	mgmtJSON(w, http.StatusCreated, map[string]any{
+		"id":               id,
+		"name":             name,
+		"restart_required": true,
+	})
+	m.scheduleRestart()
 }
 
 func (m *ManagementServer) handleProjectAddPlatform(w http.ResponseWriter, r *http.Request, projectName string) {
@@ -507,6 +552,7 @@ func (m *ManagementServer) handleProjectAddPlatform(w http.ResponseWriter, r *ht
 		"message":          fmt.Sprintf("platform %q added to project %q", req.Type, projectName),
 		"restart_required": true,
 	})
+	m.scheduleRestart()
 }
 
 func validateProjectWorkDir(workDir string) (string, error) {

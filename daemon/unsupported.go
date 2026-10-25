@@ -15,3 +15,8 @@ func newPlatformManager() (Manager, error) {
 func CheckLinger() (enabled bool, user string) {
 	return false, ""
 }
+
+// RestartServiceAsync is unsupported on this platform.
+func RestartServiceAsync() error {
+	return fmt.Errorf("async restart unsupported on %s", runtime.GOOS)
+}

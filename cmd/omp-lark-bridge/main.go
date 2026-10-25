@@ -1183,6 +1183,9 @@ func main() {
 			}
 			return config.AddPlatformToProject(projectName, config.PlatformConfig{Type: platType, Options: opts}, workDir, agentType)
 		})
+		mgmtSrv.SetCreateProject(func(displayName, platType string, opts map[string]any, workDir, agentType string) (string, error) {
+			return config.CreateProject(displayName, workDir, agentType, config.PlatformConfig{Type: platType, Options: opts})
+		})
 		mgmtSrv.SetRemoveProject(config.RemoveProject)
 		mgmtSrv.SetSaveProjectSettings(func(name string, u core.ProjectSettingsUpdate) error {
 			return config.SaveProjectSettings(name, config.ProjectSettingsUpdate{
@@ -1202,6 +1205,15 @@ func main() {
 				PlatformAppID:        u.PlatformAppID,
 				PlatformAppSecret:    u.PlatformAppSecret,
 			})
+		})
+		// 配置变更（新建项目/改 work_dir/agent 类型/平台凭证）需要重建引擎，
+		// 直接让 systemd 重启本服务，无需用户手动 daemon restart。
+		mgmtSrv.SetRequestRestart(func() {
+			if err := daemon.RestartServiceAsync(); err != nil {
+				slog.Warn("management: auto restart unavailable; change takes effect after a manual restart", "error", err)
+				return
+			}
+			slog.Info("management: config change requires engine rebuild, restarting service")
 		})
 		mgmtSrv.SetPlatformRebuilder(func(projectName, platformType, appID, appSecret string) error {
 			opts, err := config.GetProjectPlatformOptions(projectName, platformType)

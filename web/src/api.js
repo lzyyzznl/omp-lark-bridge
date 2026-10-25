@@ -108,7 +108,9 @@ export const api = {
   patchProject: (project, fields) => request(`/projects/${encodeURIComponent(project)}`, { method: 'PATCH', body: fields }),
   // DELETE /api/v1/projects/{name} → 移除项目
   delProject: (project) => request(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' }),
-  // POST /api/v1/projects/{name}/add-platform → 新建项目（type=feishu+work_dir+agent_type）或增平台
+  // POST /api/v1/projects → 创建项目（服务端生成不可变 ID；name 仅作显示名）
+  createProject: (fields) => request('/projects', { method: 'POST', body: fields }),
+  // POST /api/v1/projects/{name}/add-platform → 为已有项目追加平台
   addPlatform: (project, fields) => request(`/projects/${encodeURIComponent(project)}/add-platform`, { method: 'POST', body: fields }),
   // POST /api/v1/projects/{name}/bot/qr/begin {platform?, app_id?} → 扫码绑定流程
   beginBotQR: (project, fields) => request(`/projects/${encodeURIComponent(project)}/bot/qr/begin`, { method: 'POST', body: fields }),

@@ -3580,3 +3580,64 @@ func TestMgmt_CronPatchProject(t *testing.T) {
 		t.Errorf("job project changed on invalid update: %q", p)
 	}
 }
+
+func TestMgmt_CreateProject_GeneratesIDAndSchedulesRestart(t *testing.T) {
+	mgmt, ts, _ := testManagementServer(t, "")
+	restarted := make(chan struct{}, 1)
+	mgmt.SetRequestRestart(func() { restarted <- struct{}{} })
+	var gotName, gotWorkDir string
+	mgmt.SetCreateProject(func(displayName, platType string, opts map[string]any, workDir, agentType string) (string, error) {
+		gotName, gotWorkDir = displayName, workDir
+		if platType != "feishu" {
+			t.Errorf("platform type = %q, want feishu", platType)
+		}
+		return "p1abc", nil
+	})
+
+	body := `{"name":"我的项目","work_dir":"","agent_type":"omp"}`
+	resp, err := http.Post(ts.URL+"/api/v1/projects", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatalf("POST /projects: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("status = %d, want 201", resp.StatusCode)
+	}
+	var out struct {
+		Data struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out.Data.ID != "p1abc" || out.Data.Name != "我的项目" {
+		t.Fatalf("unexpected response: %+v", out)
+	}
+	if gotName != "我的项目" || gotWorkDir != "" {
+		t.Fatalf("callback got name=%q workDir=%q", gotName, gotWorkDir)
+	}
+
+	select {
+	case <-restarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("creating a project must schedule an automatic restart")
+	}
+}
+
+func TestMgmt_CreateProject_RequiresName(t *testing.T) {
+	mgmt, ts, _ := testManagementServer(t, "")
+	mgmt.SetCreateProject(func(string, string, map[string]any, string, string) (string, error) {
+		t.Fatal("callback must not run without a name")
+		return "", nil
+	})
+	resp, err := http.Post(ts.URL+"/api/v1/projects", "application/json", strings.NewReader(`{}`))
+	if err != nil {
+		t.Fatalf("POST /projects: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}

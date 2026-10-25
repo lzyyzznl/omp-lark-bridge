@@ -66,7 +66,12 @@ type ManagementServer struct {
 	setupFeishuSave      func(req FeishuSetupSaveRequest) error
 	setupWeixinSave      func(req WeixinSetupSaveRequest) error
 	addPlatformToProject func(projectName, platType string, opts map[string]any, workDir, agentType string) error
+	// createProject 生成不可变项目 ID 并写入 config，返回新 ID。
+	createProject func(displayName, platType string, opts map[string]any, workDir, agentType string) (string, error)
 	removeProject        func(projectName string) error
+	// requestRestart 触发守护进程重启（systemd --no-block），用于让需要
+	// 重建引擎的变更自动生效。nil 时（前台运行）不重启，仅返回提示。
+	requestRestart func()
 	saveProjectSettings  func(projectName string, update ProjectSettingsUpdate) error
 	rebuildPlatform      func(projectName, platformType, appID, appSecret string) error
 	getProjectConfig     func(projectName string) map[string]any
@@ -118,8 +123,31 @@ func (m *ManagementServer) SetAddPlatformToProject(fn func(string, string, map[s
 	m.addPlatformToProject = fn
 }
 
+func (m *ManagementServer) SetCreateProject(fn func(string, string, map[string]any, string, string) (string, error)) {
+	m.createProject = fn
+}
+
 func (m *ManagementServer) SetRemoveProject(fn func(string) error) {
 	m.removeProject = fn
+}
+
+// SetRequestRestart wires the callback that restarts the daemon process so
+// config changes requiring engine rebuild (new project, work_dir/agent change)
+// take effect without a manual `daemon restart`.
+func (m *ManagementServer) SetRequestRestart(fn func()) {
+	m.requestRestart = fn
+}
+
+// scheduleRestart restarts shortly after the current HTTP response is flushed.
+// ponytail: 固定 400ms 延迟；若将来重启代价变大，改成前端确认后显式触发重启端点。
+func (m *ManagementServer) scheduleRestart() {
+	if m.requestRestart == nil {
+		return
+	}
+	go func() {
+		time.Sleep(400 * time.Millisecond)
+		m.requestRestart()
+	}()
 }
 
 func (m *ManagementServer) SetConfigFilePath(path string) {
@@ -566,8 +594,12 @@ func (m *ManagementServer) handleGlobalSettings(w http.ResponseWriter, r *http.R
 // ── Project endpoints ─────────────────────────────────────────
 
 func (m *ManagementServer) handleProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		m.handleCreateProject(w, r)
+		return
+	}
 	if r.Method != http.MethodGet {
-		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		mgmtError(w, http.StatusMethodNotAllowed, "GET or POST only")
 		return
 	}
 	m.mu.RLock()
@@ -698,6 +730,7 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 					"message":          fmt.Sprintf("project %q removed", projName),
 					"restart_required": true,
 				})
+				m.scheduleRestart()
 				return
 			}
 			m.handleProjectConfigDetail(w, r, projName)
@@ -736,8 +769,67 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 // handleProjectConfigDetail returns a project's persisted config when it has no
 // running engine yet (created via the management API, awaiting restart).
 func (m *ManagementServer) handleProjectConfigDetail(w http.ResponseWriter, r *http.Request, projName string) {
+	if r.Method == http.MethodPatch {
+		var body struct {
+			DisplayName       *string           `json:"display_name"`
+			WorkDir           *string           `json:"work_dir"`
+			Mode              *string           `json:"mode"`
+			AgentType         *string           `json:"agent_type"`
+			Language          *string           `json:"language"`
+			AdminFrom         *string           `json:"admin_from"`
+			DisabledCommands  []string          `json:"disabled_commands"`
+			Model             *string           `json:"model"`
+			PlatformAllowFrom map[string]string `json:"platform_allow_from"`
+			PlatformAppID     map[string]string `json:"platform_app_id"`
+			PlatformAppSecret map[string]string `json:"platform_app_secret"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if body.WorkDir != nil {
+			workDir, err := validateProjectWorkDir(*body.WorkDir)
+			if err != nil {
+				mgmtError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			*body.WorkDir = workDir
+		}
+		if m.saveProjectSettings == nil {
+			mgmtError(w, http.StatusServiceUnavailable, "settings persistence not available")
+			return
+		}
+		if err := m.saveProjectSettings(projName, ProjectSettingsUpdate{
+			DisplayName:          body.DisplayName,
+			Language:             body.Language,
+			AdminFrom:            body.AdminFrom,
+			DisabledCommands:     body.DisabledCommands,
+			WorkDir:              body.WorkDir,
+			Mode:                 body.Mode,
+			AgentType:            body.AgentType,
+			Model:                body.Model,
+			PlatformAllowFrom:    body.PlatformAllowFrom,
+			PlatformAppID:        body.PlatformAppID,
+			PlatformAppSecret:    body.PlatformAppSecret,
+		}); err != nil {
+			mgmtError(w, http.StatusInternalServerError, "save settings: "+err.Error())
+			return
+		}
+		// 纯展示名变更立即生效（列表每次从 config 读），无需重启。
+		onlyName := body.WorkDir == nil && body.Mode == nil && body.AgentType == nil &&
+			body.Language == nil && body.AdminFrom == nil && len(body.DisabledCommands) == 0 &&
+			body.Model == nil && len(body.PlatformAllowFrom) == 0 && len(body.PlatformAppID) == 0 &&
+			len(body.PlatformAppSecret) == 0
+		resp := map[string]any{"message": "settings updated"}
+		if !onlyName {
+			resp["restart_required"] = true
+			m.scheduleRestart()
+		}
+		mgmtJSON(w, http.StatusOK, resp)
+		return
+	}
 	if r.Method != http.MethodGet {
-		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		mgmtError(w, http.StatusMethodNotAllowed, "GET or PATCH only")
 		return
 	}
 	data := map[string]any{"name": projName, "running": false}
@@ -882,6 +974,7 @@ func (m *ManagementServer) handleProjectBot(w http.ResponseWriter, r *http.Reque
 			}
 			if !hotSwapped {
 				resp["restart_required"] = true
+				m.scheduleRestart()
 			}
 			mgmtJSON(w, http.StatusOK, resp)
 		case "authorization_pending", "slow_down":
@@ -1052,6 +1145,11 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 		}
 
 		restartRequired := false
+		if body.WorkDir != nil {
+			// 会话存储文件名与项目状态目录由 work_dir 派生，热切换只改 agent 的
+			// cwd，不重建存储；重启服务才彻底生效。
+			restartRequired = true
+		}
 		if body.AgentType != nil && *body.AgentType != e.agent.Name() {
 			registered := ListRegisteredAgents()
 			found := false
@@ -1129,6 +1227,7 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 		}
 		if restartRequired {
 			resp["restart_required"] = true
+			m.scheduleRestart()
 		}
 		mgmtJSON(w, http.StatusOK, resp)
 		return

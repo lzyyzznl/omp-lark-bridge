@@ -29,6 +29,7 @@ export default function ProjectsPage({ onToast }) {
   const cancelQR = useRef(null)
   const [models, setModels] = useState([]) // omp 模型列表（下拉）
   const [fsOpen, setFsOpen] = useState(false) // work_dir 目录选择弹窗
+  const [fsTarget, setFsTarget] = useState('edit') // 'edit' = 详情表单；'new' = 新建弹窗
   const [fsPath, setFsPath] = useState('')
   const [fsParent, setFsParent] = useState('')
   const [fsDirs, setFsDirs] = useState([])
@@ -53,6 +54,19 @@ export default function ProjectsPage({ onToast }) {
   }
 
   useEffect(() => { load() }, [])
+
+  // 配置变更触发服务自动重启：轮询直到 API 恢复（最多 ~20s）。
+  const waitServiceBack = async (timeoutMs = 20000) => {
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeoutMs) {
+      await new Promise((r) => setTimeout(r, 700))
+      try {
+        await api.listProjects()
+        return true
+      } catch { /* 重启窗口内连接被拒，继续等 */ }
+    }
+    return false
+  }
 
   // 详情 → 表单草稿。baseline 与 draft 共用同一形状，便于逐字段 diff。
   const draftFrom = (d) => ({
@@ -89,10 +103,11 @@ export default function ProjectsPage({ onToast }) {
     }
   }
 
-  const openFS = async () => {
+  const openFS = async (target = 'edit') => {
+    setFsTarget(target)
     setFsOpen(true); setFsError('')
     setFsPath(''); setFsParent(''); setFsDirs([])
-    await browseFS(draft?.work_dir || '')
+    await browseFS(target === 'new' ? newWorkDir : (draft?.work_dir || ''))
   }
 
   const browseFS = async (path) => {
@@ -108,7 +123,10 @@ export default function ProjectsPage({ onToast }) {
   }
 
   const chooseFS = () => {
-    if (fsPath && draft) setDraft({ ...draft, work_dir: fsPath })
+    if (fsPath) {
+      if (fsTarget === 'new') setNewWorkDir(fsPath)
+      else if (draft) setDraft({ ...draft, work_dir: fsPath })
+    }
     setFsOpen(false)
   }
   const openNew = () => {
@@ -129,24 +147,30 @@ export default function ProjectsPage({ onToast }) {
         if (manualAppID.trim()) opts.app_id = manualAppID.trim()
         if (manualSecret.trim()) opts.app_secret = manualSecret.trim()
       }
-      await api.addPlatform(name, {
+      const created = await api.createProject({
+        name,
         type: 'feishu',
         agent_type: 'omp', // 当前仅支持 omp，创建时不需选择
         work_dir: newWorkDir.trim() || undefined,
         options: opts,
       })
       setShowNew(false)
+      onToast?.('ok', `项目 ${name} 已创建，正在自动重启生效…`)
+      // 服务会异步重启（新项目引擎在启动时构建），等它恢复再继续。
+      const back = await waitServiceBack()
       await load()
-      const created = (await api.listProjects()).projects.find((x) => x.name === name)
-      if (created) await select(created)
-      if (bindMode === 'qr') {
+      const proj = (await api.listProjects()).projects.find((x) => x.name === created.id)
+      if (proj) await select(proj)
+      if (!back) {
+        onToast?.('err', `项目 ${name} 已创建，但服务未在预期时间内恢复，请稍后刷新`)
+      } else if (bindMode === 'qr') {
         setQrModal(true)
-        onToast?.('ok', `项目 ${name} 已创建，请用飞书 App 扫下面的二维码绑定机器人`)
-        startQR('feishu', '', true)
+        onToast?.('ok', `项目 ${name} 已上线，请用飞书 App 扫下面的二维码绑定机器人`)
+        startQR('feishu', '', true, created.id)
       } else {
         onToast?.('ok', bindMode === 'manual'
-          ? `项目 ${name} 已创建并写入凭证（重启后机器人上线）`
-          : `项目 ${name} 已创建（重启后机器人上线，可在右侧编辑或扫码绑定）`)
+          ? `项目 ${name} 已创建并写入凭证，机器人已上线`
+          : `项目 ${name} 已创建，机器人已上线（可继续编辑或扫码绑定）`)
       }
     } catch (e) {
       setError(e.message)
@@ -177,10 +201,17 @@ export default function ProjectsPage({ onToast }) {
       }
       const resp = await api.patchProject(selected, fields)
       setSaved(true)
-      // 保存后立即刷新左侧列表与详情，无需重启。
-      await load()
-      await select({ name: selected })
-      onToast?.('ok', `项目设置已保存${resp?.hot_swapped ? '（已热换生效）' : ''}`)
+      if (resp?.restart_required) {
+        onToast?.('ok', '设置已保存，正在自动重启生效…')
+        const back = await waitServiceBack()
+        await load()
+        await select({ name: selected })
+        onToast?.(back ? 'ok' : 'err', back ? '设置已生效' : '服务未在预期时间内恢复，请稍后刷新')
+      } else {
+        await load()
+        await select({ name: selected })
+        onToast?.('ok', `项目设置已保存${resp?.hot_swapped ? '（已热换生效）' : ''}`)
+      }
     } catch (e) {
       setError(e.message)
     } finally {
@@ -202,7 +233,12 @@ export default function ProjectsPage({ onToast }) {
         platform_app_secret: { [type]: secret },
       })
       setSaved(true)
-      onToast?.('ok', `平台 ${type} 已保存${resp?.hot_swapped ? '，已热换生效' : '（重启后生效）'}`)
+      if (resp?.restart_required) {
+        onToast?.('ok', `平台 ${type} 已保存，正在自动重启生效…`)
+        await waitServiceBack()
+      } else {
+        onToast?.('ok', `平台 ${type} 已保存${resp?.hot_swapped ? '，已热换生效' : ''}`)
+      }
       const d = await api.getProject(selected)
       setDetail(d)
       setBotDraft(initBotDraft(d))
@@ -215,21 +251,21 @@ export default function ProjectsPage({ onToast }) {
 
   const stopQR = () => { cancelQR.current?.(); cancelQR.current = null }
 
-  const startQR = async (type, curAppId, fromModal = false) => {
+  const startQR = async (type, curAppId, fromModal = false, project = selected) => {
     stopQR()
     setQrStatus('loading')
     try {
-      const r = await api.beginBotQR(selected, { platform: type, app_id: curAppId || undefined })
+      const r = await api.beginBotQR(project, { platform: type, app_id: curAppId || undefined })
       const img = await QRCode.toDataURL(r.qr_url, { width: 220, margin: 1 })
       setQrImg(img)
       setQr({ platform: type, device_code: r.device_code, interval: r.interval || 5, expires_in: r.expires_in || 300 })
-      pollQR(r, type, fromModal)
+      pollQR(r, type, fromModal, project)
     } catch (e) {
       setQrStatus(`error: ${e.message}`)
     }
   }
 
-  const pollQR = (r, type, fromModal) => {
+  const pollQR = (r, type, fromModal, project = selected) => {
     const interval = r.interval || 5
     const deadline = Date.now() + (r.expires_in || 300) * 1000
     let cancelled = false
@@ -239,7 +275,7 @@ export default function ProjectsPage({ onToast }) {
       if (cancelled) return
       if (Date.now() > deadline) { setQrStatus('expired'); return }
       try {
-        const pr = await api.pollBotQR(selected, { device_code: r.device_code, platform: type })
+        const pr = await api.pollBotQR(project, { device_code: r.device_code, platform: type })
         if (cancelled) return
         if (pr.status === 'pending') { setTimeout(step, Math.max(interval, 1) * 1000); return }
         if (pr.status === 'ok') {
@@ -248,7 +284,10 @@ export default function ProjectsPage({ onToast }) {
           if (fromModal) {
             setQrModal(false); setShowNew(false)
           }
-          const d = await api.getProject(selected)
+          if (pr.restart_required) {
+            await waitServiceBack()
+          }
+          const d = await api.getProject(project)
           setDetail(d)
           setBotDraft(initBotDraft(d))
         } else {
@@ -342,7 +381,7 @@ export default function ProjectsPage({ onToast }) {
                 <label>会话启动文件夹（work_dir）</label>
                 <div className="bot-row">
                   <input className="input mono" value={draft?.work_dir || ''} onChange={(e) => setDraft({ ...draft, work_dir: e.target.value })} spellCheck={false} />
-                  <button className="btn btn-sm" onClick={openFS} disabled={busy}>浏览…</button>
+                  <button className="btn btn-sm" onClick={() => openFS('edit')} disabled={busy}>浏览…</button>
                 </div>
               </div>
               <div className="field">
@@ -418,7 +457,7 @@ export default function ProjectsPage({ onToast }) {
 
 
       {fsOpen && (
-        <div className="prj-modal-mask" onClick={(e) => { if (e.target === e.currentTarget) setFsOpen(false) }}>
+        <div className="prj-modal-mask" style={{ zIndex: 60 }} onClick={(e) => { if (e.target === e.currentTarget) setFsOpen(false) }}>
           <div className="prj-modal">
             <div className="sess-list-head">
               <span>选择文件夹（work_dir）</span>
@@ -454,8 +493,11 @@ export default function ProjectsPage({ onToast }) {
               {!qrModal && <button className="btn btn-sm" onClick={() => setShowNew(false)}>×</button>}
             </div>
             {error && <div className="err-txt">{error}</div>}
-            <input className="input" placeholder="项目名（如 my-ops）" value={newName} onChange={(e) => setNewName(e.target.value)} disabled={qrModal} spellCheck={false} />
-            <input className="input mono" placeholder="会话启动文件夹（work_dir，如 /srv/ops）" value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} disabled={qrModal} spellCheck={false} />
+            <input className="input" placeholder="项目名称（显示名，如 my-ops；ID 自动生成）" value={newName} onChange={(e) => setNewName(e.target.value)} disabled={qrModal} spellCheck={false} />
+            <div style={{ display: 'flex', gap: 8 }}>
+              <input className="input mono" placeholder="会话启动文件夹（work_dir，如 /srv/ops）" value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} disabled={qrModal} spellCheck={false} />
+              <button className="btn btn-sm" onClick={() => openFS('new')} disabled={qrModal}>浏览…</button>
+            </div>
 
             <div className="bind-row">
               <span className="bind-label">飞书机器人</span>

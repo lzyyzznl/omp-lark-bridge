@@ -3528,3 +3528,52 @@ work_dir = "/tmp/alpha"
 		t.Errorf("display_name = %q, want empty (falls back to ID)", got)
 	}
 }
+
+func TestCreateProject_GeneratesImmutableID(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+	if err := os.WriteFile(path, []byte("language = \"zh\"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	prev := ConfigPath
+	ConfigPath = path
+	t.Cleanup(func() { ConfigPath = prev })
+
+	id, err := CreateProject("我的机器人", "/tmp", "", PlatformConfig{Type: "feishu"})
+	if err != nil {
+		t.Fatalf("CreateProject() error: %v", err)
+	}
+	if !strings.HasPrefix(id, "p") || strings.Contains(id, "我的") {
+		t.Fatalf("project ID must be generated, got %q", id)
+	}
+
+	id2, err := CreateProject("第二个", "", "", PlatformConfig{Type: "feishu"})
+	if err != nil {
+		t.Fatalf("CreateProject() second error: %v", err)
+	}
+	if id2 == id {
+		t.Fatalf("project IDs collided: %q", id)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read config: %v", err)
+	}
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if len(cfg.Projects) != 2 {
+		t.Fatalf("want 2 projects, got %d", len(cfg.Projects))
+	}
+	p := cfg.Projects[0]
+	if p.Name != id {
+		t.Fatalf("project name must be the generated ID: got %q want %q", p.Name, id)
+	}
+	if p.DisplayName != "我的机器人" {
+		t.Fatalf("display name not persisted: got %q", p.DisplayName)
+	}
+	if p.Agent.Type != "omp" {
+		t.Fatalf("default agent type must be omp, got %q", p.Agent.Type)
+	}
+}

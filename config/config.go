@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -12,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/BurntSushi/toml"
 )
@@ -3776,6 +3779,66 @@ func AddPlatformToProject(projectName string, platform PlatformConfig, workDir, 
 		Platforms: []PlatformConfig{platform},
 	})
 	return saveConfig(cfg)
+}
+
+// GenerateProjectID returns an immutable project ID: a base36 millisecond
+// timestamp plus 4 random hex chars. The timestamp prefix keeps IDs roughly
+// ordered (useful when eyeballing config.toml) and the random suffix makes
+// same-millisecond collisions effectively impossible.
+func GenerateProjectID() string {
+	b := make([]byte, 2)
+	if _, err := rand.Read(b); err != nil {
+		panic(fmt.Errorf("generate project id: %w", err))
+	}
+	return "p" + strconv.FormatInt(time.Now().UnixMilli(), 36) + hex.EncodeToString(b)
+}
+
+// CreateProject appends a new project with an auto-generated immutable ID and
+// the given user-facing display name. It returns the new project ID.
+//
+// The ID — not the display name — keys the engine, session store, cron/timer
+// bindings and management API paths, so renaming the display name never
+// breaks a running project.
+func CreateProject(displayName, workDir, agentType string, platform PlatformConfig) (string, error) {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if ConfigPath == "" {
+		return "", fmt.Errorf("config path not set")
+	}
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return "", fmt.Errorf("read config: %w", err)
+	}
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return "", fmt.Errorf("parse config: %w", err)
+	}
+	id := GenerateProjectID()
+	for _, p := range cfg.Projects {
+		if p.Name == id {
+			return "", fmt.Errorf("project id collision: %s", id)
+		}
+	}
+	agentCfg := AgentConfig{Type: "omp", Options: map[string]any{}}
+	if at := strings.TrimSpace(agentType); at != "" {
+		agentCfg.Type = at
+	}
+	if wd := strings.TrimSpace(workDir); wd != "" {
+		agentCfg.Options["work_dir"] = wd
+	}
+	if platform.Options == nil {
+		platform.Options = map[string]any{}
+	}
+	cfg.Projects = append(cfg.Projects, ProjectConfig{
+		Name:        id,
+		DisplayName: strings.TrimSpace(displayName),
+		Agent:       agentCfg,
+		Platforms:   []PlatformConfig{platform},
+	})
+	if err := saveConfig(cfg); err != nil {
+		return "", err
+	}
+	return id, nil
 }
 
 func writeRawConfig(content string) error {

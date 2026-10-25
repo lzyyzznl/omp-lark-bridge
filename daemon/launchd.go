@@ -350,3 +350,12 @@ func buildPlist(cfg Config) string {
 </plist>
 `, launchdLabel, xmlEscape(cfg.BinaryPath), xmlEscape(cfg.WorkDir), xmlEscape(cfg.LogFile), cfg.LogMaxSize, cfg.LogMaxBackups, xmlEscape(envPATH), envExtra)
 }
+
+// RestartServiceAsync restarts the launchd service without blocking.
+func RestartServiceAsync() error {
+	mgr, err := newPlatformManager()
+	if err != nil {
+		return err
+	}
+	return mgr.Restart()
+}

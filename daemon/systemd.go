@@ -126,6 +126,26 @@ func (m *systemdManager) Restart() error {
 	return nil
 }
 
+// RestartServiceAsync asks systemd to restart the bridge without blocking.
+// The current process is stopped by that restart, so a synchronous
+// `systemctl restart` would kill the caller mid-flight; --no-block returns
+// immediately and lets systemd carry out the restart.
+func RestartServiceAsync() error {
+	mgr, err := newPlatformManager()
+	if err != nil {
+		return err
+	}
+	sd, ok := mgr.(*systemdManager)
+	if !ok {
+		return fmt.Errorf("async restart unsupported on this platform")
+	}
+	out, err := runSystemctl(sd.sysArgs("restart", "--no-block", systemdServiceName)...)
+	if err != nil {
+		return fmt.Errorf("restart: %s (%w)", out, err)
+	}
+	return nil
+}
+
 func (m *systemdManager) Status() (*Status, error) {
 	st := &Status{Platform: m.Platform()}
 

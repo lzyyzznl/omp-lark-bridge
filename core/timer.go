@@ -242,10 +242,10 @@ func (s *TimerStore) ListPending() []*TimerJob {
 
 // TimerScheduler runs one-shot timer jobs using time.AfterFunc.
 type TimerScheduler struct {
-	store    *TimerStore
-	engines  map[string]*Engine
-	mu       sync.RWMutex
-	timers   map[string]*time.Timer // job ID → active timer
+	store              *TimerStore
+	engines            map[string]*Engine
+	mu                 sync.RWMutex
+	timers             map[string]*time.Timer // job ID → active timer
 	defaultSilent      bool
 	defaultSessionMode string
 }
@@ -262,6 +262,11 @@ func NewTimerScheduler(store *TimerStore) *TimerScheduler {
 	}
 }
 
+func (ts *TimerScheduler) RemoveEngine(name string) {
+	ts.mu.Lock()
+	defer ts.mu.Unlock()
+	delete(ts.engines, name)
+}
 func (ts *TimerScheduler) RegisterEngine(name string, e *Engine) {
 	ts.mu.Lock()
 	defer ts.mu.Unlock()

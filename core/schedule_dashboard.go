@@ -390,15 +390,15 @@ func (e *Engine) notifyScheduleFailure(kind, id, desc, sessionKey string, muted 
 
 func (e *Engine) platformForScheduleKey(sessionKey string) Platform {
 	name := extractPlatformName(sessionKey)
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if strings.EqualFold(p.Name(), name) {
 			return p
 		}
 	}
 	// A workspace- or topic-prefixed key may not match by prefix; fall back to
 	// the single configured platform when there is only one.
-	if len(e.platforms) == 1 {
-		return e.platforms[0]
+	if len(e.allPlatforms()) == 1 {
+		return e.allPlatforms()[0]
 	}
 	return nil
 }

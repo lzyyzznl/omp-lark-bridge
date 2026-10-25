@@ -15,6 +15,14 @@ type Platform interface {
 	Stop() error
 }
 
+// BotInfoProvider is an optional Platform capability exposing the identity of
+// the bound bot (e.g. a Feishu app) for management UIs. Implementations should
+// return cached values; callers never trigger network I/O through this.
+type BotInfoProvider interface {
+	BotOpenID() string
+	BotName() string
+}
+
 // ErrNotSupported indicates a platform doesn't support a particular operation.
 var ErrNotSupported = errors.New("operation not supported by this platform")
 

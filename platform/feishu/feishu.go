@@ -145,6 +145,7 @@ type Platform struct {
 	cancel           context.CancelFunc
 	dedup            *core.MessageDedup
 	botOpenID        string
+	botName          string
 	peerBots         map[string]string // app_id -> friendly alias, for quoted-reply attribution
 	mentionMap       map[string]string // agent name -> open_id (for outbound @ resolution)
 	userNameCache    sync.Map          // open_id -> display name
@@ -482,13 +483,14 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 	// can still receive events and operate correctly. We therefore only attempt
 	// bot open_id discovery eagerly for WebSocket mode.
 	if !p.shouldUseWebhookMode() {
-		if openID, err := p.fetchBotOpenID(); err != nil {
+		if openID, appName, err := p.fetchBotInfo(); err != nil {
 			slog.Warn(p.platformName+": failed to get bot open_id, group chat filtering disabled", "error", err)
 		} else {
 			p.mu.Lock()
 			p.botOpenID = openID
+			p.botName = appName
 			p.mu.Unlock()
-			slog.Info(p.platformName+": bot identified", "open_id", openID)
+			slog.Info(p.platformName+": bot identified", "open_id", openID, "name", appName)
 		}
 	}
 
@@ -3439,25 +3441,44 @@ func findSingleAsterisk(s string) int {
 }
 
 // fetchBotOpenID retrieves the bot's open_id via the Feishu bot info API.
-func (p *Platform) fetchBotOpenID() (string, error) {
+func (p *Platform) fetchBotInfo() (openID, appName string, err error) {
 	resp, err := p.client.Get(context.Background(),
 		"/open-apis/bot/v3/info", nil, larkcore.AccessTokenTypeTenant)
 	if err != nil {
-		return "", fmt.Errorf("api call: %w", err)
+		return "", "", fmt.Errorf("api call: %w", err)
 	}
 	var result struct {
 		Code int `json:"code"`
 		Bot  struct {
-			OpenID string `json:"open_id"`
+			OpenID  string `json:"open_id"`
+			AppName string `json:"app_name"`
 		} `json:"bot"`
 	}
 	if err := json.Unmarshal(resp.RawBody, &result); err != nil {
-		return "", fmt.Errorf("parse response: %w", err)
+		return "", "", fmt.Errorf("parse response: %w", err)
 	}
 	if result.Code != 0 {
-		return "", fmt.Errorf("api code=%d", result.Code)
+		return "", "", fmt.Errorf("api code=%d", result.Code)
 	}
-	return result.Bot.OpenID, nil
+	return result.Bot.OpenID, result.Bot.AppName, nil
+}
+
+// fetchBotOpenID retrieves the bot's open_id via the Feishu bot info API.
+func (p *Platform) fetchBotOpenID() (string, error) {
+	openID, _, err := p.fetchBotInfo()
+	return openID, err
+}
+
+// BotOpenID returns the bound bot's open_id (cached; empty until identified).
+func (p *Platform) BotOpenID() string {
+	return p.getBotOpenID()
+}
+
+// BotName returns the bound bot's display name (cached; empty until identified).
+func (p *Platform) BotName() string {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.botName
 }
 
 func isBotMentioned(mentions []*larkim.MentionEvent, botOpenID string) bool {

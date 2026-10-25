@@ -544,6 +544,12 @@ func (cs *CronScheduler) RegisterEngine(name string, e *Engine) {
 	cs.engines[name] = e
 }
 
+func (cs *CronScheduler) RemoveEngine(name string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	delete(cs.engines, name)
+}
+
 func (cs *CronScheduler) SetDefaultSilent(silent bool) {
 	cs.defaultSilent = silent
 }

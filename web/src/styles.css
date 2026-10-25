@@ -667,11 +667,45 @@ textarea.input { resize: vertical; min-height: 72px; }
 .sess-tx-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
 .t-flow .btn-ghost { margin-bottom: 8px; }
 .sess-copy { margin-left: 8px; }
+/* ── 会话详情：继续对话输入区 ── */
+.sess-composer {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  border-top: 1.5px solid var(--ink);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sess-composer textarea.input { min-height: 56px; }
+.sess-picked { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.sess-picked span {
+  background: var(--surface-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--ink);
+  word-break: break-all;
+}
+.sess-picked button {
+  border: none;
+  background: none;
+  color: var(--red);
+  cursor: pointer;
+  font-weight: 700;
+  margin-left: 4px;
+  padding: 0;
+}
+.sess-composer-actions { display: flex; align-items: center; gap: 10px; }
+.sess-attach { cursor: pointer; user-select: none; display: inline-block; }
+.sess-streaming { font-size: 11px; color: var(--ink-dim); flex: 1; }
+.sess-stream-err { font-size: 12px; color: var(--red); }
 
 /* ── 项目管理页 ── */
 .prj-page { display: flex; gap: 16px; padding: 0 24px 24px; align-items: flex-start; }
 .prj-list { flex: 0 0 340px; } /* 复用 .sess-list 外观 */
-.prj-detail { flex: 1; min-height: 300px; } /* 复用 .sess-detail 外观 */
+.prj-detail { flex: 1; min-height: 300px; max-height: none; overflow: visible; } /* 项目详情自适应高度，不套用 sess-detail 的固定高度滚动 */
 .prj-form { padding: 16px; max-width: 560px; }
 .prj-new { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1.5px solid var(--ink); }
 .prj-new-actions { display: flex; gap: 8px; }
@@ -679,6 +713,22 @@ textarea.input { resize: vertical; min-height: 72px; }
 .prj-saved { margin-left: 8px; color: var(--green); font-weight: 600; }
 .prj-new .help, .prj-form .help { font-size: 11px; color: var(--ink-dim); line-height: 1.5; }
 .prj-new code, .prj-form code { background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 4px; border-radius: 4px; font: 11px var(--font-mono); word-break: break-all; }
+.prj-form .bot-tag { display: inline-block; margin-left: 8px; font: 11px var(--font-mono); font-weight: 600; padding: 1px 6px; border: 1.5px solid var(--border); border-radius: 4px; }
+.prj-form .bot-tag.bot-ok { color: var(--green); border-color: color-mix(in srgb, var(--green) 55%, var(--border)); }
+.prj-form .bot-meta { font-size: 11px; color: var(--ink-dim); line-height: 1.5; word-break: break-all; margin-bottom: 6px; }
+.prj-form .bot-row { display: flex; gap: 8px; align-items: flex-start; }
+.prj-form .bot-col { display: flex; flex-direction: column; gap: 6px; flex: 1; }
+.prj-form .bot-col.bot-actions { flex: 0 0 auto; flex-direction: row; align-items: center; padding-top: 2px; }
+.prj-form .qr-box { margin-top: 10px; padding: 12px; border: 1.5px dashed color-mix(in srgb, var(--ink) 45%, transparent); border-radius: 6px; display: flex; flex-direction: column; gap: 8px; align-items: flex-start; max-width: 300px; }
+.prj-form .qr-img { width: 220px; height: 220px; image-rendering: pixelated; border: 1.5px solid var(--border); background: #fff; padding: 6px; }
+.prj-form .qr-status { font-size: 12px; color: var(--ink); }
+.prj-modal-mask { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.prj-modal { background: var(--cream); border: 2px solid var(--ink); box-shadow: 6px 6px 0 rgba(0,0,0,.25); width: 460px; max-width: 92vw; max-height: 88vh; overflow: auto; padding: 16px; display: flex; flex-direction: column; gap: 10px; }
+.prj-modal .bind-row { display: flex; align-items: center; gap: 12px; font-size: 12px; flex-wrap: wrap; }
+.prj-modal .bind-label { font-size: 11px; color: var(--ink-dim); font-weight: 600; }
+.prj-modal .bind-row label { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; }
+.prj-modal .bind-manual { display: flex; flex-direction: column; gap: 8px; }
+.prj-page .prj-note { margin: 8px 16px 0; padding: 8px 10px; border: 1.5px dashed var(--border); border-radius: 6px; font-size: 12px; color: var(--ink-dim); }
 
 /* ── agent 人格页 ── */
 .btn-danger { background: var(--red); color: #fff; border-color: var(--border); }

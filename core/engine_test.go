@@ -12796,6 +12796,41 @@ func TestEngine_AddPlatform(t *testing.T) {
 	}
 }
 
+func TestEngine_ReplacePlatform_HotSwapsAndReregisters(t *testing.T) {
+	agent := &stubAgent{}
+	old := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	e := NewEngine("test", agent, []Platform{old}, "", LangEnglish)
+	e.AddCommand("help", "Help", "", "", "", "test")
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// The stub is async; report readiness the way a real platform would.
+	e.OnPlatformReady(old)
+	if old.registerCalls != 1 {
+		t.Fatalf("after initial ready, registerCalls = %d, want 1", old.registerCalls)
+	}
+
+	replacement := &stubLifecyclePlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	if err := e.ReplacePlatform(replacement); err != nil {
+		t.Fatalf("ReplacePlatform: %v", err)
+	}
+	if old.stopCalls != 1 {
+		t.Errorf("old platform Stop calls = %d, want 1", old.stopCalls)
+	}
+	if replacement.startCalls != 1 {
+		t.Errorf("replacement Start calls = %d, want 1", replacement.startCalls)
+	}
+	// Replacement is async: commands must re-register once it reports ready.
+	e.OnPlatformReady(replacement)
+	if replacement.registerCalls != 1 {
+		t.Errorf("replacement registerCalls = %d, want 1 (commands re-registered)", replacement.registerCalls)
+	}
+	// The old platform must no longer be reachable by name.
+	if p := e.platformForName("feishu"); p != replacement {
+		t.Errorf("platformForName returned %T, want replacement", p)
+	}
+}
+
 func TestEngine_GetAgent(t *testing.T) {
 	agent := &stubAgent{}
 	p := &stubPlatformEngine{n: "feishu"}

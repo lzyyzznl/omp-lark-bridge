@@ -270,7 +270,7 @@ func (rm *RelayManager) Send(ctx context.Context, req RelayRequest) (*RelayRespo
 
 // sendToGroup sends a message to the group chat for visibility.
 func (rm *RelayManager) sendToGroup(ctx context.Context, e *Engine, platform, sessionKey, content string) {
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if p.Name() != platform {
 			continue
 		}

@@ -386,6 +386,16 @@ func main() {
 			for k, v := range pc.Options {
 				opts[k] = v
 			}
+			if appID, _ := opts["app_id"].(string); strings.TrimSpace(appID) == "" &&
+				(strings.EqualFold(pc.Type, "feishu") || strings.EqualFold(pc.Type, "lark")) {
+				// A project created in the web UI (or config) without app_id yet
+				// is awaiting QR binding / credential entry. Skipping it keeps
+				// one unconfigured project from killing the whole process; it
+				// comes up once credentials are saved.
+				slog.Warn("skipping platform without app_id; bind it via web/CLI to enable",
+					"project", proj.Name, "type", pc.Type)
+				continue
+			}
 			opts["cc_data_dir"] = cfg.DataDir
 			opts["cc_project"] = proj.Name
 			// Platforms render their own UI (card headers, buttons), so they need
@@ -1174,9 +1184,35 @@ func main() {
 				InjectSender:         u.InjectSender,
 				Model:                u.Model,
 				PlatformAllowFrom:    u.PlatformAllowFrom,
+				PlatformAppID:        u.PlatformAppID,
+				PlatformAppSecret:    u.PlatformAppSecret,
 			})
 		})
+		mgmtSrv.SetPlatformRebuilder(func(projectName, platformType, appID, appSecret string) error {
+			opts, err := config.GetProjectPlatformOptions(projectName, platformType)
+			if err != nil {
+				return err
+			}
+			opts["app_id"] = appID
+			opts["app_secret"] = appSecret
+			opts["cc_data_dir"] = cfg.DataDir
+			opts["cc_project"] = projectName
+			if cfg.Language != "" {
+				opts["language"] = cfg.Language
+			}
+			p, err := core.CreatePlatform(platformType, opts)
+			if err != nil {
+				return fmt.Errorf("create %s platform: %w", platformType, err)
+			}
+			for i, e := range engines {
+				if cfg.Projects[i].Name == projectName {
+					return e.ReplacePlatform(p)
+				}
+			}
+			return fmt.Errorf("engine for project %q not found", projectName)
+		})
 		mgmtSrv.SetGetProjectConfig(config.GetProjectConfigDetails)
+		mgmtSrv.SetListConfigProjects(config.ListProjects)
 		mgmtSrv.SetSaveProviderRefs(config.SaveProviderRefs)
 		mgmtSrv.SetConfigFilePath(configPath)
 		mgmtSrv.SetGetGlobalSettings(config.GetGlobalSettings)

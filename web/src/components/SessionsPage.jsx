@@ -186,6 +186,11 @@ export default function SessionsPage({ initialId }) {
   const [txDetail, setTxDetail] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
   const [copied, setCopied] = useState({})
+  const [sending, setSending] = useState(false)     // 网页「继续对话」进行中
+  const [composerText, setComposerText] = useState('')
+  const [attachments, setAttachments] = useState([]) // {kind:'image'|'file', name, mime, b64}
+  const [live, setLive] = useState([])               // 流式对话期间追加的事件（transcript 格式）
+  const [sendErr, setSendErr] = useState('')
 
 
   const loadJobs = useCallback(async () => {
@@ -228,6 +233,7 @@ export default function SessionsPage({ initialId }) {
   // 会话详情：选中后拉取，3s 轮询刷新
   useEffect(() => {
     if (!selectedTx) { setTxDetail(null); return }
+    if (sending) return
     const project = jobs?.find((j) => j.id === selectedJob)?.project || ''
     if (!project) return
     let alive = true
@@ -243,7 +249,7 @@ export default function SessionsPage({ initialId }) {
     fetchOne()
     const timer = setInterval(fetchOne, 3000)
     return () => { alive = false; clearInterval(timer) }
-  }, [selectedTx, selectedJob, jobs])
+  }, [selectedTx, selectedJob, jobs, sending])
 
   // 复制会话文本（dictating 会话内容：全部 message 文本）
   const copyTx = useCallback(() => {
@@ -266,8 +272,115 @@ export default function SessionsPage({ initialId }) {
     }).catch(() => {})
   }, [txDetail, copied])
 
-  const toolResults = useMemo(() => (txDetail ? indexToolResults(txDetail) : new Map()), [txDetail])
-  const rendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, toolResults)), [txDetail, toolResults])
+  // ── 网页继续对话：SSE 流式事件转成 transcript 事件行，实时追加渲染 ──
+  // 文本/思考按 delta 累积进当前一条 assistant 消息；工具调用按独立行显示，
+  // 其结果由发送结束后的 transcript 刷新补齐（与 toolCall 配对渲染）。
+  const appendLive = useCallback((ev) => {
+    setLive((prev) => {
+      const next = prev.slice()
+      if (ev.type === 'text' && ev.content) {
+        const last = next[next.length - 1]
+        if (last && last.type === 'message' && last.message?.role === 'assistant') {
+          const blocks = last.message.content || []
+          const b = blocks[blocks.length - 1]
+          if (b && b.type === 'text') b.text = (b.text || '') + ev.content
+          else blocks.push({ type: 'text', text: ev.content })
+        } else {
+          next.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: ev.content }] } })
+        }
+      } else if (ev.type === 'thinking' && ev.content) {
+        const last = next[next.length - 1]
+        if (last && last.type === 'message' && last.message?.role === 'assistant') {
+          const b = (last.message.content || []).find((x) => x.type === 'thinking')
+          if (b) b.thinking = (b.thinking || '') + ev.content
+          else last.message.content.push({ type: 'thinking', thinking: ev.content })
+        }
+      } else if (ev.type === 'tool_use') {
+        next.push({
+          type: 'message',
+          message: { role: 'assistant', content: [{ type: 'toolCall', id: 'live' + next.length, name: ev.tool, arguments: {}, intent: ev.intent || '' }] },
+        })
+      }
+      return next
+    })
+  }, [])
+
+  // 选择图片/文件附件：本地读为 base64 内联提交（不另走上传接口）。
+  const onPickFile = useCallback((e) => {
+    const files = Array.from(e.target.files || [])
+    if (files.length === 0) return
+    Promise.all(files.map((f) => new Promise((resolve) => {
+      const fr = new FileReader()
+      fr.onload = () => {
+        const dataUrl = String(fr.result || '')
+        resolve({
+          kind: f.type.startsWith('image/') ? 'image' : 'file',
+          name: f.name,
+          mime: f.type || 'application/octet-stream',
+          b64: dataUrl.split(',')[1] || '',
+        })
+      }
+      fr.readAsDataURL(f)
+    }))).then((list) => setAttachments((prev) => [...prev, ...list]))
+    e.target.value = ''
+  }, [])
+
+  // 发送：立即回显用户消息，再经 SSE 流式接收助手的回复。
+  const sendComposer = useCallback(async () => {
+    const text = composerText.trim()
+    if (sending || (!text && attachments.length === 0)) return
+    const blocks = []
+    if (text) blocks.push({ type: 'text', text })
+    attachments.forEach((a) => blocks.push({ type: 'text', text: a.kind === 'image' ? `🖼 ${a.name}` : `📎 ${a.name}` }))
+    if (blocks.length === 0) blocks.push({ type: 'text', text: '' })
+    setTxDetail((prev) => [...(prev || []), { type: 'message', message: { role: 'user', content: blocks } }])
+    setLive([])
+    setSendErr('')
+    setSending(true)
+    try {
+      const res = await api.chatTranscript(activeProject, selectedTx, {
+        message: text,
+        images: attachments.filter((a) => a.kind === 'image').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
+        files: attachments.filter((a) => a.kind === 'file').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
+      })
+      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
+      const reader = res.body.getReader()
+      const decoder = new TextDecoder()
+      let buf = ''
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        buf += decoder.decode(value, { stream: true })
+        let nl
+        while ((nl = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, nl)
+          buf = buf.slice(nl + 2)
+          for (const line of frame.split('\n')) {
+            if (!line.startsWith('data:')) continue
+            const data = line.slice(5).trim()
+            if (!data) continue
+            let msg
+            try { msg = JSON.parse(data) } catch { continue }
+            if (msg.type === 'error') setSendErr(msg.error || '对话出错')
+            else if (msg.type !== 'done') appendLive(msg)
+          }
+        }
+      }
+    } catch (err) {
+      setSendErr(err.message || '发送失败')
+    } finally {
+      setSending(false)
+      setLive([])
+      setComposerText('')
+      setAttachments([])
+    }
+  }, [sending, composerText, attachments, selectedTx, activeProject, appendLive])
+
+  // 流式对话期间把 live 事件追加在历史之后一起渲染；结束后 txDetail 会被
+  // 轮询刷新为 omp 写入的权威 transcript，live 随即清空。
+  const viewEvents = (sending || live.length > 0) ? [...(txDetail || []), ...live] : txDetail
+  const toolResults = useMemo(() => (viewEvents ? indexToolResults(viewEvents) : new Map()), [viewEvents])
+  const rendered = useMemo(() => (viewEvents || []).map((ev, i) => renderEvent(ev, i, toolResults)), [viewEvents, toolResults])
 
   const activeProject = useMemo(
     () => jobs?.find((j) => j.id === selectedJob)?.project || '',
@@ -334,6 +447,49 @@ export default function SessionsPage({ initialId }) {
               {txLoading && !txDetail && <div className="sess-empty">加载中…</div>}
               {txDetail && rendered.length === 0 && <div className="sess-empty">此会话没有可渲染的事件</div>}
               {txDetail && rendered}
+            </div>
+            <div className="sess-composer">
+              {sendErr && <div className="sess-stream-err">⚠ {sendErr}</div>}
+              {attachments.length > 0 && (
+                <div className="sess-picked">
+                  {attachments.map((a, i) => (
+                    <span key={i}>
+                      {a.kind === 'image' ? '🖼' : '📎'} {a.name}
+                      {!sending && (
+                        <button onClick={() => setAttachments((arr) => arr.filter((_, j) => j !== i))}>×</button>
+                      )}
+                    </span>
+                  ))}
+                </div>
+              )}
+              <textarea
+                className="input"
+                rows={2}
+                placeholder={sending ? '助手正在回复…' : '输入消息继续对话（Enter 发送，Shift+Enter 换行）'}
+                value={composerText}
+                disabled={sending}
+                onChange={(e) => setComposerText(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
+                    e.preventDefault()
+                    sendComposer()
+                  }
+                }}
+              />
+              <div className="sess-composer-actions">
+                <label className="btn btn-sm btn-ghost sess-attach">
+                  附件
+                  <input type="file" multiple hidden onChange={onPickFile} />
+                </label>
+                <span className="sess-streaming">{sending ? '对话中…' : '可继续对话'}</span>
+                <button
+                  className="btn btn-sm btn-solid"
+                  onClick={sendComposer}
+                  disabled={sending || (!composerText.trim() && attachments.length === 0)}
+                >
+                  发送 ⏎
+                </button>
+              </div>
             </div>
           </>
         )}

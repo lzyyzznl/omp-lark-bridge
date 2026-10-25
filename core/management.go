@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -35,6 +37,8 @@ type ProjectSettingsUpdate struct {
 	InjectSender         *bool
 	Model                *string
 	PlatformAllowFrom    map[string]string
+	PlatformAppID        map[string]string
+	PlatformAppSecret    map[string]string
 }
 
 // ManagementServer provides an HTTP REST API for external management tools
@@ -49,6 +53,10 @@ type ManagementServer struct {
 	mu      sync.RWMutex
 	engines map[string]*Engine // project name → engine
 
+	// chatMu 串行化网页「继续对话」turn（多个 turn resume 同一份 transcript
+	// 文件会竞态，见 chatWithTranscript）。
+	chatMu sync.Mutex
+
 	cronScheduler      *CronScheduler
 	timerScheduler     *TimerScheduler
 	heartbeatScheduler *HeartbeatScheduler
@@ -59,9 +67,11 @@ type ManagementServer struct {
 	addPlatformToProject func(projectName, platType string, opts map[string]any, workDir, agentType string) error
 	removeProject        func(projectName string) error
 	saveProjectSettings  func(projectName string, update ProjectSettingsUpdate) error
+	rebuildPlatform      func(projectName, platformType, appID, appSecret string) error
 	getProjectConfig     func(projectName string) map[string]any
 	saveProviderRefs     func(projectName string, refs []string) error
 	configFilePath       string
+	listConfigProjects   func() ([]string, error)
 	getGlobalSettings    func() map[string]any
 	saveGlobalSettings   func(map[string]any) error
 
@@ -71,7 +81,6 @@ type ManagementServer struct {
 	updateGlobalProvider func(name string, info GlobalProviderInfo) error
 	removeGlobalProvider func(name string) error
 	fetchPresets         func() (*ProviderPresetsResponse, error)
-
 	// cc-switch migration callback
 	listCCSwitchProviders func() ([]CCSwitchProviderInfo, error)
 }
@@ -120,8 +129,18 @@ func (m *ManagementServer) SetSaveProjectSettings(fn func(string, ProjectSetting
 	m.saveProjectSettings = fn
 }
 
+// SetPlatformRebuilder wires a callback that hot-swaps a running platform to
+// new credentials (used when PATCH updates a project's app_id/app_secret).
+func (m *ManagementServer) SetPlatformRebuilder(fn func(projectName, platformType, appID, appSecret string) error) {
+	m.rebuildPlatform = fn
+}
+
 func (m *ManagementServer) SetGetProjectConfig(fn func(string) map[string]any) {
 	m.getProjectConfig = fn
+}
+
+func (m *ManagementServer) SetListConfigProjects(fn func() ([]string, error)) {
+	m.listConfigProjects = fn
 }
 
 func (m *ManagementServer) SetSaveProviderRefs(fn func(string, []string) error) {
@@ -232,6 +251,9 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	// Projects
 	mux.HandleFunc(prefix+"/projects", m.wrap(m.handleProjects))
 	mux.HandleFunc(prefix+"/projects/", m.wrap(m.handleProjectRoutes))
+
+	// File browser for the work_dir picker (server-side directory listing).
+	mux.HandleFunc(prefix+"/fs/dirs", m.wrap(m.handleFSDirs))
 
 	// Cron (global)
 	mux.HandleFunc(prefix+"/cron", m.wrap(m.handleCron))
@@ -404,7 +426,7 @@ func (m *ManagementServer) handleStatus(w http.ResponseWriter, r *http.Request) 
 
 	platformSet := make(map[string]bool)
 	for _, e := range m.engines {
-		for _, p := range e.platforms {
+		for _, p := range e.allPlatforms() {
 			platformSet[p.Name()] = true
 		}
 	}
@@ -550,29 +572,67 @@ func (m *ManagementServer) handleProjects(w http.ResponseWriter, r *http.Request
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
-	projects := make([]map[string]any, 0, len(m.engines))
-	for name, e := range m.engines {
-		platNames := make([]string, len(e.platforms))
-		for i, p := range e.platforms {
-			platNames[i] = p.Name()
-		}
-
-		sessCount := len(e.sessions.AllSessions())
-
-		hbEnabled := false
-		if m.heartbeatScheduler != nil {
-			if st := m.heartbeatScheduler.Status(name); st != nil {
-				hbEnabled = st.Enabled
+	// Projects written to config but not yet running (no engine, e.g. created
+	// via the management API) are listed too so the new project shows up right
+	// away without a restart. They are flagged running:false.
+	names := map[string]bool{}
+	for name := range m.engines {
+		names[name] = true
+	}
+	if m.listConfigProjects != nil {
+		if cfgs, err := m.listConfigProjects(); err == nil {
+			for _, n := range cfgs {
+				names[n] = true
 			}
 		}
+	}
 
-		projects = append(projects, map[string]any{
+	sorted := make([]string, 0, len(names))
+	for name := range names {
+		sorted = append(sorted, name)
+	}
+	sort.Strings(sorted)
+
+	projects := make([]map[string]any, 0, len(sorted))
+	for _, name := range sorted {
+		e, running := m.engines[name]
+		entry := map[string]any{
 			"name":              name,
-			"agent_type":        e.agent.Name(),
-			"platforms":         platNames,
-			"sessions_count":    sessCount,
-			"heartbeat_enabled": hbEnabled,
-		})
+			"running":           running,
+			"platforms":         []string{},
+			"sessions_count":    0,
+			"heartbeat_enabled": false,
+		}
+		if running {
+			platNames := make([]string, len(e.allPlatforms()))
+			for i, p := range e.allPlatforms() {
+				platNames[i] = p.Name()
+			}
+			entry["agent_type"] = e.agent.Name()
+			entry["platforms"] = platNames
+			entry["sessions_count"] = len(e.sessions.AllSessions())
+			if m.heartbeatScheduler != nil {
+				if st := m.heartbeatScheduler.Status(name); st != nil {
+					entry["heartbeat_enabled"] = st.Enabled
+				}
+			}
+		} else if m.getProjectConfig != nil {
+			if extra := m.getProjectConfig(name); extra != nil {
+				if t, ok := extra["agent_type"].(string); ok && t != "" {
+					entry["agent_type"] = t
+				}
+				if pcs, ok := extra["platform_configs"].([]map[string]any); ok {
+					platNames := make([]string, 0, len(pcs))
+					for _, pc := range pcs {
+						if t, ok := pc["type"].(string); ok && t != "" {
+							platNames = append(platNames, t)
+						}
+					}
+					entry["platforms"] = platNames
+				}
+			}
+		}
+		projects = append(projects, entry)
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{"projects": projects})
 }
@@ -595,13 +655,17 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 	}
 	rest := ""
 	if len(parts) > 2 {
-		rest = parts[2]
+		rest = parts[2] // SplitN(path, "/", 3)：parts[2] 已含剩余全部 `/` 段
 	}
 
-	// add-platform writes config only; it does not need a running engine
-	// and must work for brand-new projects that have no engine yet.
+	// add-platform and bot-QR binding work against config only; they must work
+	// for brand-new projects that have no running engine yet.
 	if sub == "add-platform" {
 		m.handleProjectAddPlatform(w, r, projName)
+		return
+	}
+	if sub == "bot" {
+		m.handleProjectBot(w, r, projName, rest)
 		return
 	}
 
@@ -609,6 +673,27 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 	engine, ok := m.engines[projName]
 	m.mu.RUnlock()
 	if !ok {
+		// A project persisted in config but not yet started can still show its
+		// configuration (so the web UI can edit/bind it before running).
+		if sub == "" {
+			if r.Method == http.MethodDelete {
+				if m.removeProject == nil {
+					mgmtError(w, http.StatusNotImplemented, "project removal not configured")
+					return
+				}
+				if err := m.removeProject(projName); err != nil {
+					mgmtError(w, http.StatusInternalServerError, "remove project: "+err.Error())
+					return
+				}
+				mgmtJSON(w, http.StatusOK, map[string]any{
+					"message":          fmt.Sprintf("project %q removed", projName),
+					"restart_required": true,
+				})
+				return
+			}
+			m.handleProjectConfigDetail(w, r, projName)
+			return
+		}
 		mgmtError(w, http.StatusNotFound, fmt.Sprintf("project not found: %s", projName))
 		return
 	}
@@ -639,14 +724,184 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 	}
 }
 
+// handleProjectConfigDetail returns a project's persisted config when it has no
+// running engine yet (created via the management API, awaiting restart).
+func (m *ManagementServer) handleProjectConfigDetail(w http.ResponseWriter, r *http.Request, projName string) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	data := map[string]any{"name": projName, "running": false}
+	if m.getProjectConfig != nil {
+		if extra := m.getProjectConfig(projName); extra != nil {
+			for k, v := range extra {
+				data[k] = v
+			}
+			mgmtJSON(w, http.StatusOK, data)
+			return
+		}
+	}
+	mgmtError(w, http.StatusNotFound, fmt.Sprintf("project not found: %s", projName))
+}
+
+// platformAppIDFromConfig returns the persisted app_id for a platform type of
+// a project, or "" when absent.
+func (m *ManagementServer) platformAppIDFromConfig(project, platformType string) string {
+	if m.getProjectConfig == nil {
+		return ""
+	}
+	extra := m.getProjectConfig(project)
+	if extra == nil {
+		return ""
+	}
+	cfgs, _ := extra["platform_configs"].([]map[string]any)
+	for _, c := range cfgs {
+		t, _ := c["type"].(string)
+		if strings.EqualFold(strings.TrimSpace(t), platformType) {
+			id, _ := c["app_id"].(string)
+			return strings.TrimSpace(id)
+		}
+	}
+	return ""
+}
+
+// handleProjectBot implements QR-scan binding of a Feishu/Lark bot.
+//
+//	POST .../bot/qr/begin  {"platform":"feishu","app_id":""} → QR flow
+//	POST .../bot/qr/poll   {"platform":"feishu","device_code":""} → status
+//
+// A successful poll immediately persists the fresh credentials and hot-swaps
+// the running platform, so the app secret never reaches the frontend.
+func (m *ManagementServer) handleProjectBot(w http.ResponseWriter, r *http.Request, projName, rest string) {
+	switch rest {
+	case "qr/begin":
+		var body struct {
+			Platform string `json:"platform"`
+			AppID    string `json:"app_id"`
+			Source   string `json:"source"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		service := strings.ToLower(strings.TrimSpace(body.Platform))
+		if service == "" {
+			service = "feishu"
+		}
+		if service != "feishu" && service != "lark" {
+			mgmtError(w, http.StatusBadRequest, "unsupported platform "+service)
+			return
+		}
+		begin, qrURL, err := beginFeishuRegistration(r.Context(), service, body.Source, strings.TrimSpace(body.AppID))
+		if err != nil {
+			mgmtError(w, http.StatusBadGateway, "begin registration failed: "+err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"device_code": begin.DeviceCode,
+			"qr_url":      qrURL,
+			"expires_in":  begin.ExpiresIn,
+			"interval":    begin.Interval,
+			"platform":    service,
+		})
+
+	case "qr/poll":
+		var body struct {
+			Platform   string `json:"platform"`
+			DeviceCode string `json:"device_code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		service := strings.ToLower(strings.TrimSpace(body.Platform))
+		if service == "" {
+			service = "feishu"
+		}
+		if body.DeviceCode == "" {
+			mgmtError(w, http.StatusBadRequest, "device_code required")
+			return
+		}
+		poll, err := pollFeishuRegistration(r.Context(), service, body.DeviceCode)
+		if err != nil {
+			mgmtError(w, http.StatusBadGateway, "poll registration failed: "+err.Error())
+			return
+		}
+		if poll.TenantBrand == "lark" && service != "lark" {
+			// The account was authorized on the Lark (international) domain;
+			// re-poll there (mirrors the node-sdk domain switch).
+			poll, err = pollFeishuRegistration(r.Context(), "lark", body.DeviceCode)
+			if err != nil {
+				mgmtError(w, http.StatusBadGateway, "poll registration failed: "+err.Error())
+				return
+			}
+			service = "lark"
+		}
+
+		switch poll.Error {
+		case "":
+			if poll.ClientID == "" || poll.ClientSecret == "" {
+				mgmtError(w, http.StatusBadGateway, "accounts service returned no credentials")
+				return
+			}
+			patch := ProjectSettingsUpdate{
+				PlatformAppID:     map[string]string{service: poll.ClientID},
+				PlatformAppSecret: map[string]string{service: poll.ClientSecret},
+			}
+			if m.saveProjectSettings != nil {
+				if err := m.saveProjectSettings(projName, patch); err != nil {
+					slog.Warn("management: failed to persist QR-bound credentials", "project", projName, "error", err)
+				}
+			}
+			hotSwapped := false
+			if m.rebuildPlatform != nil {
+				if err := m.rebuildPlatform(projName, service, poll.ClientID, poll.ClientSecret); err != nil {
+					// Credentials are already persisted; for a not-yet-running
+					// project the rebuild cannot find an engine, which is fine —
+					// it takes effect on the next start.
+					slog.Warn("management: QR-bound platform hot-swap deferred", "project", projName, "error", err)
+				} else {
+					hotSwapped = true
+				}
+			}
+			resp := map[string]any{
+				"status":       "ok",
+				"app_id":       poll.ClientID,
+				"platform":     service,
+				"user_open_id": poll.UserOpenID,
+				"hot_swapped":  hotSwapped,
+			}
+			if !hotSwapped {
+				resp["restart_required"] = true
+			}
+			mgmtJSON(w, http.StatusOK, resp)
+		case "authorization_pending", "slow_down":
+			mgmtJSON(w, http.StatusOK, map[string]any{"status": "pending"})
+		default:
+			mgmtJSON(w, http.StatusOK, map[string]any{"status": poll.Error})
+		}
+
+	default:
+		mgmtError(w, http.StatusNotFound, "not found")
+	}
+}
 func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Request, name string, e *Engine) {
 	if r.Method == http.MethodGet {
-		platInfos := make([]map[string]any, len(e.platforms))
-		for i, p := range e.platforms {
-			platInfos[i] = map[string]any{
+		platInfos := make([]map[string]any, len(e.allPlatforms()))
+		for i, p := range e.allPlatforms() {
+			info := map[string]any{
 				"type":      p.Name(),
-				"connected": true,
+				"connected": e.IsPlatformReady(p),
 			}
+			if bot, ok := p.(BotInfoProvider); ok {
+				if id := bot.BotOpenID(); id != "" {
+					info["bot_open_id"] = id
+				}
+				if name := bot.BotName(); name != "" {
+					info["bot_name"] = name
+				}
+			}
+			platInfos[i] = info
 		}
 
 		allSessions := e.sessions.AllSessions()
@@ -725,6 +980,8 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			InjectSender         *bool             `json:"inject_sender"`
 			Model                *string           `json:"model"`
 			PlatformAllowFrom    map[string]string `json:"platform_allow_from"`
+			PlatformAppID        map[string]string `json:"platform_app_id"`
+			PlatformAppSecret    map[string]string `json:"platform_app_secret"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -813,13 +1070,50 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 				InjectSender:         body.InjectSender,
 				Model:                body.Model,
 				PlatformAllowFrom:    body.PlatformAllowFrom,
+				PlatformAppID:        body.PlatformAppID,
+				PlatformAppSecret:    body.PlatformAppSecret,
 			}
 			if err := m.saveProjectSettings(name, patch); err != nil {
 				slog.Warn("management: failed to persist project settings", "project", name, "error", err)
 			}
 		}
 
+		hotSwapTypes := map[string]bool{}
+		for t := range body.PlatformAppID {
+			hotSwapTypes[t] = true
+		}
+		for t := range body.PlatformAppSecret {
+			hotSwapTypes[t] = true
+		}
+		hotSwapped := false
+		if len(hotSwapTypes) > 0 && m.rebuildPlatform != nil {
+			for t := range hotSwapTypes {
+				appID := strings.TrimSpace(body.PlatformAppID[t])
+				if appID == "" {
+					appID = m.platformAppIDFromConfig(name, t)
+				}
+				secret := strings.TrimSpace(body.PlatformAppSecret[t])
+				if appID == "" || secret == "" {
+					restartRequired = true
+					continue
+				}
+				if err := m.rebuildPlatform(name, t, appID, secret); err != nil {
+					// Credentials are already persisted; for a not-yet-running
+					// project there is no engine to hot-swap — takes effect on
+					// the next start instead of erroring out.
+					slog.Warn("management: platform hot-swap deferred", "project", name, "type", t, "error", err)
+					restartRequired = true
+					continue
+				}
+				hotSwapped = true
+			}
+		} else if len(hotSwapTypes) > 0 {
+			restartRequired = true
+		}
 		resp := map[string]any{"message": "settings updated"}
+		if hotSwapped {
+			resp["hot_swapped"] = true
+		}
 		if restartRequired {
 			resp["restart_required"] = true
 		}
@@ -836,9 +1130,31 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			mgmtError(w, http.StatusInternalServerError, err.Error())
 			return
 		}
+		// Drop the running engine now so the project disappears from the list
+		// immediately (no restart). Stop happens outside the lock and
+		// asynchronously because it closes sessions/platforms. Scheduler
+		// registrations are dropped so leftover job entries fail cleanly
+		// ("project not found") instead of running on a stopped engine.
+		m.mu.Lock()
+		removed, wasRunning := m.engines[name]
+		delete(m.engines, name)
+		m.mu.Unlock()
+		if m.cronScheduler != nil {
+			m.cronScheduler.RemoveEngine(name)
+		}
+		if m.timerScheduler != nil {
+			m.timerScheduler.RemoveEngine(name)
+		}
+		if wasRunning {
+			go func() {
+				if err := removed.Stop(); err != nil {
+					slog.Warn("management: engine stop after project removal", "project", name, "error", err)
+				}
+			}()
+		}
 		mgmtJSON(w, http.StatusOK, map[string]any{
-			"message":          fmt.Sprintf("project %q removed from config", name),
-			"restart_required": true,
+			"message": fmt.Sprintf("project %q removed", name),
+			"removed": true,
 		})
 		return
 	}
@@ -1963,11 +2279,20 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 		mgmtError(w, http.StatusNotImplemented, "agent does not expose session transcripts")
 		return
 	}
+	dir := dirProv.SessionDir()
 	if rest == "" {
-		m.listTranscripts(w, dirProv.SessionDir())
+		m.listTranscripts(w, dir)
 		return
 	}
-	m.readTranscript(w, dirProv.SessionDir(), rest)
+	// rest = {id}（读取详情）或 {id}/chat（SSE 继续对话）。仅 {id}/chat 是细分路由；
+	// 其它含斜杠或非 POST 的 rest 一律交给 readTranscript 走原 400 校验，
+	// 不改变既有路径穿越拒绝行为。
+	id, action, hasAction := strings.Cut(rest, "/")
+	if hasAction && action == "chat" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
+		m.chatWithTranscript(w, r, e, dir, id)
+		return
+	}
+	m.readTranscript(w, dir, rest)
 }
 
 func (m *ManagementServer) listTranscripts(w http.ResponseWriter, dir string) {
@@ -2106,6 +2431,147 @@ func readTranscriptEvents(path string) ([]map[string]any, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+// chatAttachment is one uploaded image/file in a web chat request. Data is
+// base64-encoded raw bytes (the web UI reads the file locally and inlines it).
+type chatAttachment struct {
+	MimeType string `json:"mime_type"`
+	FileName string `json:"filename"`
+	Data     string `json:"data"`
+}
+
+// decodeChatAttachments decodes base64 raw bytes into core attachment types.
+// Non-nil images/files picks the target slice.
+func decodeChatAttachments(raw []chatAttachment, images *[]ImageAttachment, files *[]FileAttachment) error {
+	for _, a := range raw {
+		if a.Data == "" {
+			continue
+		}
+		b, err := base64.StdEncoding.DecodeString(a.Data)
+		if err != nil {
+			return fmt.Errorf("invalid base64 in %q: %w", a.FileName, err)
+		}
+		if images != nil {
+			*images = append(*images, ImageAttachment{MimeType: a.MimeType, Data: b, FileName: a.FileName})
+		} else {
+			*files = append(*files, FileAttachment{MimeType: a.MimeType, Data: b, FileName: a.FileName})
+		}
+	}
+	return nil
+}
+
+// chatWithTranscript resumes the transcript's agent session with the user's
+// message (text + images + files) and streams the agent's events back as
+// Server-Sent Events. Each turn spawns its own agent process — cron transcripts
+// belong to finished jobs — and the session is closed when the turn ends. The
+// agent persists the turn into the transcript file itself, so the web UI
+// re-reads the transcript for the authoritative history afterwards.
+func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Request, e *Engine, dir, id string) {
+	if id != filepath.Base(id) {
+		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
+		return
+	}
+	sessionFile := filepath.Join(dir, id+".jsonl")
+	if _, err := os.Stat(sessionFile); err != nil {
+		mgmtError(w, http.StatusNotFound, "transcript not found")
+		return
+	}
+	var body struct {
+		Message string           `json:"message"`
+		Images  []chatAttachment `json:"images"`
+		Files   []chatAttachment `json:"files"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 96<<20)).Decode(&body); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	var images []ImageAttachment
+	var files []FileAttachment
+	if err := decodeChatAttachments(body.Images, &images, nil); err != nil {
+		mgmtError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := decodeChatAttachments(body.Files, nil, &files); err != nil {
+		mgmtError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	msg := strings.TrimSpace(body.Message)
+	if msg == "" && len(images) == 0 && len(files) == 0 {
+		mgmtError(w, http.StatusBadRequest, "message or attachment is required")
+		return
+	}
+
+	// 同一时刻只允许一个网页对话：两个并发 turn 同时 resume 同一份 .jsonl，
+	// 会在 omp 写文件时产生竞态。// ponytail: 全局锁；若需并行聊天再按会话粒度加锁。
+	m.chatMu.Lock()
+	defer m.chatMu.Unlock()
+
+	sess, err := e.agent.StartSession(r.Context(), sessionFile)
+	if err != nil {
+		mgmtError(w, http.StatusInternalServerError, "start session: "+err.Error())
+		return
+	}
+	defer sess.Close()
+
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		mgmtError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	sse := func(payload any) bool {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			return false
+		}
+		fl.Flush()
+		return true
+	}
+
+	if err := sess.Send(msg, "web"+id, images, files); err != nil {
+		sse(map[string]any{"type": "error", "error": err.Error()})
+		return
+	}
+	for ev := range sess.Events() {
+		switch ev.Type {
+		case EventText:
+			if ev.Content != "" && !sse(map[string]any{"type": "text", "content": ev.Content}) {
+				return
+			}
+		case EventThinking:
+			if ev.Content != "" && !sse(map[string]any{"type": "thinking", "content": ev.Content}) {
+				return
+			}
+		case EventToolUse:
+			if !sse(map[string]any{"type": "tool_use", "tool": ev.ToolName, "intent": ev.ToolInput}) {
+				return
+			}
+		case EventToolResult:
+			if !sse(map[string]any{"type": "tool_result", "tool": ev.ToolName, "status": ev.ToolStatus, "result": ev.ToolResult}) {
+				return
+			}
+		case EventError:
+			errMsg := "session error"
+			if ev.Error != nil {
+				errMsg = ev.Error.Error()
+			}
+			sse(map[string]any{"type": "error", "error": errMsg})
+			return
+		case EventResult:
+			if ev.Done {
+				sse(map[string]any{"type": "done"})
+				return
+			}
+		}
+	}
+	// events channel closed without a terminal event（进程在 turn 中途退出）。
+	sse(map[string]any{"type": "error", "error": "session ended unexpectedly"})
 }
 
 // ── omp agent personas (catalog + user-scope CRUD) ─────────────────────────

@@ -3,7 +3,7 @@ import { marked } from 'marked'
 import { api } from '../api.js'
 import { formatTime } from '../lib/time.js'
 
-const ROLE_LABEL = { user: '你', assistant: '助手', tool: '工具', system: '系统' }
+const ROLE_LABEL = { user: '你', assistant: 'Harness', tool: '工具', system: '系统' }
 
 // ── 辅助：内容/参数/大小的可读化 ───────────────────────────────
 
@@ -555,7 +555,7 @@ export default function SessionsPage({ initialId }) {
               {txDetail && rendered.length === 0 && <div className="sess-empty">此会话没有可渲染的事件</div>}
               {txDetail && rendered}
               {sending && (
-                <div className="sess-typing"><span className="sess-spin" aria-hidden />助手正在回复…</div>
+                <div className="sess-typing"><span className="sess-spin" aria-hidden />Harness 正在回复…</div>
               )}
             </div>
             <div className="sess-composer">
@@ -575,7 +575,7 @@ export default function SessionsPage({ initialId }) {
               <textarea
                 className="input"
                 rows={2}
-                placeholder={sending ? '助手正在回复…' : '输入消息继续对话（Enter 发送，Shift+Enter 换行）'}
+                placeholder={sending ? 'Harness 正在回复…' : '输入消息继续对话（Enter 发送，Shift+Enter 换行）'}
                 value={composerText}
                 disabled={sending}
                 onChange={(e) => setComposerText(e.target.value)}

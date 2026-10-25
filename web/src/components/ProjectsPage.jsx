@@ -14,7 +14,6 @@ export default function ProjectsPage({ onToast }) {
   const [showNew, setShowNew] = useState(false)
   const [newName, setNewName] = useState('')
   const [newWorkDir, setNewWorkDir] = useState('')
-  const [newAgentType, setNewAgentType] = useState('')
   const [bindMode, setBindMode] = useState('none') // none | manual | qr
   const [manualAppID, setManualAppID] = useState('')
   const [manualSecret, setManualSecret] = useState('')
@@ -114,7 +113,7 @@ export default function ProjectsPage({ onToast }) {
   }
   const openNew = () => {
     stopQR()
-    setNewName(''); setNewWorkDir(''); setNewAgentType(''); setBindMode('none')
+    setNewName(''); setNewWorkDir(''); setBindMode('none')
     setManualAppID(''); setManualSecret(''); setNewBusy(false)
     setQrModal(false); setQr(null); setQrImg(''); setQrStatus('')
     setShowNew(true)
@@ -132,7 +131,7 @@ export default function ProjectsPage({ onToast }) {
       }
       await api.addPlatform(name, {
         type: 'feishu',
-        agent_type: newAgentType.trim() || 'omp',
+        agent_type: 'omp', // 当前仅支持 omp，创建时不需选择
         work_dir: newWorkDir.trim() || undefined,
         options: opts,
       })
@@ -457,7 +456,6 @@ export default function ProjectsPage({ onToast }) {
             {error && <div className="err-txt">{error}</div>}
             <input className="input" placeholder="项目名（如 my-ops）" value={newName} onChange={(e) => setNewName(e.target.value)} disabled={qrModal} spellCheck={false} />
             <input className="input mono" placeholder="会话启动文件夹（work_dir，如 /srv/ops）" value={newWorkDir} onChange={(e) => setNewWorkDir(e.target.value)} disabled={qrModal} spellCheck={false} />
-            <input className="input mono" placeholder="agent 类型（默认 omp）" value={newAgentType} onChange={(e) => setNewAgentType(e.target.value)} disabled={qrModal} spellCheck={false} />
 
             <div className="bind-row">
               <span className="bind-label">飞书机器人</span>

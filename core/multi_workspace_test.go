@@ -649,10 +649,10 @@ func TestMultiWorkspaceAgent_NoPropagationWhenParentHasNoRunAs(t *testing.T) {
 }
 
 // TestCommandContextWithWorkspace_BoundChannel exercises the helper that
-// executeSkill / executeCustomCommand use to route slash commands to the
-// per-channel workspace agent. The previous implementation always handed
-// back the global e.agent, so any /bug, /mode, custom command etc. would
-// run in the project-default work_dir even if the user had bound the
+// routes slash commands to the per-channel workspace agent (sub-commands like
+// /executeCustomCommand do the same). The previous implementation always
+// handed back the global e.agent, so any /bug, /mode, custom command etc.
+// would run in the project-default work_dir even if the user had bound the
 // channel via /workspace bind.
 func TestCommandContextWithWorkspace_BoundChannel(t *testing.T) {
 	baseDir := t.TempDir()

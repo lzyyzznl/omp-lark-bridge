@@ -70,6 +70,12 @@ func (r *CommandRegistry) Remove(name string) bool {
 	return false
 }
 
+// normalizeCommandName folds case and treats hyphens/underscores as equivalent.
+func normalizeCommandName(s string) string {
+	return strings.ToLower(strings.ReplaceAll(s, "-", "_"))
+}
+
+
 // SetAgentDirs sets the directories to scan for agent command files.
 func (r *CommandRegistry) SetAgentDirs(dirs []string) {
 	r.agentDirs = dirs

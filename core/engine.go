@@ -382,7 +382,6 @@ type Engine struct {
 	heartbeatScheduler *HeartbeatScheduler
 
 	commands *CommandRegistry
-	skills   *SkillRegistry
 	aliases  map[string]string // trigger → command (e.g. "帮助" → "/help")
 	aliasMu  sync.RWMutex
 
@@ -741,7 +740,6 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		attachmentSendEnabled: true,
 		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
 		commands:              NewCommandRegistry(),
-		skills:                NewSkillRegistry(),
 		aliases:               make(map[string]string),
 		interactiveStates:     make(map[string]*interactiveState),
 		sendWorkDirs:          make(map[string]string),
@@ -764,9 +762,6 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 
 	if cp, ok := ag.(CommandProvider); ok {
 		e.commands.SetAgentDirs(cp.CommandDirs())
-	}
-	if sp, ok := ag.(SkillProvider); ok {
-		e.skills.SetDirs(sp.SkillDirs())
 	}
 
 	return e
@@ -1404,15 +1399,6 @@ func (e *Engine) ProjectName() string {
 	return e.name
 }
 
-// ListSkills returns all discovered skills for this engine's project.
-func (e *Engine) ListSkills() []*Skill {
-	return e.skills.ListAll()
-}
-
-// SkillDirs returns the configured skill directories for this engine.
-func (e *Engine) SkillDirs() []string {
-	return e.skills.Dirs()
-}
 
 // AgentTypeName returns the agent type name (e.g. "claudecode", "codex").
 func (e *Engine) AgentTypeName() string {
@@ -1555,15 +1541,6 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	}
 
 	content := job.Prompt
-	if strings.HasPrefix(content, "/") {
-		parts := strings.Fields(content)
-		if len(parts) > 0 {
-			cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
-			if skill := e.skills.Resolve(cmd); skill != nil {
-				content = BuildSkillInvocationPrompt(skill, parts[1:])
-			}
-		}
-	}
 
 	msg := &Message{
 		SessionKey:   sessionKey,
@@ -1808,15 +1785,6 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 	}
 
 	content := job.Prompt
-	if strings.HasPrefix(content, "/") {
-		parts := strings.Fields(content)
-		if len(parts) > 0 {
-			cmd := strings.ToLower(strings.TrimPrefix(parts[0], "/"))
-			if skill := e.skills.Resolve(cmd); skill != nil {
-				content = BuildSkillInvocationPrompt(skill, parts[1:])
-			}
-		}
-	}
 
 	msg := &Message{
 		SessionKey:   sessionKey,
@@ -2507,10 +2475,7 @@ func (e *Engine) markPlatformUnavailable(p Platform) bool {
 
 func (e *Engine) initPlatformCapabilities(p Platform) {
 	if registrar, ok := p.(CommandRegistrar); ok {
-		commands, skillsOmitted := e.menuCommandsForPlatform(p.Name())
-		if skillsOmitted && strings.EqualFold(p.Name(), "telegram") {
-			slog.Info("telegram: omitting skill commands from menu due to command limit", "project", e.name)
-		}
+		commands := e.menuCommandsForPlatform(p.Name())
 		if err := registrar.RegisterCommands(commands); err != nil {
 			slog.Error("platform command registration failed", "project", e.name, "platform", p.Name(), "error", err)
 		} else {
@@ -6432,7 +6397,6 @@ var builtinCommands = []struct {
 	{[]string{"help"}, "help"},
 	{[]string{"version"}, "version"},
 	{[]string{"commands", "command", "cmd"}, "commands"},
-	{[]string{"skills", "skill"}, "skills"},
 	{[]string{"config"}, "config"},
 	{[]string{"doctor"}, "doctor"},
 	{[]string{"upgrade", "update"}, "upgrade"},
@@ -6658,8 +6622,6 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.reply(p, msg.ReplyCtx, VersionInfo)
 	case "commands":
 		e.cmdCommands(p, msg, args)
-	case "skills":
-		e.cmdSkills(p, msg)
 	case "config":
 		e.cmdConfig(p, msg, args)
 	case "doctor":
@@ -6712,20 +6674,6 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 				"user_id", msg.UserID, "platform", msg.Platform,
 				"project", e.name, "command", custom.Name, "type", "custom")
 			e.executeCustomCommand(p, msg, custom, args)
-			return true
-		}
-		if skill := e.skills.Resolve(cmd); skill != nil {
-			if disabledCmds[strings.ToLower(skill.Name)] {
-				slog.Info("audit: command_blocked",
-					"user_id", msg.UserID, "platform", msg.Platform,
-					"project", e.name, "command", skill.Name, "reason", "disabled")
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "/"+skill.Name))
-				return true
-			}
-			slog.Info("audit: command_executed",
-				"user_id", msg.UserID, "platform", msg.Platform,
-				"project", e.name, "command", skill.Name, "type", "skill")
-			e.executeSkill(p, msg, skill, args)
 			return true
 		}
 		// Not a in-one-chat command — notify user, then fall through to agent
@@ -9374,7 +9322,6 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/heartbeat", action: "nav:/heartbeat"},
 				{command: "/commands", action: "nav:/commands"},
 				{command: "/alias", action: "nav:/alias"},
-				{command: "/skills", action: "nav:/skills"},
 				{command: "/compress", action: "cmd:/compress"},
 				{command: "/stop", action: "act:/stop"},
 				{command: "/ps", action: "cmd:/ps"},
@@ -9568,94 +9515,12 @@ func (e *Engine) GetAllCommands() []BotCommandInfo {
 		})
 	}
 
-	// Collect skills
-	for _, s := range e.skills.ListAll() {
-		lowerName := strings.ToLower(s.Name)
-		if seenCmds[lowerName] {
-			continue
-		}
-		if disabledCmds[lowerName] {
-			continue
-		}
-		seenCmds[lowerName] = true
-
-		desc := s.Description
-		if desc == "" {
-			desc = "Skill"
-		}
-
-		commands = append(commands, BotCommandInfo{
-			Command:     s.Name,
-			Description: desc,
-			IsSkill:     true,
-		})
-	}
 
 	return commands
 }
 
-func (e *Engine) menuCommandsForPlatform(platformName string) ([]BotCommandInfo, bool) {
-	commands := e.GetAllCommands()
-	if !strings.EqualFold(platformName, "telegram") {
-		return commands, false
-	}
-	return telegramMenuCommandsAllOrNone(commands)
-}
-
-func telegramMenuCommandsAllOrNone(commands []BotCommandInfo) ([]BotCommandInfo, bool) {
-	var nonSkill []BotCommandInfo
-	var skill []BotCommandInfo
-	for _, command := range commands {
-		if command.IsSkill {
-			skill = append(skill, command)
-			continue
-		}
-		nonSkill = append(nonSkill, command)
-	}
-
-	if len(telegramMenuEntryNames(append(append([]BotCommandInfo{}, nonSkill...), skill...))) <= telegramBotCommandLimit {
-		return commands, false
-	}
-	return nonSkill, len(skill) > 0
-}
-
-func telegramMenuEntryNames(commands []BotCommandInfo) []string {
-	var names []string
-	seen := make(map[string]bool)
-	for _, command := range commands {
-		name := sanitizeTelegramMenuCommand(command.Command)
-		if name == "" || seen[name] {
-			continue
-		}
-		seen[name] = true
-		names = append(names, name)
-	}
-	return names
-}
-
-func sanitizeTelegramMenuCommand(cmd string) string {
-	cmd = strings.ToLower(cmd)
-	var b strings.Builder
-	for _, c := range cmd {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-			b.WriteRune(c)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	result := b.String()
-	for strings.Contains(result, "__") {
-		result = strings.ReplaceAll(result, "__", "_")
-	}
-	result = strings.Trim(result, "_")
-	if len(result) == 0 || result[0] < 'a' || result[0] > 'z' {
-		return ""
-	}
-	if len(result) > 32 {
-		result = result[:32]
-	}
-	return result
+func (e *Engine) menuCommandsForPlatform(platformName string) []BotCommandInfo {
+	return e.GetAllCommands()
 }
 
 func (e *Engine) cmdModel(p Platform, msg *Message, args []string) {
@@ -12086,8 +11951,6 @@ func (e *Engine) handleCardNav(action string, sessionKey string) *Card {
 		return e.renderAliasCard()
 	case "/config":
 		return e.renderConfigCard()
-	case "/skills":
-		return e.renderSkillsCard()
 	case "/doctor":
 		return e.renderDoctorCard()
 	case "/whoami":
@@ -13629,24 +13492,6 @@ func (e *Engine) renderConfigCard() *Card {
 		Build()
 }
 
-func (e *Engine) renderSkillsCard() *Card {
-	skills := e.skills.ListAll()
-	if len(skills) == 0 {
-		return e.simpleCard(e.i18n.T(MsgCardTitleSkills), "purple", e.i18n.T(MsgSkillsEmpty))
-	}
-
-	var sb strings.Builder
-	sb.WriteString(e.i18n.Tf(MsgSkillsTitle, e.agent.Name(), len(skills)))
-	for _, s := range skills {
-		sb.WriteString(fmt.Sprintf("  /%s — %s\n", s.Name, s.Description))
-	}
-
-	return NewCard().Title(e.i18n.T(MsgCardTitleSkills), "purple").
-		Markdown(sb.String()).
-		Note(e.i18n.T(MsgSkillsHint)).
-		Buttons(e.cardBackButton()).
-		Build()
-}
 
 func (e *Engine) renderDoctorCard() *Card {
 	results := RunDoctorChecks(e.ctx, e.agent, e.platforms)
@@ -14797,104 +14642,6 @@ func (e *Engine) cmdCommandsDel(p Platform, msg *Message, args []string) {
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandsDeleted), name))
 }
 
-// ──────────────────────────────────────────────────────────────
-// Skill discovery & execution
-// ──────────────────────────────────────────────────────────────
-
-func (e *Engine) executeSkill(p Platform, msg *Message, skill *Skill, args []string) {
-	prompt := BuildSkillInvocationPrompt(skill, args)
-	_, _, _, err := e.commandContext(p, msg)
-	if err != nil {
-		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
-		return
-	}
-
-	// Resolve workspace-aware agent in multi-workspace mode. Without this the
-	// skill always runs against the global e.agent (with the project-level
-	// work_dir), bypassing any per-channel binding written by /workspace bind.
-	agent, sessions, interactiveKey, workspaceDir, err := e.commandContextWithWorkspace(p, msg)
-	if err != nil {
-		e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
-		return
-	}
-
-	session := sessions.GetOrCreateActive(interactiveKey)
-	if !session.TryLock() {
-		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgPreviousProcessing))
-		return
-	}
-
-	slog.Info("executing skill",
-		"skill", skill.Name,
-		"source", skill.Source,
-		"user", msg.UserName,
-		"workspace", workspaceDir,
-	)
-
-	msg.Content = prompt
-	go e.processInteractiveMessageWith(p, msg, session, agent, sessions, interactiveKey, workspaceDir, msg.SessionKey)
-}
-
-func (e *Engine) cmdSkills(p Platform, msg *Message) {
-	if !supportsCards(p) {
-		skills := e.skills.ListAll()
-		if len(skills) == 0 {
-			e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSkillsEmpty))
-			return
-		}
-
-		var sb strings.Builder
-		sb.WriteString(e.i18n.Tf(MsgSkillsTitle, e.agent.Name(), len(skills)))
-
-		for _, s := range skills {
-			sb.WriteString(fmt.Sprintf("  /%s — %s\n", displayCommandForPlatform(p.Name(), s.Name), s.Description))
-		}
-
-		sb.WriteString("\n" + e.i18n.T(MsgSkillsHint))
-		if _, skillsOmitted := e.menuCommandsForPlatform(p.Name()); skillsOmitted && strings.EqualFold(p.Name(), "telegram") {
-			sb.WriteString("\n" + e.i18n.T(MsgSkillsTelegramMenuHint))
-		}
-		e.reply(p, msg.ReplyCtx, sb.String())
-		return
-	}
-
-	e.replyWithCard(p, msg.ReplyCtx, e.renderSkillsCard())
-}
-
-func displayCommandForPlatform(platformName, command string) string {
-	if !strings.EqualFold(platformName, "telegram") {
-		return command
-	}
-	if sanitized := sanitizeTelegramDisplayCommand(command); sanitized != "" {
-		return sanitized
-	}
-	return command
-}
-
-func sanitizeTelegramDisplayCommand(cmd string) string {
-	cmd = strings.ToLower(cmd)
-	var b strings.Builder
-	for _, c := range cmd {
-		switch {
-		case c >= 'a' && c <= 'z', c >= '0' && c <= '9':
-			b.WriteRune(c)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	result := b.String()
-	for strings.Contains(result, "__") {
-		result = strings.ReplaceAll(result, "__", "_")
-	}
-	result = strings.Trim(result, "_")
-	if len(result) == 0 || result[0] < 'a' || result[0] > 'z' {
-		return ""
-	}
-	if len(result) > 32 {
-		result = result[:32]
-	}
-	return result
-}
 
 // ── /config command ──────────────────────────────────────────
 

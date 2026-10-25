@@ -92,7 +92,7 @@ func TestGetAllCommands_SkipsUnsupported(t *testing.T) {
 			t.Fatalf("%q must not be advertised to the agent/panel, got %v", hidden, ids)
 		}
 	}
-	for _, shown := range []string{"new", "list", "cron", "timer", "status", "help", "shell", "skills"} {
+	for _, shown := range []string{"new", "list", "cron", "timer", "status", "help", "shell"} {
 		if !ids[shown] {
 			t.Fatalf("%q should still be advertised, got %v", shown, ids)
 		}

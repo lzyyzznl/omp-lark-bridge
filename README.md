@@ -110,7 +110,7 @@ the `omp-sessions/` stores.
 ## Slash commands (in chat)
 
 Sessions: `/new` `/switch` `/list` `/delete` `/history` `/retry`
-Agent: `/model` `/reasoning` `/memory` `/shell` `/skill`
+Agent: `/model` `/reasoning` `/memory` `/shell`
 System: `/help` `/status` `/whoami` `/doctor` `/mode` no-op (fixed yolo),
 plus cron/timer via `/cron` `/timer` and CLI equivalents
 (`in-one-chat cron add`, `in-one-chat timer add`, `in-one-chat send -m "…"`).

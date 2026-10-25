@@ -1240,7 +1240,6 @@ func main() {
 			return config.RemoveGlobalProvider(name)
 		})
 		mgmtSrv.SetFetchPresets(core.FetchProviderPresets)
-		mgmtSrv.SetFetchSkillPresets(core.FetchSkillPresets)
 		if cfg.ProviderPresetsURL != "" {
 			core.SetPresetsURL(cfg.ProviderPresetsURL)
 		}

@@ -588,19 +588,6 @@ type CommandProvider interface {
 	CommandDirs() []string
 }
 
-// SkillProvider is an optional interface for agents that expose skills via
-// local directories (e.g. .claude/skills/<name>/SKILL.md). Only the depth-1
-// layout is recognised: each immediate subdirectory of the returned dirs
-// that contains a SKILL.md is registered as a skill. Nested SKILL.md files
-// (e.g. inside `<name>/references/...`) are treated as skill assets and
-// ignored — they match the Claude Code CLI convention (issue #1304) and
-// prevent phantom slash commands from leaking into platform command menus.
-// Skills are project-level and agent-specific — they are NOT shared across
-// different agent types.
-type SkillProvider interface {
-	SkillDirs() []string
-}
-
 // SessionDeleter is an optional interface for agents that support deleting sessions.
 type SessionDeleter interface {
 	DeleteSession(ctx context.Context, sessionID string) error
@@ -673,7 +660,6 @@ type PermissionModeInfo struct {
 type BotCommandInfo struct {
 	Command     string // command name without leading "/"
 	Description string // short description for the menu
-	IsSkill     bool   // whether this entry comes from a skill
 }
 
 // CommandRegistrar is an optional interface for platforms that support

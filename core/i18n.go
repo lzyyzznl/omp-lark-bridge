@@ -398,7 +398,6 @@ const (
 	MsgCardTitleCommands         MsgKey = "card_title_commands"
 	MsgCardTitleAlias            MsgKey = "card_title_alias"
 	MsgCardTitleConfig           MsgKey = "card_title_config"
-	MsgCardTitleSkills           MsgKey = "card_title_skills"
 	MsgCardTitleDoctor           MsgKey = "card_title_doctor"
 	MsgCardTitleVersion          MsgKey = "card_title_version"
 	MsgCardTitleUpgrade          MsgKey = "card_title_upgrade"
@@ -468,10 +467,6 @@ const (
 	MsgCommandExecError   MsgKey = "command_exec_error"
 	MsgCommandExecSuccess MsgKey = "command_exec_success"
 
-	MsgSkillsTitle            MsgKey = "skills_title"
-	MsgSkillsEmpty            MsgKey = "skills_empty"
-	MsgSkillsHint             MsgKey = "skills_hint"
-	MsgSkillsTelegramMenuHint MsgKey = "skills_telegram_menu_hint"
 
 	MsgConfigTitle       MsgKey = "config_title"
 	MsgConfigHint        MsgKey = "config_hint"
@@ -599,7 +594,6 @@ const (
 	MsgBuiltinCmdCron      MsgKey = "cron"
 	MsgBuiltinCmdCommands  MsgKey = "commands"
 	MsgBuiltinCmdAlias     MsgKey = "alias"
-	MsgBuiltinCmdSkills    MsgKey = "skills"
 	MsgBuiltinCmdConfig    MsgKey = "config"
 	MsgBuiltinCmdDoctor    MsgKey = "doctor"
 	MsgBuiltinCmdUpgrade   MsgKey = "upgrade"
@@ -1033,7 +1027,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  Manage heartbeat\n\n" +
 			"/commands [add|del]\n  Manage custom slash commands\n\n" +
 			"/alias [add|del]\n  Manage command aliases (e.g. 帮助 → /help)\n\n" +
-			"/skills\n  List agent skills (from SKILL.md)\n\n" +
 			"/config [get|set|reload] [key] [value]\n  View/update runtime configuration\n\n" +
 			"/bind [project|remove]\n  Manage relay binding in group chats\n\n" +
 			"/workspace [init]\n  Manage workspace\n\n" +
@@ -1048,7 +1041,6 @@ var messages = map[MsgKey]map[Language]string{
 			"Tip: Commands support prefix matching, e.g. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
 			"Custom commands: define via `/commands add` or `[[commands]]` in config.toml.\n\n" +
 			"Command aliases: use `/alias add <trigger> <command>` or `[[aliases]]` in config.toml.\n\n" +
-			"Agent skills: auto-discovered from .claude/skills/<name>/SKILL.md etc.\n\n" +
 			"Permission modes: default / edit / plan / yolo",
 		LangChinese: "📖 可用命令\n\n" +
 			"/new [名称]\n  创建新会话\n\n" +
@@ -1077,7 +1069,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  管理心跳\n\n" +
 			"/commands [add|del]\n  管理自定义命令\n\n" +
 			"/alias [add|del]\n  管理命令别名（如 帮助 → /help）\n\n" +
-			"/skills\n  列出 Agent Skills（来自 SKILL.md）\n\n" +
 			"/config [get|set|reload] [key] [value]\n  查看/修改运行时配置\n\n" +
 			"/bind [项目名|remove]\n  管理群聊中继绑定\n\n" +
 			"/workspace [init]\n  管理工作区\n\n" +
@@ -1092,7 +1083,6 @@ var messages = map[MsgKey]map[Language]string{
 			"提示：命令支持前缀匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
 			"自定义命令：通过 `/commands add` 添加，或在 config.toml 中配置 `[[commands]]`。\n\n" +
 			"命令别名：使用 `/alias add <触发词> <命令>` 或在 config.toml 中配置 `[[aliases]]`。\n\n" +
-			"Agent Skills：自动发现自 .claude/skills/<name>/SKILL.md 等目录。\n\n" +
 			"权限模式：default / edit / plan / yolo",
 		LangTraditionalChinese: "📖 可用命令\n\n" +
 			"/new [名稱]\n  建立新會話\n\n" +
@@ -1120,7 +1110,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  管理心跳\n\n" +
 			"/commands [add|del]\n  管理自訂命令\n\n" +
 			"/alias [add|del]\n  管理命令別名（如 幫助 → /help）\n\n" +
-			"/skills\n  列出 Agent Skills（來自 SKILL.md）\n\n" +
 			"/config [get|set|reload] [key] [value]\n  查看/修改執行階段配置\n\n" +
 			"/bind [項目名|remove]\n  管理群聊中繼綁定\n\n" +
 			"/workspace [init]\n  管理工作區\n\n" +
@@ -1135,7 +1124,6 @@ var messages = map[MsgKey]map[Language]string{
 			"提示：命令支持前綴匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
 			"自訂命令：透過 `/commands add` 新增，或在 config.toml 中配置 `[[commands]]`。\n\n" +
 			"命令別名：使用 `/alias add <觸發詞> <命令>` 或在 config.toml 中配置 `[[aliases]]`。\n\n" +
-			"Agent Skills：自動發現自 .claude/skills/<name>/SKILL.md 等目錄。\n\n" +
 			"權限模式：default / edit / plan / yolo",
 		LangJapanese: "📖 利用可能なコマンド\n\n" +
 			"/new [名前]\n  新しいセッションを開始\n\n" +
@@ -1162,7 +1150,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  ハートビート管理\n\n" +
 			"/commands [add|del]\n  カスタムコマンド管理\n\n" +
 			"/alias [add|del]\n  コマンドエイリアス管理（例: ヘルプ → /help）\n\n" +
-			"/skills\n  エージェントスキル一覧（SKILL.md から）\n\n" +
 			"/config [get|set|reload] [key] [value]\n  ランタイム設定の表示/変更\n\n" +
 			"/bind [プロジェクト|remove]\n  グループチャットのリレー管理\n\n" +
 			"/workspace [init]\n  ワークスペース管理\n\n" +
@@ -1177,7 +1164,6 @@ var messages = map[MsgKey]map[Language]string{
 			"ヒント：コマンドはプレフィックスマッチに対応しています。例: `/pro l` = `/provider list`、`/sw 2` = `/switch 2`。\n\n" +
 			"カスタムコマンド: `/commands add` または config.toml の `[[commands]]` で定義。\n\n" +
 			"コマンドエイリアス: `/alias add <トリガー> <コマンド>` または config.toml の `[[aliases]]` で定義。\n\n" +
-			"エージェントスキル: .claude/skills/<name>/SKILL.md などから自動検出。\n\n" +
 			"権限モード: default / edit / plan / yolo",
 		LangSpanish: "📖 Comandos disponibles\n\n" +
 			"/new [nombre]\n  Iniciar una nueva sesión\n\n" +
@@ -1204,7 +1190,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  Gestionar heartbeat\n\n" +
 			"/commands [add|del]\n  Gestionar comandos personalizados\n\n" +
 			"/alias [add|del]\n  Gestionar alias de comandos (ej. ayuda → /help)\n\n" +
-			"/skills\n  Listar skills del agente (desde SKILL.md)\n\n" +
 			"/config [get|set|reload] [key] [value]\n  Ver/actualizar configuración en tiempo de ejecución\n\n" +
 			"/bind [proyecto|remove]\n  Gestionar retransmisión en chats de grupo\n\n" +
 			"/workspace [init]\n  Gestionar workspace\n\n" +
@@ -1219,7 +1204,6 @@ var messages = map[MsgKey]map[Language]string{
 			"Consejo: Los comandos admiten coincidencia por prefijo, ej. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
 			"Comandos personalizados: use `/commands add` o defina `[[commands]]` en config.toml.\n\n" +
 			"Alias de comandos: use `/alias add <trigger> <comando>` o `[[aliases]]` en config.toml.\n\n" +
-			"Skills del agente: descubiertos de .claude/skills/<name>/SKILL.md etc.\n\n" +
 			"Modos de permisos: default / edit / plan / yolo",
 	},
 	MsgHelpTitle: {
@@ -1322,7 +1306,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/timer [add|list|del|...] — One-shot timers\n" +
 			"/commands [add|del] — Custom commands\n" +
 			"/alias [add|del] — Command aliases\n" +
-			"/skills — List agent skills\n" +
 			"/compress — Compress context\n" +
 			"/stop — Stop current execution",
 		LangChinese: "**工具与自动化**\n" +
@@ -1333,7 +1316,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/timer [add|list|del|...] — 一次性定时器\n" +
 			"/commands [add|del] — 自定义命令\n" +
 			"/alias [add|del] — 命令别名\n" +
-			"/skills — 列出 Agent Skills\n" +
 			"/compress — 压缩上下文\n" +
 			"/stop — 停止当前执行",
 		LangTraditionalChinese: "**工具與自動化**\n" +
@@ -1344,7 +1326,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/timer [add|list|del|...] — 一次性定時器\n" +
 			"/commands [add|del] — 自訂命令\n" +
 			"/alias [add|del] — 命令別名\n" +
-			"/skills — 列出 Agent Skills\n" +
 			"/compress — 壓縮上下文\n" +
 			"/stop — 停止當前執行",
 		LangJapanese: "**ツール・自動化**\n" +
@@ -1355,7 +1336,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/timer [add|list|del|...] — ワンショットタイマー\n" +
 			"/commands [add|del] — カスタムコマンド\n" +
 			"/alias [add|del] — コマンドエイリアス\n" +
-			"/skills — エージェントスキル一覧\n" +
 			"/compress — コンテキスト圧縮\n" +
 			"/stop — 現在の実行を停止",
 		LangSpanish: "**Herramientas y automatización**\n" +
@@ -1366,7 +1346,6 @@ var messages = map[MsgKey]map[Language]string{
 			"/timer [add|list|del|...] — Temporizadores de uso único\n" +
 			"/commands [add|del] — Comandos personalizados\n" +
 			"/alias [add|del] — Alias de comandos\n" +
-			"/skills — Listar skills del agente\n" +
 			"/compress — Comprimir contexto\n" +
 			"/stop — Detener ejecución actual",
 	},
@@ -2626,10 +2605,6 @@ var messages = map[MsgKey]map[Language]string{
 		LangEnglish: "Config", LangChinese: "配置", LangTraditionalChinese: "配置",
 		LangJapanese: "設定", LangSpanish: "Configuración",
 	},
-	MsgCardTitleSkills: {
-		LangEnglish: "Skills", LangChinese: "Skills", LangTraditionalChinese: "Skills",
-		LangJapanese: "スキル", LangSpanish: "Skills",
-	},
 	MsgCardTitleDoctor: {
 		LangEnglish: "Doctor", LangChinese: "系统诊断", LangTraditionalChinese: "系統診斷",
 		LangJapanese: "診断", LangSpanish: "Diagnóstico",
@@ -2882,34 +2857,6 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 命令執行成功（無輸出）。",
 		LangJapanese:           "✅ コマンドが正常に実行されました（出力なし）。",
 		LangSpanish:            "✅ Comando ejecutado exitosamente (sin salida).",
-	},
-	MsgSkillsTitle: {
-		LangEnglish:            "📋 Available Skills (%s) — %d skill(s)\n\n",
-		LangChinese:            "📋 可用 Skills (%s) — %d 个\n\n",
-		LangTraditionalChinese: "📋 可用 Skills (%s) — %d 個\n\n",
-		LangJapanese:           "📋 利用可能なスキル (%s) — %d 個\n\n",
-		LangSpanish:            "📋 Skills disponibles (%s) — %d skill(s)\n\n",
-	},
-	MsgSkillsEmpty: {
-		LangEnglish:            "No skills found.\nSkills are discovered from agent directories (e.g. .claude/skills/<name>/SKILL.md).",
-		LangChinese:            "未发现任何 Skill。\nSkill 从 Agent 目录自动发现（如 .claude/skills/<name>/SKILL.md）。",
-		LangTraditionalChinese: "未發現任何 Skill。\nSkill 從 Agent 目錄自動發現（如 .claude/skills/<name>/SKILL.md）。",
-		LangJapanese:           "スキルが見つかりません。\nスキルはエージェントのディレクトリから自動検出されます（例: .claude/skills/<name>/SKILL.md）。",
-		LangSpanish:            "No se encontraron skills.\nLos skills se descubren de los directorios del agente (ej. .claude/skills/<name>/SKILL.md).",
-	},
-	MsgSkillsHint: {
-		LangEnglish:            "Usage: /<skill-name> [args...] to invoke a skill.",
-		LangChinese:            "用法：/<skill名称> [参数...] 来调用 Skill。",
-		LangTraditionalChinese: "用法：/<skill名稱> [參數...] 來調用 Skill。",
-		LangJapanese:           "使い方：/<スキル名> [引数...] でスキルを実行します。",
-		LangSpanish:            "Uso: /<nombre-skill> [args...] para invocar un skill.",
-	},
-	MsgSkillsTelegramMenuHint: {
-		LangEnglish:            "Telegram's command menu is full, so skill commands are not listed there. You can still invoke them by typing /<skill-name> manually.",
-		LangChinese:            "Telegram 的命令菜单已满，因此 Skill 不会显示在那里。你仍然可以手动输入 /<skill名称> 来调用它们。",
-		LangTraditionalChinese: "Telegram 的命令選單已滿，因此 Skill 不會顯示在那裡。你仍然可以手動輸入 /<skill名稱> 來調用它們。",
-		LangJapanese:           "Telegram のコマンドメニューがいっぱいのため、スキルコマンドはそこに表示されません。手動で /<スキル名> と入力すれば実行できます。",
-		LangSpanish:            "El menú de comandos de Telegram está lleno, así que los skills no aparecen allí. Aun así puedes invocarlos escribiendo /<nombre-skill> manualmente.",
 	},
 
 	MsgConfigTitle: {
@@ -3854,13 +3801,6 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "管理命令別名，參數: [add|del]",
 		LangJapanese:           "コマンドエイリアス管理、引数: [add|del]",
 		LangSpanish:            "Gestionar alias de comandos, arg: [add|del]",
-	},
-	MsgBuiltinCmdSkills: {
-		LangEnglish:            "List agent skills (from SKILL.md)",
-		LangChinese:            "列出 Agent Skills（来自 SKILL.md）",
-		LangTraditionalChinese: "列出 Agent Skills（來自 SKILL.md）",
-		LangJapanese:           "エージェントスキル一覧（SKILL.md から）",
-		LangSpanish:            "Listar skills del agente (desde SKILL.md)",
 	},
 	MsgBuiltinCmdConfig: {
 		LangEnglish:            "View/update runtime configuration, arg: [get|set|reload] [key] [value]",

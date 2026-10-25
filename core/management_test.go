@@ -63,8 +63,6 @@ func testManagementServer(t *testing.T, token string) (*ManagementServer, *httpt
 	mux.HandleFunc(prefix+"/cron/", mgmt.wrap(mgmt.handleCronByID))
 	mux.HandleFunc(prefix+"/providers", mgmt.wrap(mgmt.handleGlobalProviders))
 	mux.HandleFunc(prefix+"/providers/", mgmt.wrap(mgmt.handleGlobalProviderRoutes))
-	mux.HandleFunc(prefix+"/skills", mgmt.wrap(mgmt.handleSkills))
-	mux.HandleFunc(prefix+"/skills/presets", mgmt.wrap(mgmt.handleSkillPresets))
 	mux.HandleFunc(prefix+"/bridge/adapters", mgmt.wrap(mgmt.handleBridgeAdapters))
 
 	ts := httptest.NewServer(mux)
@@ -1771,63 +1769,6 @@ func TestMgmt_ProviderPresets_Error(t *testing.T) {
 	}
 }
 
-// ── Skills ──
-
-func TestMgmt_Skills(t *testing.T) {
-	_, ts, _ := testManagementServer(t, "tok")
-
-	r := mgmtGet(t, ts.URL+"/api/v1/skills", "tok")
-	if !r.OK {
-		t.Fatalf("skills failed: %s", r.Error)
-	}
-	var data struct {
-		Projects []projectSkills `json:"projects"`
-	}
-	if err := json.Unmarshal(r.Data, &data); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if len(data.Projects) != 1 {
-		t.Fatalf("projects = %d, want 1", len(data.Projects))
-	}
-}
-
-func TestMgmt_Skills_MethodNotAllowed(t *testing.T) {
-	_, ts, _ := testManagementServer(t, "tok")
-	r := mgmtPost(t, ts.URL+"/api/v1/skills", "tok", nil)
-	if r.OK {
-		t.Fatal("expected POST on skills to fail")
-	}
-}
-
-func TestMgmt_SkillPresets_NilFunc(t *testing.T) {
-	_, ts, _ := testManagementServer(t, "tok")
-	r := mgmtGet(t, ts.URL+"/api/v1/skills/presets", "tok")
-	if !r.OK {
-		t.Fatalf("skill presets failed: %s", r.Error)
-	}
-}
-
-func TestMgmt_SkillPresets_WithFunc(t *testing.T) {
-	mgmt, ts, _ := testManagementServer(t, "tok")
-	mgmt.SetFetchSkillPresets(func() (*SkillPresetsResponse, error) {
-		return &SkillPresetsResponse{Version: 1}, nil
-	})
-	r := mgmtGet(t, ts.URL+"/api/v1/skills/presets", "tok")
-	if !r.OK {
-		t.Fatalf("skill presets failed: %s", r.Error)
-	}
-}
-
-func TestMgmt_SkillPresets_Error(t *testing.T) {
-	mgmt, ts, _ := testManagementServer(t, "tok")
-	mgmt.SetFetchSkillPresets(func() (*SkillPresetsResponse, error) {
-		return nil, errors.New("fetch failed")
-	})
-	r := mgmtGet(t, ts.URL+"/api/v1/skills/presets", "tok")
-	if r.OK {
-		t.Fatal("expected error")
-	}
-}
 
 // ── Cron PATCH (update job) ──
 

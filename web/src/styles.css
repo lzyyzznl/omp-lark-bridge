@@ -899,3 +899,6 @@ textarea.input { resize: vertical; min-height: 72px; }
 .dialog-section { margin-top: 14px; padding-top: 10px; border-top: 1.5px solid var(--border); font-weight: 600; font-size: 13px; }
 
 .lib-tx-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 项目配置弹窗：表单较长，弹窗内滚动 */
+.prj-modal-tall { width: min(680px, 94vw); max-height: 88vh; overflow-y: auto; }

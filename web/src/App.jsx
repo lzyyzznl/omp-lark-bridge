@@ -7,7 +7,6 @@ import JobDialog from './components/JobDialog.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
 import SessionsPage from './components/SessionsPage.jsx'
-import ProjectsPage from './components/ProjectsPage.jsx'
 import CronRunsPanel from './components/CronRunsPanel.jsx'
 import AgentsPage from './components/AgentsPage.jsx'
 import LoginScreen from './components/LoginScreen.jsx'
@@ -22,12 +21,14 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   const [busyId, setBusyId] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const TAB_IDS = ['cron', 'sessions', 'projects', 'agents']
+  const TAB_IDS = ['cron', 'sessions', 'agents']
   const tabFromHash = () => {
     const h = window.location.hash.replace(/^#\/?/, '')
+    // 项目管理页已并入会话库；旧书签落到会话库。
+    if (h === 'projects') return 'sessions'
     return TAB_IDS.includes(h) ? h : 'cron'
   }
-  const [tab, setTab] = useState(tabFromHash) // 'cron' | 'sessions' | 'projects' | 'agents'
+  const [tab, setTab] = useState(tabFromHash) // 'cron' | 'sessions' | 'agents'
   const [sessionsId, setSessionsId] = useState('')  // 待定位的 transcript id
   const [runsJob, setRunsJob] = useState(null)
 
@@ -126,7 +127,6 @@ export default function App() {
   const TABS = [
     { id: 'cron', label: '定时任务' },
     { id: 'sessions', label: '会话查看' },
-    { id: 'projects', label: '项目管理' },
     { id: 'agents', label: 'agent 人格' },
   ]
   const tabTitle = TABS.find((t) => t.id === tab)?.label || ''
@@ -214,8 +214,6 @@ export default function App() {
       )}
 
       {tab === 'sessions' && <SessionsPage initialTx={sessionsId} onToast={push} />}
-
-      {tab === 'projects' && <ProjectsPage onToast={push} />}
 
       {tab === 'agents' && <AgentsPage onToast={push} />}
 

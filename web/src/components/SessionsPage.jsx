@@ -3,6 +3,7 @@ import { marked } from 'marked'
 import { api } from '../api.js'
 import { formatTime } from '../lib/time.js'
 import ProjectConfigPanel from './ProjectConfigPanel.jsx'
+import NewProjectDialog from './NewProjectDialog.jsx'
 import { useEsc } from '../hooks/useEsc.js'
 
 const ROLE_LABEL = { user: '你', assistant: 'Harness', tool: '工具', system: '系统' }
@@ -186,6 +187,21 @@ function renderEvent(ev, i, toolResults, streaming = false) {
 // （定时任务 / 对话）只能由 cron 任务的 session_ids 反查得出。
 const ALL = '__all__'
 
+// 时间范围 → 时间戳下界。today = 本地今天 00:00。
+function rangeCutoff(range) {
+  const now = Date.now()
+  if (range === '1h') return now - 3600 * 1000
+  if (range === 'today') {
+    const d = new Date()
+    d.setHours(0, 0, 0, 0)
+    return d.getTime()
+  }
+  if (range === '7d') return now - 7 * 86400 * 1000
+  if (range === '30d') return now - 30 * 86400 * 1000
+  if (range === '90d') return now - 90 * 86400 * 1000
+  return 0
+}
+
 export default function SessionsPage({ initialTx, onToast }) {
   const [library, setLibrary] = useState(null)      // 全局会话（含 cwd/job_id/archived）
   const [projects, setProjects] = useState([])
@@ -195,7 +211,7 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [source, setSource] = useState('all')       // all | cron | chat
   const [qInput, setQInput] = useState('')
   const [q, setQ] = useState('')                    // 提交后的关键词（后端搜正文）
-  const [days, setDays] = useState(30)              // 0 = 全部
+  const [range, setRange] = useState('30d')         // 1h | today | 7d | 30d | 90d | all
   const [checked, setChecked] = useState([])
   const [error, setError] = useState('')
   const [selectedTx, setSelectedTx] = useState('')
@@ -213,7 +229,8 @@ export default function SessionsPage({ initialTx, onToast }) {
   const flowRef = useRef(null)
   const thinkingShownRef = useRef('')
   const [stickBottom, setStickBottom] = useState(true)
-  const [configProject, setConfigProject] = useState('')  // 非空 → 打开配置抽屉
+  const [configProject, setConfigProject] = useState('')  // 非空 → 打开配置弹窗
+  const [newOpen, setNewOpen] = useState(false)
   useEsc(!!configProject, () => setConfigProject(''))
 
   const loadLibrary = useCallback(async () => {
@@ -262,18 +279,18 @@ export default function SessionsPage({ initialTx, onToast }) {
     return list
   }, [projects, library])
 
-  // 中栏过滤：文件夹 + 来源 + 时间（关键词已由后端处理）。
+  // 中栏过滤：文件夹 + 来源 + 时间（关键词已由后端处理），默认按最后更新时间倒序。
   const visible = useMemo(() => {
     let arr = library || []
     if (folder !== ALL) arr = arr.filter((it) => (it.cwd || '') === folder)
     if (source === 'cron') arr = arr.filter((it) => it.job_id)
     if (source === 'chat') arr = arr.filter((it) => !it.job_id)
-    if (days > 0) {
-      const cut = Date.now() - days * 86400000
+    if (range !== 'all') {
+      const cut = rangeCutoff(range)
       arr = arr.filter((it) => new Date(it.updated_at).getTime() >= cut)
     }
-    return arr
-  }, [library, folder, source, days])
+    return arr.slice().sort((a, b) => new Date(b.updated_at) - new Date(a.updated_at))
+  }, [library, folder, source, range])
 
   // 会话详情/对话需要一个项目名（后端按项目取 session dir；目录全局共享，
   // 任意运行中的项目都可用）。
@@ -632,10 +649,7 @@ export default function SessionsPage({ initialTx, onToast }) {
           </div>
         ))}
         <div className="lib-foot">
-          <button
-            className="btn btn-sm btn-green"
-            onClick={() => { window.location.hash = '/projects' }}
-          >+ 新建项目</button>
+          <button className="btn btn-sm btn-green" onClick={() => setNewOpen(true)}>+ 新建项目</button>
         </div>
       </div>
 
@@ -664,11 +678,13 @@ export default function SessionsPage({ initialTx, onToast }) {
               <option value="cron">定时任务</option>
               <option value="chat">对话</option>
             </select>
-            <select className="input" value={days} onChange={(e) => setDays(Number(e.target.value))}>
-              <option value={7}>最近 7 天</option>
-              <option value={30}>最近 30 天</option>
-              <option value={90}>最近 90 天</option>
-              <option value={0}>全部时间</option>
+            <select className="input" value={range} onChange={(e) => setRange(e.target.value)}>
+              <option value="1h">最近 1 小时</option>
+              <option value="today">今天</option>
+              <option value="7d">最近 7 天</option>
+              <option value="30d">最近 30 天</option>
+              <option value="90d">最近 90 天</option>
+              <option value="all">全部时间</option>
             </select>
           </div>
           {q && (
@@ -811,10 +827,10 @@ export default function SessionsPage({ initialTx, onToast }) {
         )}
       </div>
 
-      {/* 配置抽屉：齿轮打开，不离开会话列表 */}
+      {/* 项目配置弹窗：齿轮打开，不离开会话列表 */}
       {configProject && (
         <div className="prj-modal-mask" style={{ zIndex: 80 }} onClick={(e) => { if (e.target === e.currentTarget) setConfigProject('') }}>
-          <div className="prj-drawer">
+          <div className="prj-modal prj-modal-tall">
             <ProjectConfigPanel
               project={configProject}
               onToast={onToast}
@@ -824,6 +840,14 @@ export default function SessionsPage({ initialTx, onToast }) {
             />
           </div>
         </div>
+      )}
+
+      {newOpen && (
+        <NewProjectDialog
+          onClose={() => setNewOpen(false)}
+          onToast={onToast}
+          onCreated={() => { loadProjects(); loadLibrary() }}
+        />
       )}
     </div>
   )

@@ -65,14 +65,16 @@ function indexToolResults(events) {
 // 借鉴 agentsview 的 ToolCallRow：结果状态点 + 工具名 + 意图/参数摘要 + 结果大小，
 // 展开才显示参数与结果全文。连续多个排成一行行，便于扫读。
 
-function ToolCallRow({ call, result }) {
+function ToolCallRow({ call, result, streaming = false }) {
   if (!call || call.type !== 'toolCall') return null
   const args = call.arguments
   const hasArgs = args && (!Array.isArray(args) || args.length > 0) && JSON.stringify(args) !== '{}'
   const intent = call.intent || (call.name ? '' : '') || summarizeArgs(args)
   const dot = result ? (result.isError ? 'err' : 'ok') : 'run'
+  // 执行中（无结果）展开显示参数；完成后折叠（可在历史中点开）。
+  const open = streaming && !result
   return (
-    <details className={`t-call ${result && result.isError ? 't-call-err' : ''}`}>
+    <details className={`t-call ${result && result.isError ? 't-call-err' : ''}`} open={open}>
       <summary className="t-call-sum">
         <span className={`t-call-dot ${dot}`} aria-hidden="true" />
         <span className="t-call-name">{call.name || 'tool'}</span>
@@ -104,7 +106,7 @@ function ToolCallRow({ call, result }) {
 
 // ── 渲染：一条事件 ─────────────────────────────────────────────
 
-function renderEvent(ev, i, toolResults) {
+function renderEvent(ev, i, toolResults, streaming = false) {
   if (ev.type === 'message') {
     const m = ev.message || {}
     const role = m.role || 'unknown'
@@ -120,11 +122,13 @@ function renderEvent(ev, i, toolResults) {
               return <div className="t-md" key={bi} dangerouslySetInnerHTML={{ __html: marked.parse(b.text || '') }} />
             }
             if (b && b.type === 'toolCall') {
-              return <ToolCallRow key={bi} call={b} result={toolResults.get(b.id)} />
+              return <ToolCallRow key={bi} call={b} result={toolResults.get(b.id)} streaming={streaming} />
             }
             if (b && b.type === 'thinking') {
+              // 正在流式输出时展开，输出完成后折叠。
+              const live = streaming && b.type === 'thinking'
               return (
-                <details className="t-tool" key={bi}>
+                <details className="t-tool" key={bi} open={live}>
                   <summary>🧠 思考{b.summary ? '（摘要）' : ''}</summary>
                   <pre className="t-code">{b.thinking || prettyJSON(b)}</pre>
                 </details>
@@ -135,8 +139,9 @@ function renderEvent(ev, i, toolResults) {
               return <ToolCallRow key={bi} call={{
                 type: 'toolCall', ...b,
                 intent: b.intent || b.name, arguments: b.input ?? b.arguments,
-              }} result={null} />
+              }} result={null} streaming={streaming} />
             }
+
             if (b && b.type === 'tool_result') {
               const text = flattenText(b.content)
               return (
@@ -191,9 +196,9 @@ export default function SessionsPage({ initialId }) {
   const [attachments, setAttachments] = useState([]) // {kind:'image'|'file', name, mime, b64}
   const [live, setLive] = useState([])               // 流式对话期间追加的事件（transcript 格式）
   const [sendErr, setSendErr] = useState('')
-  const [typing, setTyping] = useState('')       // 打字机缓冲：未刷入 live 的回复文本增量
-  const typingRef = useRef('')
-  const flowRef = useRef(null)                   // 消息流容器（自动滚动用）
+  const [typingTick, setTypingTick] = useState(0)  // 打字机队列节拍（驱动 flush 重挂）
+  const pendingRef = useRef([])                    // [{type:'text'|'thinking', text}] 待逐字刷出的内容
+  const flowRef = useRef(null)                     // 消息流容器（自动滚动用）
   const [stickBottom, setStickBottom] = useState(true)  // 是否跟随底部（用户上滑历史则暂停自动滚动）
 
   // 滚动容器的滚动监听：离开底部区域时暂停自动跟随并显示「回到底部」，滚回底部后恢复。
@@ -291,63 +296,71 @@ export default function SessionsPage({ initialId }) {
   )
 
   // ── 网页继续对话：SSE 流式事件转成 transcript 事件行，实时追加渲染 ──
-  // 思考/工具调用直接插入；回复文本先进打字机缓冲（typingRef），由周期
-  // flush 逐字刷入 live，形成一个字一个字往外冒的流式观感。
+  // text/thinking 都进打字机队列，由周期 flush 逐字刷入 live；
+  // 工具调用直接插入（执行中展开，完成后折叠见渲染）。
   const appendLive = useCallback((ev) => {
-    if (ev.type === 'text' && ev.content) {
-      typingRef.current += ev.content
-      setTyping(typingRef.current)
+    if (ev.type === 'text' || ev.type === 'thinking') {
+      const c = ev.content
+      if (c) {
+        const q = pendingRef.current
+        const last = q[q.length - 1]
+        if (last && last.type === ev.type) last.text += c
+        else q.push({ type: ev.type, text: c })
+        setTypingTick((t) => t + 1)
+      }
       return
     }
-    setLive((prev) => {
-      const next = prev.slice()
-      if (ev.type === 'thinking' && ev.content) {
-        const last = next[next.length - 1]
-        if (last && last.type === 'message' && last.message?.role === 'assistant') {
-          const b = (last.message.content || []).find((x) => x.type === 'thinking')
-          if (b) b.thinking = (b.thinking || '') + ev.content
-          else last.message.content.push({ type: 'thinking', thinking: ev.content })
-        }
-      } else if (ev.type === 'tool_use') {
+    if (ev.type === 'tool_use') {
+      setLive((prev) => {
+        const next = prev.slice()
         next.push({
           type: 'message',
           message: { role: 'assistant', content: [{ type: 'toolCall', id: 'live' + next.length, name: ev.tool, arguments: {}, intent: ev.intent || '' }] },
         })
-      }
-      return next
-    })
+        return next
+      })
+    }
   }, [])
 
-  // 打字机：把缓冲增量按字符周期刷入当前 assistant 消息的 text 块。
-  const appendLiveText = useCallback((part) => {
+  // 把一小段字符追加到当前 assistant 消息的 text / thinking 块。
+  const appendChunk = useCallback((type, part) => {
     setLive((prev) => {
       const next = prev.slice()
-      const last = next[next.length - 1]
-      if (last && last.type === 'message' && last.message?.role === 'assistant') {
-        const blocks = last.message.content || []
+      let last = next[next.length - 1]
+      if (!last || last.type !== 'message' || last.message?.role !== 'assistant') {
+        next.push({ type: 'message', message: { role: 'assistant', content: [] } })
+        last = next[next.length - 1]
+      }
+      const blocks = last.message.content || []
+      if (type === 'thinking') {
+        const b = blocks.find((x) => x.type === 'thinking')
+        if (b) b.thinking = (b.thinking || '') + part
+        else blocks.push({ type: 'thinking', thinking: part })
+      } else {
         const b = blocks[blocks.length - 1]
         if (b && b.type === 'text') b.text = (b.text || '') + part
         else blocks.push({ type: 'text', text: part })
-      } else {
-        next.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: part }] } })
       }
       return next
     })
   }, [])
 
   useEffect(() => {
-    if (!sending) { typingRef.current = ''; return }
-    if (!typing) return
+    if (!sending) { pendingRef.current = []; return }
+    if (pendingRef.current.length === 0) return
     const t = setInterval(() => {
-      const cur = typingRef.current
-      if (!cur) return
-      const n = Math.min(cur.length, 2)   // 每拍 2 字符，约 40 字符/秒
-      typingRef.current = cur.slice(n)
-      setTyping(typingRef.current)
-      appendLiveText(cur.slice(0, n))
+      const q = pendingRef.current
+      const head = q[0]
+      if (!head) return
+      const n = Math.min(head.text.length, 2)   // 每拍 2 字符，约 40 字符/秒
+      const part = head.text.slice(0, n)
+      head.text = head.text.slice(n)
+      if (!head.text) q.shift()
+      appendChunk(head.type, part)
+      setTypingTick((t2) => t2 + 1)
     }, 25)
     return () => clearInterval(t)
-  }, [sending, typing, appendLiveText])
+  }, [sending, typingTick, appendChunk])
 
   // 选择图片/文件附件：本地读为 base64 内联提交（不另走上传接口）。
   const onPickFile = useCallback((e) => {
@@ -431,9 +444,9 @@ export default function SessionsPage({ initialId }) {
   // 历史（权威）与流式 live 拆分渲染：流式期间只重建 live 尾部，避免
   // 整棵消息树每次重算导致的卡顿；结束后 live 由轮询刷新取代并清空。
   const histToolResults = useMemo(() => indexToolResults(txDetail || []), [txDetail])
-  const histRendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, histToolResults)), [txDetail, histToolResults])
+  const histRendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, histToolResults, false)), [txDetail, histToolResults])
   const liveToolResults = useMemo(() => indexToolResults(live), [live])
-  const liveRendered = useMemo(() => live.map((ev, i) => renderEvent(ev, (txDetail?.length || 0) + i, liveToolResults)), [live, liveToolResults, txDetail])
+  const liveRendered = useMemo(() => live.map((ev, i) => renderEvent(ev, (txDetail?.length || 0) + i, liveToolResults, sending)), [live, liveToolResults, txDetail, sending])
   const rendered = [...histRendered, ...liveRendered]
 
   // 流式逐字追加时自动滚动到底，保证新内容可见。

@@ -199,6 +199,7 @@ export default function SessionsPage({ initialId }) {
   const [typingTick, setTypingTick] = useState(0)  // 打字机队列节拍（驱动 flush 重挂）
   const pendingRef = useRef([])                    // [{type:'text'|'thinking', text}] 待逐字刷出的内容
   const flowRef = useRef(null)                     // 消息流容器（自动滚动用）
+  const thinkingShownRef = useRef('')   // 已刷到界面的 thinking 全量（用于 diff SSE 快照取增量）
   const [stickBottom, setStickBottom] = useState(true)  // 是否跟随底部（用户上滑历史则暂停自动滚动）
 
   // 滚动容器的滚动监听：离开底部区域时暂停自动跟随并显示「回到底部」，滚回底部后恢复。
@@ -294,20 +295,35 @@ export default function SessionsPage({ initialId }) {
     () => jobs?.find((j) => j.id === selectedJob)?.project || '',
     [jobs, selectedJob],
   )
-
   // ── 网页继续对话：SSE 流式事件转成 transcript 事件行，实时追加渲染 ──
-  // text/thinking 都进打字机队列，由周期 flush 逐字刷入 live；
-  // 工具调用直接插入（执行中展开，完成后折叠见渲染）。
+  // 注意协议语义：EventText.content 是增量（直接入队逐字）；EventThinking.content
+  // 是「当前累积全量」快照（同一 turn 会多次 flush），需与已显示量 diff 出增量，
+  // 否则快照整段重复追加（见首帧孤立「用户」bug）。工具调用直接插入。
   const appendLive = useCallback((ev) => {
-    if (ev.type === 'text' || ev.type === 'thinking') {
+    if (ev.type === 'text') {
       const c = ev.content
-      if (c) {
-        const q = pendingRef.current
-        const last = q[q.length - 1]
-        if (last && last.type === ev.type) last.text += c
-        else q.push({ type: ev.type, text: c })
-        setTypingTick((t) => t + 1)
+      if (c) pushPending('text', c)
+      return
+    }
+    if (ev.type === 'thinking') {
+      const full = ev.content || ''
+      if (!full) return
+      // 基线 = 已刷到界面的 thinking + 队列中尚未 flush 的 thinking（快照是
+      // 全量累积，需与「已表达+表达中」diff，避免快照背靠背时增量重复）。
+      let expressed = thinkingShownRef.current
+      for (let k = pendingRef.current.length - 1; k >= 0; k--) {
+        if (pendingRef.current[k].type !== 'thinking') break
+        expressed += pendingRef.current[k].text
       }
+      let inc = ''
+      if (full.startsWith(expressed)) {
+        inc = full.slice(expressed.length)   // 快照较上次多出新增 delta
+      } else {
+        inc = full                           // 快照与基线不连续（新 turn 等）→ 重置
+        thinkingShownRef.current = ''
+        pendingRef.current = pendingRef.current.filter((x) => x.type !== 'thinking')
+      }
+      if (inc) pushPending('thinking', inc)
       return
     }
     if (ev.type === 'tool_use') {
@@ -322,8 +338,17 @@ export default function SessionsPage({ initialId }) {
     }
   }, [])
 
+  const pushPending = useCallback((type, text) => {
+    const q = pendingRef.current
+    const last = q[q.length - 1]
+    if (last && last.type === type) last.text += text
+    else q.push({ type, text })
+    setTypingTick((t) => t + 1)
+  }, [])
+
   // 把一小段字符追加到当前 assistant 消息的 text / thinking 块。
   const appendChunk = useCallback((type, part) => {
+    if (type === 'thinking') thinkingShownRef.current += part
     setLive((prev) => {
       const next = prev.slice()
       let last = next[next.length - 1]
@@ -392,6 +417,7 @@ export default function SessionsPage({ initialId }) {
     if (blocks.length === 0) blocks.push({ type: 'text', text: '' })
     setTxDetail((prev) => [...(prev || []), { type: 'message', message: { role: 'user', content: blocks } }])
     setLive([])
+    thinkingShownRef.current = ''
     setSendErr('')
     setSending(true)
     // 立即清空输入区，界面马上反馈「已发送」，不必等整轮回复结束。

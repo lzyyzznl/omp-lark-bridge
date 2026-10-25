@@ -902,3 +902,8 @@ textarea.input { resize: vertical; min-height: 72px; }
 
 /* 项目配置弹窗：表单较长，弹窗内滚动 */
 .prj-modal-tall { width: min(680px, 94vw); max-height: 88vh; overflow-y: auto; }
+
+/* 会话列表项操作区：时间与按钮分开，窄栏不挤压 */
+.lib-tx-meta { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.lib-tx-ops { display: inline-flex; gap: 4px; flex-shrink: 0; }
+.lib-txs .sess-tx-sub { flex-wrap: wrap; }

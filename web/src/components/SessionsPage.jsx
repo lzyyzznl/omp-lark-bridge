@@ -565,6 +565,20 @@ export default function SessionsPage({ initialTx, onToast }) {
     setChecked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
   }
 
+  // 单条归档 / 恢复（列表项上的按钮）
+  const toggleArchive = async (id, restore) => {
+    try {
+      if (restore) await api.unarchiveSessions([id])
+      else await api.archiveSessions([id])
+      onToast?.('ok', restore ? '已恢复该会话' : '已归档，可在「归档」中查看和恢复')
+      if (!restore && id === selectedTx) { setSelectedTx(''); setTxDetail(null) }
+      setChecked((prev) => prev.filter((x) => x !== id))
+      await loadLibrary()
+    } catch (e) {
+      setError(e.message)
+    }
+  }
+
   const archiveChecked = async () => {
     if (checked.length === 0) return
     try {
@@ -722,16 +736,27 @@ export default function SessionsPage({ initialTx, onToast }) {
                   <span className="lib-tx-title" title={t.title || t.id}>{t.title || t.id}</span>
                 </div>
                 <div className="sess-tx-sub">
-                  <span>{formatTime(t.updated_at)} · {formatBytes(t.size)}</span>
-                  {t.cwd && folder === ALL && <span className="lib-cwd" title={t.cwd}>{t.cwd.split('/').filter(Boolean).pop()}</span>}
-                  <button
-                    className="btn btn-sm btn-ghost sess-title-btn"
-                    disabled={titleBusy === t.id}
-                    title="根据最近对话重新生成标题"
-                    onClick={(e) => { e.stopPropagation(); genTitle(t.id) }}
-                  >
-                    {titleBusy === t.id ? '生成中…' : '生成标题'}
-                  </button>
+                  <span className="lib-tx-meta">
+                    {formatTime(t.updated_at)} · {formatBytes(t.size)}
+                    {t.cwd && folder === ALL && <span className="lib-cwd" title={t.cwd}>{t.cwd.split('/').filter(Boolean).pop()}</span>}
+                  </span>
+                  <span className="lib-tx-ops">
+                    <button
+                      className="btn btn-sm btn-ghost sess-title-btn"
+                      disabled={titleBusy === t.id}
+                      title="根据最近对话重新生成标题"
+                      onClick={(e) => { e.stopPropagation(); genTitle(t.id) }}
+                    >
+                      {titleBusy === t.id ? '生成中…' : '生成标题'}
+                    </button>
+                    <button
+                      className={`btn btn-sm ${view === 'archived' ? 'btn-green' : 'btn-ghost'}`}
+                      title={view === 'archived' ? '从归档恢复' : '归档（软删除，可随时恢复）'}
+                      onClick={(e) => { e.stopPropagation(); toggleArchive(t.id, view === 'archived') }}
+                    >
+                      {view === 'archived' ? '恢复' : '归档'}
+                    </button>
+                  </span>
                 </div>
               </div>
             </div>

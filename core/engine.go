@@ -1445,6 +1445,15 @@ type CronAgentApplier interface {
 	ApplyCronAgent(agent string)
 }
 
+// CronGoalApplier is optionally implemented by agents that can run a cron prompt
+// as an omp goal-mode session (omp: RPC `goal` command, same lifecycle as the
+// interactive /goal). The engine calls it before a goal-mode cron job starts
+// its fresh session; the agent creates the goal when the session enters.
+// Standalone so agents that only adopt the other appliers keep compiling.
+type CronGoalApplier interface {
+	ApplyCronGoal(objective string)
+}
+
 // ExecuteCronJob runs a cron job by injecting a synthetic message into the engine.
 // It finds the platform that owns the session key, reconstructs a reply context,
 // and processes the message as if the user sent it.
@@ -1609,7 +1618,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	// A job that pins its own model or thinking level runs in a fresh session:
 	// applying it to the shared active session would leak the cron's model into
 	// the user's ongoing chat (and reuse cannot safely switch models mid-run).
-	if job.Model != "" || job.ThinkingLevel != "" || job.Agent != "" {
+	if job.Model != "" || job.ThinkingLevel != "" || job.Agent != "" || job.GoalModeEnabled() {
 		useNewSession = true
 	}
 
@@ -1626,11 +1635,23 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		prevHistLen := session.HistoryLen()
 		// Let the agent apply the job's model / thinking level to the session
 		// it is about to start. Ignored by agents that do not implement it.
-		if applier, ok := agent.(CronOverrideApplier); ok {
-			applier.ApplyCronOverrides(job.Model, job.ThinkingLevel)
+		// Only pin overrides the job actually sets: a plain goal-mode job (the
+		// default) must not touch model/thinking or the subagent, those appliers
+		// are meaningful only when the corresponding field is non-empty.
+		if job.Model != "" || job.ThinkingLevel != "" {
+			if applier, ok := agent.(CronOverrideApplier); ok {
+				applier.ApplyCronOverrides(job.Model, job.ThinkingLevel)
+			}
 		}
-		if applier2, ok := agent.(CronAgentApplier); ok {
-			applier2.ApplyCronAgent(job.Agent)
+		if job.Agent != "" {
+			if applier2, ok := agent.(CronAgentApplier); ok {
+				applier2.ApplyCronAgent(job.Agent)
+			}
+		}
+		if applier3, ok := agent.(CronGoalApplier); ok {
+			if job.GoalModeEnabled() {
+				applier3.ApplyCronGoal(content)
+			}
 		}
 		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
 		e.cleanupInteractiveState(iKey)

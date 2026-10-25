@@ -33,7 +33,8 @@ omp-lark-bridge timer add --delay 2h --prompt "..."              # 一次性/指
 - `cron add` 也支持 `--exec`（shell 命令，直接执行）与 `--desc`（任务简述）。
 - `--agent <name>`：把任务指派给某专用子代理执行（如 `scout` / `reviewer` / 自定义人格）。指定后任务强制独立会话，由主会话按名派生专用子代理并汇报结果。
 - 任务建好后，告知用户用 `/cron` 或 `/timer` 查看/管理。
-- `cron edit <id> <field> <value>` 可改任务字段（含 `agent` / `model` / `thinking_level`）。
+- `cron edit <id> <field> <value>` 可改任务字段（含 `agent` / `model` / `thinking_level` / `goal_mode`）。
+- 默认以 **goal 模式**执行（全新会话、按目标自主推进、不依赖会话恢复）；需要普通提示词会话时用 `cron add --no-goal`，或 `cron edit <id> goal_mode false`。
 
 ## 静默约定（NO_REPLY）
 

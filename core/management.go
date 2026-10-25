@@ -249,7 +249,6 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc(prefix+"/providers", m.wrap(m.handleGlobalProviders))
 	mux.HandleFunc(prefix+"/providers/", m.wrap(m.handleGlobalProviderRoutes))
 
-
 	// Bridge
 	mux.HandleFunc(prefix+"/bridge/adapters", m.wrap(m.handleBridgeAdapters))
 
@@ -1558,6 +1557,7 @@ func (m *ManagementServer) handleCron(w http.ResponseWriter, r *http.Request) {
 			Model:         req.Model,
 			ThinkingLevel: req.ThinkingLevel,
 			Agent:         req.Agent,
+			GoalMode:      req.GoalMode,
 			TimeoutMins:   req.TimeoutMins,
 			CreatedAt:     time.Now(),
 		}
@@ -1946,7 +1946,6 @@ func resolveGlobalProviderForAgent(g GlobalProviderInfo, agentType string) Provi
 	}
 	return pc
 }
-
 
 // -- project transcripts (web session viewer) --
 

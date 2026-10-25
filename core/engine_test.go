@@ -13234,6 +13234,9 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 		Prompt:      "summarize activity",
 		Description: "Daily summary",
 	}
+	// goal_mode off keeps this a plain reuse job under the default on contract.
+	off := false
+	job.GoalMode = &off
 	if err := store.Add(job); err != nil {
 		t.Fatalf("store.Add() error = %v", err)
 	}
@@ -13322,6 +13325,62 @@ func TestExecuteCronJob_WorkspacePrefixedSessionKey(t *testing.T) {
 	// Stored session key must remain unchanged.
 	if job.SessionKey != prefixedKey {
 		t.Fatalf("job.SessionKey = %q, want unchanged %q", job.SessionKey, prefixedKey)
+	}
+}
+
+// goalRecordAgent wraps resultAgent and records ApplyCronGoal calls so cron
+// tests can assert the engine forwards goal-mode jobs to the agent without
+// spinning up an omp process.
+type goalRecordAgent struct {
+	*resultAgent
+	goals []string
+}
+
+func (a *goalRecordAgent) ApplyCronGoal(objective string) { a.goals = append(a.goals, objective) }
+
+// TestExecuteCronJob_GoalModeForwardsToAgent covers the cron goal_mode option:
+// a job with goal mode on (the default) gets ApplyCronGoal with the expanded
+// prompt and runs in a fresh session; goal_mode off opts out entirely.
+func TestExecuteCronJob_GoalModeForwardsToAgent(t *testing.T) {
+	dir := t.TempDir()
+	store, err := NewCronStore(dir)
+	if err != nil {
+		t.Fatalf("NewCronStore() error = %v", err)
+	}
+	scheduler := NewCronScheduler(store)
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
+
+	agent := &goalRecordAgent{resultAgent: &resultAgent{session: newResultAgentSession("ok")}}
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+	e.cronScheduler = scheduler
+
+	job := &CronJob{ID: "job-goal", SessionKey: "test:ch:u", Prompt: "完成发布检查"}
+	if err := store.Add(job); err != nil {
+		t.Fatalf("store.Add() error = %v", err)
+	}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+	if len(agent.goals) != 1 || !strings.Contains(agent.goals[0], "完成发布检查") {
+		t.Fatalf("ApplyCronGoal calls = %#v, want one goal with the prompt", agent.goals)
+	}
+
+	// goal_mode off: no ApplyCronGoal call.
+	off := false
+	agent2 := &goalRecordAgent{resultAgent: &resultAgent{session: newResultAgentSession("ok2")}}
+	e2 := NewEngine("test", agent2, []Platform{platform}, "", LangEnglish)
+	defer e2.cancel()
+	e2.cronScheduler = scheduler
+	job2 := &CronJob{ID: "job-nogoal", SessionKey: "test:ch:u", Prompt: "普通执行", GoalMode: &off}
+	if err := store.Add(job2); err != nil {
+		t.Fatalf("store.Add() error = %v", err)
+	}
+	if err := e2.ExecuteCronJob(job2); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+	if len(agent2.goals) != 0 {
+		t.Fatalf("ApplyCronGoal calls = %#v, want none with goal_mode off", agent2.goals)
 	}
 }
 

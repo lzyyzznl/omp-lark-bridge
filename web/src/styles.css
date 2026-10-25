@@ -711,3 +711,11 @@ textarea.input { resize: vertical; min-height: 72px; }
   overflow: auto;
   margin: 0;
 }
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+}

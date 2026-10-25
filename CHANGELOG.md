@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- cron 任务新增 `goal_mode`（默认开启）：以 omp goal 模式执行 —— 全新会话、
+  按目标自主推进，不依赖会话恢复。Web JobDialog 勾选；API `POST/GET/PATCH`
+  透传；CLI `cron add --no-goal` 关闭、`cron edit <id> goal_mode true|false`、
+  `cron list` 显示 `[no-goal]`。执行路径：桥在 cron 会话 enter 后发 omp RPC
+  `goal`（op: create）—— omp 拒绝 `--goal` 启动参数配 rpc-ui，RPC goal 是
+  桥内唯一的 per-job goal 通道（best-effort，goal.enabled 关闭时降级普通会话）。
 - CLI 桥驾驶手册技能 `skills/omp-lark-bridge/SKILL.md`：沉淀 send/cron/timer/
   agents（含 `cron add --agent`）的调用姿势与坑，供 omp 会话按需取用；
   `npx skills add ./skills/omp-lark-bridge -g` 全局安装到 `~/.agents/skills`

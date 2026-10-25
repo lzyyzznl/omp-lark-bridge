@@ -357,6 +357,7 @@ func waitForFrame(t *testing.T, cmds func() []map[string]any, want string) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+
 // waitForPromptCount polls until at least n prompt frames are visible, so a
 // second Send's frame has landed before the assertions read the transcript.
 func waitForPromptCount(t *testing.T, cmds func() []map[string]any, n int) {
@@ -437,6 +438,32 @@ func TestEnterSession_SendsModelAndThinkingLevel(t *testing.T) {
 	}
 	if !sawModel || !sawThink {
 		t.Errorf("missing frames: set_model=%v set_thinking_level=%v", sawModel, sawThink)
+	}
+}
+
+// enterGoal must issue the RPC `goal` create frame (op: create + objective).
+// omp refuses the interactive --goal launch flag under rpc-ui, so this is the
+// only path for a per-job goal (cron goal_mode). Best-effort: a refused create
+// (goal.enabled off, plan mode, existing goal) surfaces in omp's logs and the
+// run continues as a normal prompt session — which is why the frame is
+// fire-and-forget, tested for shape, not for a response.
+func TestEnterGoal_SendsCreateFrame(t *testing.T) {
+	s, cmds := fakeOmpRPC(t, func(req map[string]any) map[string]any {
+		return map[string]any{"type": "response", "command": req["type"], "success": true}
+	})
+	s.enterGoal("完成发布检查")
+	waitForFrame(t, cmds, "goal")
+	var saw map[string]any
+	for _, c := range cmds() {
+		if rpcFrameType(c) == "goal" {
+			saw = c
+		}
+	}
+	if saw == nil {
+		t.Fatal("no goal frame sent")
+	}
+	if saw["op"] != "create" || saw["objective"] != "完成发布检查" {
+		t.Errorf("goal frame = %#v, want op=create objective=完成发布检查", saw)
 	}
 }
 
@@ -566,6 +593,7 @@ func mustExecutable(t *testing.T) string {
 	}
 	return self
 }
+
 // TestSend_DelegatesFirstPrompt pins cron agent delegation: the very first
 // Send of a session that pinned an agent wraps the message in a "use the named
 // specialist" instruction, and later sends pass through unchanged.
@@ -629,4 +657,3 @@ func TestSend_DelegatesFirstPrompt(t *testing.T) {
 		t.Errorf("second prompt = %q, want unchanged %q", prompts[1], "another task")
 	}
 }
-

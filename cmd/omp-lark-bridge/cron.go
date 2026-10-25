@@ -60,6 +60,7 @@ func runCronAdd(args []string) {
 	var project, sessionKey, cronExpr, prompt, execCmd, desc, dataDir, sessionMode, model, thinking, agent string
 	var timeoutMins *int
 	var silent bool
+	var noGoal bool
 
 	var positional []string
 	for i := 0; i < len(args); i++ {
@@ -119,6 +120,8 @@ func runCronAdd(args []string) {
 				i++
 				agent = args[i]
 			}
+		case "--no-goal":
+			noGoal = true
 		case "--timeout-mins":
 			if i+1 < len(args) {
 				i++
@@ -195,6 +198,9 @@ func runCronAdd(args []string) {
 	}
 	if agent != "" {
 		body["agent"] = agent
+	}
+	if noGoal {
+		body["goal_mode"] = false
 	}
 	if timeoutMins != nil {
 		body["timeout_mins"] = *timeoutMins
@@ -311,6 +317,10 @@ func runCronList(args []string) {
 		execCmd, _ := j["exec"].(string)
 		desc, _ := j["description"].(string)
 		agent, _ := j["agent"].(string)
+		goalMode := true
+		if gm, ok := j["goal_mode"].(bool); ok {
+			goalMode = gm
+		}
 		display := desc
 		if display == "" {
 			if execCmd != "" {
@@ -326,7 +336,11 @@ func runCronList(args []string) {
 		if agent != "" {
 			agentTag = "  [" + agent + "]"
 		}
-		fmt.Printf("  %s %s  %s  %s%s%s\n", enabled, id, expr, display, agentTag, streakStr)
+		goalTag := ""
+		if !goalMode {
+			goalTag = "  [no-goal]"
+		}
+		fmt.Printf("  %s %s  %s  %s%s%s%s\n", enabled, id, expr, display, agentTag, goalTag, streakStr)
 	}
 }
 
@@ -605,7 +619,7 @@ func runCronEdit(args []string) {
 // regression test in cron_edit_test.go.
 func parseCronEditValue(field, valueStr string) (any, error) {
 	switch field {
-	case "enabled", "mute", "silent", "result_only":
+	case "enabled", "mute", "silent", "result_only", "goal_mode":
 		v, err := strconv.ParseBool(valueStr)
 		if err != nil {
 			return nil, fmt.Errorf("%s must be true or false", field)
@@ -667,6 +681,7 @@ Options:
       --model <name>         Agent model for this job (blank = default; runs in its own fresh session)
       --thinking <level>     Thinking level: inherit|off|minimal|low|medium|high|xhigh|max (blank = inherit)
       --agent <name>         Delegated sub-agent persona for this job (blank = no delegation)
+      --no-goal              Run as a plain prompt session instead of omp goal mode (goal mode is the default)
       --silent               Suppress cron start notification
       --data-dir <path>      Data directory (default: ~/.omp-lark-bridge)
   -h, --help                 Show this help
@@ -715,6 +730,7 @@ Editable Fields (bool: true/false):
   enabled       Enable or disable the task
   mute          Suppress all messages
   silent        Suppress start notification
+  goal_mode     Run as omp goal-mode session (true/false)
 
 Editable Fields (int: number):
   timeout_mins  Max minutes per run (0 = no limit)

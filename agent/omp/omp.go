@@ -55,6 +55,7 @@ type Agent struct {
 	pendingModel    string
 	pendingThinking string
 	pendingAgent    string // delegated subagent for the next cron-run session
+	pendingGoal     string // goal-mode objective for the next cron-run session (goal_mode: on)
 
 	// modelsCache caches the get_available_models discovery result so a web
 	// dropdown doesn't spawn an omp process on every page load.
@@ -178,6 +179,16 @@ func (a *Agent) ApplyCronAgent(agent string) {
 	}
 }
 
+// ApplyCronGoal implements core.CronGoalApplier. It stores a one-shot goal-mode
+// objective that StartSession consumes for the next session it creates. omp
+// rejects the `--goal` launch flag in rpc-ui mode, so the session issues the
+// RPC `goal` command (op: create) once it has entered (see ompSession.enterGoal).
+func (a *Agent) ApplyCronGoal(objective string) {
+	a.overrideMu.Lock()
+	defer a.overrideMu.Unlock()
+	a.pendingGoal = objective
+}
+
 // AvailableModels implements core.ModelSwitcher's discovery entrypoint. It
 // spawns a throwaway omp process to fetch the provider's real model list
 // (cached for modelCacheTTL); on any failure it falls back to the configured
@@ -268,13 +279,14 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	a.overrideMu.Lock()
 	thinking := a.pendingThinking
 	agent := a.pendingAgent
+	goal := a.pendingGoal
 	if a.pendingModel != "" {
 		model = a.pendingModel
 	}
-	a.pendingModel, a.pendingThinking, a.pendingAgent = "", "", ""
+	a.pendingModel, a.pendingThinking, a.pendingAgent, a.pendingGoal = "", "", "", ""
 	a.overrideMu.Unlock()
 
-	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, agent, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
+	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, agent, goal, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
 
 }
 

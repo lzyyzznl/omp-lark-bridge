@@ -57,6 +57,12 @@ type ompSession struct {
 	delegatedAgent string
 	agentUsed      bool
 
+	// goalObjective is the one-shot goal prompt for a cron goal_mode job. omp
+	// rejects --goal at launch under rpc-ui, so enterGoal issues the RPC `goal`
+	// command (op: create) after this session has entered. Kept on the struct so
+	// the frame is sent once, right after enter (before the first Send).
+	goalObjective string
+
 	writeMu sync.Mutex
 	pMu     sync.Mutex
 	pending map[string]chan map[string]any
@@ -114,7 +120,7 @@ func sanitizeSessionName(sessionID string) string {
 	return defaultSessionName
 }
 
-func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, delegatedAgent, ccDataDir, sessionID string, env []string, systemPrompt string) (*ompSession, error) {
+func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, delegatedAgent, goal, ccDataDir, sessionID string, env []string, systemPrompt string) (*ompSession, error) {
 	// spawnOmpProcess derives its own cancellable context (the returned session
 	// owns it via ompSession.cancel), so this function needs no extra layer.
 	// On enter failure we cancel that process context to tear the child down.
@@ -137,7 +143,28 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 	go s.enableAskDialog()
 
 	s.delegatedAgent = delegatedAgent
+	s.goalObjective = goal
+	if goal != "" {
+		s.enterGoal(goal)
+	}
 	return s, nil
+}
+
+// enterGoal starts goal mode on the just-entered session. omp refuses the
+// interactive `--goal` launch flag under rpc-ui ("--goal requires an interactive
+// terminal"), so this is the only path for a per-job goal: the RPC `goal`
+// command mirrors the interactive /goal lifecycle (create objective + goal tool).
+// Best-effort: a refusal (goal.enabled off, plan mode, existing goal) surfaces
+// in omp's logs and the run proceeds as a normal prompt session.
+func (s *ompSession) enterGoal(objective string) {
+	if err := s.writeFrame(map[string]any{
+		"id":        uuid.NewString(),
+		"type":      "goal",
+		"op":        "create",
+		"objective": objective,
+	}); err != nil {
+		slog.Warn("omp: goal create write failed", "error", err)
+	}
 }
 
 // enterSession resumes the conversation identified by resumeTarget, or starts a

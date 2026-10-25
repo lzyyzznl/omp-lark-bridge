@@ -38,6 +38,7 @@ type CronJob struct {
 	Model         string    `json:"model,omitempty"`          // agent model override for this job; "" = use agent default (missing model falls back to default)
 	ThinkingLevel string    `json:"thinking_level,omitempty"` // thinking/effort for this job; "" = inherit; inherit|off|minimal|low|medium|high|xhigh|max
 	Agent         string    `json:"agent,omitempty"`          // omp subagent this job is delegated to (bundled/user/project); "" = main session agent
+	GoalMode      *bool     `json:"goal_mode,omitempty"`      // run the job as an omp goal-mode session; nil = on (default)
 	TimeoutMins   *int      `json:"timeout_mins,omitempty"`   // nil = default 30m wait; 0 = no limit; >0 = minutes
 	CreatedAt     time.Time `json:"created_at"`
 	LastRun       time.Time `json:"last_run,omitempty"`
@@ -56,6 +57,13 @@ type CronJob struct {
 // IsShellJob returns true if the job runs a shell command directly.
 func (j *CronJob) IsShellJob() bool {
 	return j.Exec != ""
+}
+
+// GoalModeEnabled reports whether the job should run in omp goal mode. nil
+// (jobs saved before this option existed, or new jobs that did not set it)
+// means on — goal mode is the default for every prompt job.
+func (j *CronJob) GoalModeEnabled() bool {
+	return j.GoalMode == nil || *j.GoalMode
 }
 
 const defaultCronJobTimeout = 30 * time.Minute
@@ -459,6 +467,11 @@ func updateJobField(job *CronJob, field string, value any) error {
 	case "mode":
 		if v, ok := value.(string); ok {
 			job.Mode = v
+			return nil
+		}
+	case "goal_mode":
+		if v, ok := value.(bool); ok {
+			job.GoalMode = &v
 			return nil
 		}
 	case "timeout_mins":

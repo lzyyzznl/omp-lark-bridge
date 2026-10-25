@@ -328,6 +328,7 @@ type CronAddRequest struct {
 	Model         string `json:"model,omitempty"`
 	ThinkingLevel string `json:"thinking_level,omitempty"`
 	Agent         string `json:"agent,omitempty"`
+	GoalMode      *bool  `json:"goal_mode,omitempty"`
 	TimeoutMins   *int   `json:"timeout_mins,omitempty"`
 	ResultOnly    bool   `json:"result_only,omitempty"`
 }
@@ -396,23 +397,23 @@ func (s *APIServer) handleCronAdd(w http.ResponseWriter, r *http.Request) {
 	}
 
 	job := &CronJob{
-		ID:            GenerateCronID(),
-		Project:       project,
-		SessionKey:    sessionKey,
-		CronExpr:      req.CronExpr,
-		Prompt:        req.Prompt,
-		Exec:          req.Exec,
-		WorkDir:       req.WorkDir,
-		Description:   req.Description,
-		Enabled:       true,
-		Silent:        req.Silent,
-		SessionMode:   NormalizeCronSessionMode(req.SessionMode),
-		Mode:          req.Mode,
-		Model:         req.Model,
-		ThinkingLevel: req.ThinkingLevel,
-		Agent:         req.Agent,
-		TimeoutMins:   req.TimeoutMins,
-		ResultOnly:    req.ResultOnly,
+		ID:          GenerateCronID(),
+		Project:     project,
+		SessionKey:  sessionKey,
+		CronExpr:    req.CronExpr,
+		Prompt:      req.Prompt,
+		Exec:        req.Exec,
+		WorkDir:     req.WorkDir,
+		Description: req.Description,
+		Enabled:     true,
+		Silent:      req.Silent,
+		SessionMode: NormalizeCronSessionMode(req.SessionMode),
+		Mode:        req.Mode,
+		Model:       req.Model,
+		Agent:       req.Agent,
+		GoalMode:    req.GoalMode,
+		TimeoutMins: req.TimeoutMins,
+		ResultOnly:  req.ResultOnly,
 	}
 	job.CreatedAt = time.Now()
 

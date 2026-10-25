@@ -983,6 +983,9 @@ func TestExecuteCronJob_NoOverrideDoesNotApply(t *testing.T) {
 		Enabled:    true,
 		CreatedAt:  time.Now(),
 	}
+	// goal_mode off keeps this a plain reuse job under the default on contract.
+	off := false
+	job.GoalMode = &off
 	if err := e.ExecuteCronJob(job); err != nil {
 		t.Fatalf("ExecuteCronJob() error = %v", err)
 	}
@@ -1106,6 +1109,9 @@ func TestExecuteCronJob_NoAgentDoesNotApply(t *testing.T) {
 		Enabled:    true,
 		CreatedAt:  time.Now(),
 	}
+	// goal_mode off keeps this a plain reuse job under the default on contract.
+	off := false
+	job.GoalMode = &off
 	if err := e.ExecuteCronJob(job); err != nil {
 		t.Fatalf("ExecuteCronJob() error = %v", err)
 	}
@@ -1143,5 +1149,40 @@ func TestUpdateJobField_Agent(t *testing.T) {
 	}
 	if job.Agent != "sonic" {
 		t.Errorf("job.Agent = %q, want sonic", job.Agent)
+	}
+}
+
+// TestCronJob_GoalModeDefault pins the cron goal_mode contract: a job without
+// the field (all jobs predating the option, or new jobs that left it unset)
+// runs in omp goal mode by default; an explicit false opts out.
+func TestCronJob_GoalModeDefault(t *testing.T) {
+	if j := (&CronJob{}).GoalModeEnabled(); !j {
+		t.Error("GoalModeEnabled() = false, want true when goal_mode is unset")
+	}
+	off := false
+	if j := (&CronJob{GoalMode: &off}).GoalModeEnabled(); j {
+		t.Error("GoalModeEnabled() = true, want false when goal_mode is off")
+	}
+	on := true
+	if j := (&CronJob{GoalMode: &on}).GoalModeEnabled(); !j {
+		t.Error("GoalModeEnabled() = false, want true when goal_mode is on")
+	}
+}
+
+// TestUpdateJobField_GoalMode pins the PATCH {"goal_mode": ...} path the
+// management API and `cron edit` use.
+func TestUpdateJobField_GoalMode(t *testing.T) {
+	job := &CronJob{}
+	if err := updateJobField(job, "goal_mode", true); err != nil {
+		t.Fatalf("updateJobField(goal_mode) error = %v", err)
+	}
+	if !job.GoalModeEnabled() {
+		t.Error("job.GoalModeEnabled() = false, want true after PATCH true")
+	}
+	if err := updateJobField(job, "goal_mode", false); err != nil {
+		t.Fatalf("updateJobField(goal_mode) error = %v", err)
+	}
+	if job.GoalModeEnabled() {
+		t.Error("job.GoalModeEnabled() = true, want false after PATCH false")
 	}
 }

@@ -96,3 +96,12 @@ func TestPrintCronAddUsage_DocumentsAgent(t *testing.T) {
 		t.Errorf("printCronAddUsage does not document --agent; got:\n%s", out)
 	}
 }
+
+// TestPrintCronAddUsage_DocumentsNoGoal guards the `cron add --no-goal` opt-out
+// flag so CLI users can discover it even though goal mode is the default.
+func TestPrintCronAddUsage_DocumentsNoGoal(t *testing.T) {
+	out := captureStdout(t, printCronAddUsage)
+	if !strings.Contains(out, "--no-goal") {
+		t.Errorf("printCronAddUsage does not document --no-goal; got:\n%s", out)
+	}
+}

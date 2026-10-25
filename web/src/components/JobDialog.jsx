@@ -22,6 +22,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
   const [model, setModel] = useState('')
   const [thinking, setThinking] = useState('')
   const [agent, setAgent] = useState('')
+  const [goal, setGoal] = useState(true)
   const [expanded, setExpanded] = useState(false)
   const [modelOptions, setModelOptions] = useState([])
   const [agentOptions, setAgentOptions] = useState([])
@@ -48,6 +49,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
     setModel(job?.model || '')
     setThinking(job?.thinking_level || '')
     setAgent(job?.agent || '')
+    setGoal(job ? job.goal_mode !== false : true)
     setExpanded(false)
     setTouched(false)
   }, [open, job])
@@ -95,6 +97,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
       model: model.trim() || undefined,
       thinking_level: thinking || undefined,
       agent: agent.trim() || undefined,
+      goal_mode: goal,
     }
     if (kind === 'prompt') {
       clean.prompt = prompt.trim()
@@ -195,6 +198,14 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
             <Combobox ariaLabel="专用子代理" className="mono" value={agent} onChange={setAgent}
               options={agentOptions} placeholder="留空 = 主会话直接执行；如 scout、reviewer" />
             <div className="help">把任务指派给 omp 专用子代理（scout/reviewer/自定义…）执行并汇报结果。指定后该任务每次以独立会话按此代理运行，代理自带的模型/思考等级优先于上面两项。</div>
+          </div>
+
+          <div className="field">
+            <label className="check-row">
+              <input type="checkbox" checked={goal} onChange={(e) => setGoal(e.target.checked)} />
+              以 goal 模式执行（默认开启）
+            </label>
+            <div className="help">以 omp 目标驱动模式运行：全新会话、按目标自主推进并回报，不依赖会话恢复。关闭后按普通提示词会话执行。工程类任务（初始化目录、把某个任务做完）在主会话无法恢复时会话时推荐启用。</div>
           </div>
 
           <div className="field">

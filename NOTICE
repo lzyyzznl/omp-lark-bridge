@@ -1,0 +1,10 @@
+omp-lark-bridge
+Copyright (c) 2026 lzyyzznl
+
+Portions of this software are derived from cc-connect
+(https://github.com/chenhg5/cc-connect), Copyright (c) chenhg5.
+
+cc-connect is licensed under the MIT License; the full license text and the
+upstream copyright notice are reproduced in LICENSE. In compliance with the
+MIT License, the above attribution must be retained in all copies or
+substantial portions of this software.

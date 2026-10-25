@@ -132,9 +132,9 @@ make release-publish   # 全平台产物发布到 GitHub Release(新机器 insta
 
 ## 授权
 
-MIT License,见 [LICENSE](./LICENSE)。本项目派生自
-[chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)(MIT License)——
-原作者的版权与许可声明已保留。
+MIT License,见 [LICENSE](./LICENSE);派生声明见 [NOTICE](./NOTICE)。本项目
+派生自 [chenhg5/cc-connect](https://github.com/chenhg5/cc-connect)(MIT)——
+上游版权与许可声明已保留。
 
 ## 致谢
 

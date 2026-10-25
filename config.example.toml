@@ -182,3 +182,15 @@ app_secret = "your-feishu-app-secret"
 # port = "8080"                  # Webhook server port / Webhook 服务器端口
 # callback_path = "/feishu/webhook"  # Webhook callback path / Webhook 回调路径
 # encrypt_key = ""               # Event encrypt key (optional) / 事件加密密钥（可选）
+
+# =============================================================================
+# Management API / Web Dashboard / 管理 API 与 Web 看板
+# =============================================================================
+# Serves the built-in cron dashboard at http://127.0.0.1:<port>/ and the
+# /api/v1/* REST endpoints. The dashboard requires the token below to enter.
+# 内置看板在 http://127.0.0.1:<port>/，提供 /api/v1/* REST 接口；进入看板需填 token。
+[management]
+enabled = true
+port = 31990            # 默认 9820 / default 9820
+token = "1"             # 初始默认 1，可改成任意串；改后需重启 / default "1", change & restart
+# cors_origins = ["http://localhost:5173"]  # 仅 Vite dev 模式需要；嵌入二进制同源无需 CORS

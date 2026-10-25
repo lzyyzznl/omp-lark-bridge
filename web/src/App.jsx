@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { api, getToken, setToken } from './api.js'
+import { api, getToken, hasToken, setToken } from './api.js'
 import { useCron } from './hooks/useCron.js'
 import { formatTime } from './lib/time.js'
 import CronTable from './components/CronTable.jsx'
@@ -8,11 +8,12 @@ import ConfirmDialog from './components/ConfirmDialog.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
 import SessionsPage from './components/SessionsPage.jsx'
 import ProjectsPage from './components/ProjectsPage.jsx'
+import LoginScreen from './components/LoginScreen.jsx'
 import Toast from './components/Toast.jsx'
 export default function App() {
-  const [token, setTokenState] = useState(() => getToken())
+  const [authed, setAuthed] = useState(() => hasToken())
   const [now, setNow] = useState(() => Date.now())
-  const { jobs, loading, error, lastSync, reload } = useCron(token)
+  const { jobs, loading, error, lastSync, reload } = useCron(null, () => setAuthed(false))
   const [toasts, setToasts] = useState([])
   const [dialog, setDialog] = useState(null) // {mode:'new'} | {mode:'edit', job}
   const [confDel, setConfDel] = useState(null) // job 待删除确认
@@ -94,9 +95,15 @@ export default function App() {
       setSubmitting(false)
     }
   }
+  const handleLogin = (t) => {
+    setToken(t)
+    setAuthed(true)
+    setTab('cron')
+    reload()
+  }
   const saveSettings = (t) => {
     setToken(t)
-    setTokenState(t)
+    setAuthed(true)
     push('ok', '设置已保存')
     reload()
   }
@@ -107,6 +114,8 @@ export default function App() {
     { id: 'projects', label: '项目管理' },
   ]
   const tabTitle = TABS.find((t) => t.id === tab)?.label || ''
+
+  if (!authed) return <LoginScreen onLogin={handleLogin} />
 
   return (
     <div>

@@ -2,15 +2,38 @@
 // 端点全部形如 {ok, data} / {ok:false, error}（见 core/management.go）。
 // base：默认相对路径走 vite dev proxy（/api/v1 → 127.0.0.1:31990），
 // 生产可 VITE_API_BASE 指向同源反代地址或绝对地址。
+// token 存 cookie（30 天，每次成功请求自动续期），页面以此判断是否已登录。
 
 const BASE = import.meta.env.VITE_API_BASE || '/api/v1'
-const TOKEN_KEY = 'inOneChat.token'
+const TOKEN_KEY = 'ompLarkToken'
+const TOKEN_MAX_AGE_DAYS = 30
+
+function readCookie(name) {
+  const m = document.cookie.match(new RegExp('(?:^|;\\s*)' + name + '=([^;]*)'))
+  return m ? decodeURIComponent(m[1]) : ''
+}
+
+function writeCookie(name, value, days) {
+  const expires = days > 0 ? `; Max-Age=${days * 24 * 60 * 60}; expires=${new Date(Date.now() + days * 24 * 60 * 60 * 1000).toUTCString()}` : ''
+  document.cookie = `${name}=${encodeURIComponent(value)}${expires}; Path=/; SameSite=Lax`
+}
 
 export function getToken() {
-  try { return localStorage.getItem(TOKEN_KEY) || '' } catch { return '' }
+  return readCookie(TOKEN_KEY)
 }
 export function setToken(t) {
-  try { t ? localStorage.setItem(TOKEN_KEY, t) : localStorage.removeItem(TOKEN_KEY) } catch {}
+  writeCookie(TOKEN_KEY, t, TOKEN_MAX_AGE_DAYS)
+}
+export function clearToken() {
+  writeCookie(TOKEN_KEY, '', -1)
+}
+export function hasToken() {
+  return readCookie(TOKEN_KEY) !== ''
+}
+// 续期：把 30 天窗口从最近一次成功请求重新算起。
+function renewToken() {
+  const t = getToken()
+  if (t) writeCookie(TOKEN_KEY, t, TOKEN_MAX_AGE_DAYS)
 }
 
 async function request(path, { method = 'GET', body } = {}) {
@@ -28,11 +51,15 @@ async function request(path, { method = 'GET', body } = {}) {
   let data = null
   try { data = await res.json() } catch {}
 
+  // 只有真正成功才续期。
+  if (data && data.ok === true) renewToken()
+
   if (res.status === 401) {
-    throw new Error('认证失败：token 缺失或错误（右上角「设置」填写）')
-  }
-  if (!data || data.ok !== true) {
-    throw new Error(data?.error || `请求失败（HTTP ${res.status}）`)
+    // token 缺失或错误：清掉 cookie，回到登录页重新输入。
+    clearToken()
+    const err = new Error('认证失败：token 缺失或错误')
+    err.status = 401
+    throw err
   }
   return data.data
 }

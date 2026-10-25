@@ -11,57 +11,46 @@ web/
 └── src/
     ├── main.jsx           # 入口
     ├── App.jsx            # 布局 / 统计 / 路由状态
-    ├── api.js             # management API 封装（Bearer token）
+    ├── api.js             # management API 封装（token 存 cookie，30 天自动续期）
     ├── styles.css         # 粗野主义令牌 + 全局样式
     ├── lib/time.js        # cron 解析 / 可读化 / 时间格式化
     ├── hooks/useCron.js   # 列表拉取 + 15s 轮询（后台降频 60s）
     └── components/        # CronTable / JobDialog / ConfirmDialog / Settings / Toast / Badge
 ```
 
-## 快速开始（开发）
+## 登录与 token
 
-1. **开启 management API**：在 `config.toml` 加
-   ```toml
-   [management]
-   enabled = true
-   port = 31990            # 默认 9820
-   token = "<你自己的随机串>"   # 前端请求要用，别用默认值
-   cors_origins = ["http://localhost:5173"]
-   ```
-   重启 omp-lark-bridge。
+- 打开看板 **必须先填 token**（右上角「设置」或首次进入的门禁页）。
+- token 写入 cookie（`ompLarkToken`，30 天自动续期）：每次成功请求后
+  重新计 30 天窗口，过期后需重新输入。
+- 默认 token 为 `1`；修改：编辑 `config.toml` 的
+  `[management].token` 后重启 omp-lark-bridge。
 
-2. 安装依赖并启动：
-   ```bash
-   cd web
-   npm install
-   npm run dev
-   ```
+## 使用（推荐：嵌入二进制）
 
-3. 打开 http://localhost:5173，点右上角「设置」填入 `token`。
+前端已用 `//go:embed` 嵌入 omp-lark-bridge 二进制（`web/embed.go`）。
+启动 omp-lark-bridge 后直接访问：
 
-dev 模式下 `/api` 由 Vite 代理转发到 management 端口（`vite.config.js`）。
+```
+http://127.0.0.1:31990/
+```
 
-## 生产部署
+无需另起静态服务器或 Vite 进程；构建：
 
 ```bash
-npm run build   # 产出 dist/
+cd web && npm run build     # 产出 web/dist/
+cd .. && make build         # 先 web-dist 再 go build
 ```
 
-把 `dist/` 交给任意静态服务器，并配一层反向代理把 `/api/v1`
-转发到 management 端口，例如 nginx：
+## 开发模式（Vite dev server）
 
-```nginx
-location /api/ {
-    proxy_pass http://127.0.0.1:31990;
-}
-location / {
-    root /path/to/dist;
-    try_files $uri /index.html;
-}
+```bash
+cd web
+npm install
+npm run dev                 # http://localhost:5173，/api 代理到 31990
 ```
 
-前端请求走相对 `/api/v1`（同源），无需 CORS；token 仍需在页面右上角
-「设置」里填一次（存 `localStorage`）。也可 `VITE_API_BASE` 指向其他地址。
+仅开发迭代需要；生产请用嵌入二进制。dev 下 token 同样 30 天 cookie。
 
 ## 功能
 

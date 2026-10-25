@@ -1089,7 +1089,13 @@ func main() {
 		if port <= 0 {
 			port = 9820
 		}
-		mgmtSrv = core.NewManagementServer(port, cfg.Management.Token, cfg.Management.CORSOrigins)
+		// Default web token "1" when unset, so the dashboard gates on something
+		// non-empty out of the box; operators can override via [management].token.
+		token := cfg.Management.Token
+		if token == "" {
+			token = "1"
+		}
+		mgmtSrv = core.NewManagementServer(port, token, cfg.Management.CORSOrigins)
 		for i, e := range engines {
 			mgmtSrv.RegisterEngine(cfg.Projects[i].Name, e)
 		}

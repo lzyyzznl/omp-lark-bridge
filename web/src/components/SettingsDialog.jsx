@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { getToken } from '../api.js'
 
-// management API token 设置。token 存 localStorage（本地工具）。
+// management API token 设置。token 存 cookie（30 天自动续期，见 api.js）。
 export default function SettingsDialog({ open, onClose, onSave }) {
   const [val, setVal] = useState(() => getToken())
   if (!open) return null
@@ -16,10 +16,10 @@ export default function SettingsDialog({ open, onClose, onSave }) {
           <div className="field">
             <label htmlFor="set-token">Management token</label>
             <input id="set-token" className="input mono" value={val} onChange={(e) => setVal(e.target.value)}
-              placeholder="config.toml 里 [management] token 的值" spellCheck={false} />
+              placeholder="config.toml 里 [management] token 的值（默认 1）" spellCheck={false} />
             <div className="help">
-              留空 = 无认证直接访问（适合本机）。对应 <code>[management]</code> 的 <code>token</code>。
-              dev 模式请求经 vite 代理转发到 management 端口；生产需配反向代理（见 web/README.md）。
+              对应 <code>[management]</code> 的 <code>token</code>，默认 <code>1</code>。
+              保存后写入 cookie（30 天自动续期）。
             </div>
           </div>
         </div>

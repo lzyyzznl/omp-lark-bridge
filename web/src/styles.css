@@ -187,7 +187,19 @@ table.cron thead th {
 table.cron tbody tr { transition: background-color var(--t-fast) var(--ease-out); }
 table.cron tbody tr:nth-child(even) { background: #efe9dd; }
 table.cron tbody tr:hover { background: #fff; }
-.job-desc { font-family: var(--font-ui); font-weight: 600; font-size: 14px; line-height: 1.4; }
+/* 任务标题：样式即按钮，点击进入详情/编辑 */
+.job-title {
+  appearance: none;
+  background: transparent;
+  border: none;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.job-title:hover { text-decoration: underline; text-decoration-thickness: 2px; text-underline-offset: 3px; }
+.job-title:disabled { cursor: not-allowed; opacity: 0.6; }
 .job-meta {
   font-size: 11px;
   color: var(--ink-dim);

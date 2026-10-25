@@ -55,6 +55,12 @@ type Agent struct {
 	modelsMu       sync.Mutex
 	modelsCache    []core.ModelOption
 	modelsCachedAt time.Time
+
+	// skillsCache caches `omp skill list --json` so /skills and skill slash-command
+	// resolution don't spawn an omp process on every message.
+	skillsMu       sync.Mutex
+	skillsCache    []core.Skill
+	skillsCachedAt time.Time
 }
 
 // modelCacheTTL bounds how long the discovered model list is reused.

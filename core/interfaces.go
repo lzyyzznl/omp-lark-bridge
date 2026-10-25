@@ -573,6 +573,24 @@ type ContextCompressor interface {
 	CompressCommand() string
 }
 
+// Skill describes an agent skill surfaced to the bridge (from the agent's own
+// protocol, see SkillProvider). The bridge lists skills and forwards
+// "/skill:<name>" invocations to the agent; it never reads the skill body.
+type Skill struct {
+	Name        string // slash-command name, e.g. "edw-zmail"
+	Description string
+	Source      string // "builtin" | "user" | "project" | "managed"
+	Hide        bool   // omit from /skills listing
+}
+
+// SkillProvider is an optional interface for agents that expose runnable skills
+// (omp: `omp skill list <dir> --json`). The engine lazily fetches the list and
+// registers each visible skill as a slash command that triggers the agent's
+// native "/skill:<name>" protocol.
+type SkillProvider interface {
+	ListSkills(ctx context.Context) ([]Skill, error)
+}
+
 // AgentSessionCanceller is an optional interface for agent sessions that support
 // cancelling the current turn without terminating the session or its underlying
 // process. When implemented, the engine calls CancelTurn instead of Close() for

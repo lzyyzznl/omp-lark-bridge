@@ -181,13 +181,14 @@ func (e *Engine) renderCronCardView(sessionKey string, page int, all bool) *Card
 		sb.WriteString(e.i18n.Tf(MsgCronSessionLabel, sessionBadge))
 		cb.Markdown(sb.String())
 
+		// Split the 5 actions across two equal-width rows — a single row of 5
+		// fill columns makes every label too narrow on Feishu and renders as "…".
 		btns := []CardButton{
 			PrimaryBtn(e.i18n.T(MsgCronBtnRun), fmt.Sprintf("act:/cron run %s", j.ID)),
+			DefaultBtn(e.i18n.T(MsgCronBtnDisable), fmt.Sprintf("act:/cron disable %s", j.ID)),
 		}
-		if j.Enabled {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnDisable), fmt.Sprintf("act:/cron disable %s", j.ID)))
-		} else {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnEnable), fmt.Sprintf("act:/cron enable %s", j.ID)))
+		if !j.Enabled {
+			btns[1] = DefaultBtn(e.i18n.T(MsgCronBtnEnable), fmt.Sprintf("act:/cron enable %s", j.ID))
 		}
 		// One click flips the per-run session policy; reuse is the default.
 		if e.cronScheduler != nil && e.cronScheduler.UsesNewSession(j) {
@@ -195,13 +196,16 @@ func (e *Engine) renderCronCardView(sessionKey string, page int, all bool) *Card
 		} else {
 			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnNewSession), fmt.Sprintf("act:/cron newsession %s", j.ID)))
 		}
-		if j.Mute {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnUnmute), fmt.Sprintf("act:/cron unmute %s", j.ID)))
-		} else {
-			btns = append(btns, DefaultBtn(e.i18n.T(MsgCronBtnMute), fmt.Sprintf("act:/cron mute %s", j.ID)))
-		}
-		btns = append(btns, DangerBtn(e.i18n.T(MsgCronBtnDelete), fmt.Sprintf("act:/cron delete %s", j.ID)))
 		cb.ButtonsEqual(btns...)
+
+		var danger []CardButton
+		if j.Mute {
+			danger = append(danger, DefaultBtn(e.i18n.T(MsgCronBtnUnmute), fmt.Sprintf("act:/cron unmute %s", j.ID)))
+		} else {
+			danger = append(danger, DefaultBtn(e.i18n.T(MsgCronBtnMute), fmt.Sprintf("act:/cron mute %s", j.ID)))
+		}
+		danger = append(danger, DangerBtn(e.i18n.T(MsgCronBtnDelete), fmt.Sprintf("act:/cron delete %s", j.ID)))
+		cb.ButtonsEqual(danger...)
 	}
 
 	cb.Divider()

@@ -398,6 +398,7 @@ const (
 	MsgCardTitleCommands         MsgKey = "card_title_commands"
 	MsgCardTitleAlias            MsgKey = "card_title_alias"
 	MsgCardTitleConfig           MsgKey = "card_title_config"
+	MsgCardTitleSkills           MsgKey = "card_title_skills"
 	MsgCardTitleDoctor           MsgKey = "card_title_doctor"
 	MsgCardTitleVersion          MsgKey = "card_title_version"
 	MsgCardTitleUpgrade          MsgKey = "card_title_upgrade"
@@ -466,7 +467,9 @@ const (
 	MsgCommandExecTimeout MsgKey = "command_exec_timeout"
 	MsgCommandExecError   MsgKey = "command_exec_error"
 	MsgCommandExecSuccess MsgKey = "command_exec_success"
-
+	MsgSkillsTitle        MsgKey = "skills_title"
+	MsgSkillsEmpty        MsgKey = "skills_empty"
+	MsgSkillsHint         MsgKey = "skills_hint"
 
 	MsgConfigTitle       MsgKey = "config_title"
 	MsgConfigHint        MsgKey = "config_hint"
@@ -594,6 +597,7 @@ const (
 	MsgBuiltinCmdCron      MsgKey = "cron"
 	MsgBuiltinCmdCommands  MsgKey = "commands"
 	MsgBuiltinCmdAlias     MsgKey = "alias"
+	MsgBuiltinCmdSkills    MsgKey = "skills"
 	MsgBuiltinCmdConfig    MsgKey = "config"
 	MsgBuiltinCmdDoctor    MsgKey = "doctor"
 	MsgBuiltinCmdUpgrade   MsgKey = "upgrade"
@@ -1027,6 +1031,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  Manage heartbeat\n\n" +
 			"/commands [add|del]\n  Manage custom slash commands\n\n" +
 			"/alias [add|del]\n  Manage command aliases (e.g. 帮助 → /help)\n\n" +
+			"/skills\n  List agent skills (type /技能名 to invoke)\n\n" +
 			"/config [get|set|reload] [key] [value]\n  View/update runtime configuration\n\n" +
 			"/bind [project|remove]\n  Manage relay binding in group chats\n\n" +
 			"/workspace [init]\n  Manage workspace\n\n" +
@@ -1069,6 +1074,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  管理心跳\n\n" +
 			"/commands [add|del]\n  管理自定义命令\n\n" +
 			"/alias [add|del]\n  管理命令别名（如 帮助 → /help）\n\n" +
+			"/skills\n  列出 Agent 技能（输入 /技能名 调用）\n\n" +
 			"/config [get|set|reload] [key] [value]\n  查看/修改运行时配置\n\n" +
 			"/bind [项目名|remove]\n  管理群聊中继绑定\n\n" +
 			"/workspace [init]\n  管理工作区\n\n" +
@@ -1110,6 +1116,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  管理心跳\n\n" +
 			"/commands [add|del]\n  管理自訂命令\n\n" +
 			"/alias [add|del]\n  管理命令別名（如 幫助 → /help）\n\n" +
+			"/skills\n  列出 Agent 技能（輸入 /技能名 調用）\n\n" +
 			"/config [get|set|reload] [key] [value]\n  查看/修改執行階段配置\n\n" +
 			"/bind [項目名|remove]\n  管理群聊中繼綁定\n\n" +
 			"/workspace [init]\n  管理工作區\n\n" +
@@ -1150,6 +1157,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  ハートビート管理\n\n" +
 			"/commands [add|del]\n  カスタムコマンド管理\n\n" +
 			"/alias [add|del]\n  コマンドエイリアス管理（例: ヘルプ → /help）\n\n" +
+			"/skills\n  エージェントスキル一覧（/スキル名 で実行）\n\n" +
 			"/config [get|set|reload] [key] [value]\n  ランタイム設定の表示/変更\n\n" +
 			"/bind [プロジェクト|remove]\n  グループチャットのリレー管理\n\n" +
 			"/workspace [init]\n  ワークスペース管理\n\n" +
@@ -1190,6 +1198,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/heartbeat [status|pause|resume|run|interval]\n  Gestionar heartbeat\n\n" +
 			"/commands [add|del]\n  Gestionar comandos personalizados\n\n" +
 			"/alias [add|del]\n  Gestionar alias de comandos (ej. ayuda → /help)\n\n" +
+			"/skills\n  Listar skills del agente (usar /nombre para invocar)\n\n" +
 			"/config [get|set|reload] [key] [value]\n  Ver/actualizar configuración en tiempo de ejecución\n\n" +
 			"/bind [proyecto|remove]\n  Gestionar retransmisión en chats de grupo\n\n" +
 			"/workspace [init]\n  Gestionar workspace\n\n" +
@@ -2605,6 +2614,10 @@ var messages = map[MsgKey]map[Language]string{
 		LangEnglish: "Config", LangChinese: "配置", LangTraditionalChinese: "配置",
 		LangJapanese: "設定", LangSpanish: "Configuración",
 	},
+	MsgCardTitleSkills: {
+		LangEnglish: "Skills", LangChinese: "Skills", LangTraditionalChinese: "Skills",
+		LangJapanese: "スキル", LangSpanish: "Skills",
+	},
 	MsgCardTitleDoctor: {
 		LangEnglish: "Doctor", LangChinese: "系统诊断", LangTraditionalChinese: "系統診斷",
 		LangJapanese: "診断", LangSpanish: "Diagnóstico",
@@ -2857,6 +2870,27 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "✅ 命令執行成功（無輸出）。",
 		LangJapanese:           "✅ コマンドが正常に実行されました（出力なし）。",
 		LangSpanish:            "✅ Comando ejecutado exitosamente (sin salida).",
+	},
+	MsgSkillsTitle: {
+		LangEnglish:            "📋 Available Skills (%s) — %d skill(s)\n\n",
+		LangChinese:            "📋 可用 Skills (%s) — %d 个\n\n",
+		LangTraditionalChinese: "📋 可用 Skills (%s) — %d 個\n\n",
+		LangJapanese:           "📋 利用可能なスキル (%s) — %d 個\n\n",
+		LangSpanish:            "📋 Skills disponibles (%s) — %d skill(s)\n\n",
+	},
+	MsgSkillsEmpty: {
+		LangEnglish:            "No skills found.",
+		LangChinese:            "未发现任何 Skill。",
+		LangTraditionalChinese: "未發現任何 Skill。",
+		LangJapanese:           "スキルが見つかりません。",
+		LangSpanish:            "No se encontraron skills.",
+	},
+	MsgSkillsHint: {
+		LangEnglish:            "Usage: /<skill-name> [args...] to invoke a skill.",
+		LangChinese:            "用法：`/技能名 [参数...]` 调用该技能。",
+		LangTraditionalChinese: "用法：`/技能名 [參數...]` 調用該技能。",
+		LangJapanese:           "使い方：`/スキル名 [引数...]` でスキルを実行します。",
+		LangSpanish:            "Uso: `/<nombre-skill> [args...]` para invocar un skill.",
 	},
 
 	MsgConfigTitle: {
@@ -3323,18 +3357,18 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Ejecutar ahora",
 	},
 	MsgCronBtnNewSession: {
-		LangEnglish:            "New session per run",
-		LangChinese:            "每次新建会话",
-		LangTraditionalChinese: "每次新建會話",
-		LangJapanese:           "実行ごとに新規セッション",
-		LangSpanish:            "Sesión nueva por ejecución",
+		LangEnglish:            "New session",
+		LangChinese:            "新建会话",
+		LangTraditionalChinese: "新建會話",
+		LangJapanese:           "新規セッション",
+		LangSpanish:            "Nueva sesión",
 	},
 	MsgCronBtnReuseSession: {
-		LangEnglish:            "Reuse this session",
-		LangChinese:            "复用本会话",
-		LangTraditionalChinese: "複用本會話",
-		LangJapanese:           "このセッションを再利用",
-		LangSpanish:            "Reutilizar esta sesión",
+		LangEnglish:            "Reuse session",
+		LangChinese:            "复用会话",
+		LangTraditionalChinese: "複用會話",
+		LangJapanese:           "セッション再利用",
+		LangSpanish:            "Reutilizar sesión",
 	},
 	MsgCronSessionLabel: {
 		LangChinese: "会话：%s\n",
@@ -3808,6 +3842,13 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "查看/修改執行階段配置，參數: [get|set|reload] [鍵] [值]",
 		LangJapanese:           "ランタイム設定の表示/変更、引数: [get|set|reload] [キー] [値]",
 		LangSpanish:            "Ver/actualizar configuración en tiempo de ejecución, arg: [get|set|reload] [clave] [valor]",
+	},
+	MsgBuiltinCmdSkills: {
+		LangEnglish:            "List agent skills (/技能名 to invoke)",
+		LangChinese:            "列出 Agent 技能（输入 /技能名 调用）",
+		LangTraditionalChinese: "列出 Agent 技能（輸入 /技能名 調用）",
+		LangJapanese:           "エージェントスキル一覧（/スキル名 で実行）",
+		LangSpanish:            "Listar skills del agente (usar /nombre para invocar)",
 	},
 	MsgBuiltinCmdDoctor: {
 		LangEnglish:            "Run system diagnostics",

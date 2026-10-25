@@ -48,6 +48,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `toolResult` 按 `toolCallId` 配对，渲染为一行紧凑卡片——结果状态点
   （成功绿/失败红/运行中）+ 工具名 + 意图/参数摘要 + 结果大小，点击展开
   才显示参数与结果全文；`toolResult` 消息不再作为散落的大段纯文本输出。
+- 技能（skills）重新接通，数据源改用 omp 协议：`/skills` 列出项目可解析的技能，
+  `/<技能名> [参数]` 直接调用。桥通过 `omp skill list <cwd> --json` 发现技能——
+  与 agent 自身加载完全一致（user + project 的 SKILL.md），随后把 `/<技能名> args`
+  转发为 omp 原生技能调用 `/skill:<技能名> args`，由 omp 自行构建技能 prompt，
+  桥不读技能正文。cron/timer 任务 prompt 以 `/<技能名>` 开头时同样展开。上一版
+  因 omp 未实现旧 `SkillProvider` 扫描而删除的框架，现按 omp 协议重新接通
+  （`SkillProvider{ListSkills}`；未实现该接口的 agent 自动隐藏 `/skills`）。
 
 ### Fixed
 
@@ -73,6 +80,10 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `CurrentSessionID()` reports the `.jsonl` path, and resume uses
   `switch_session{sessionPath}` (falling back to a fresh session when the file
   is gone). Verified across two processes with a recalled codeword.
+- Feishu `/cron` 卡片每任务的 5 个按钮原挤在一行等宽（`width:"fill"`），窄屏下
+  每个按钮标签溢出被飞书截断显示 "…"，看不出按钮用途。现拆为两行（立即运行 ·
+  启用/停用 · 新建/复用会话 ｜ 静音/取消静音 · 删除），会话按钮文案缩短
+  （"每次新建会话"→"新建会话"），所有按钮标签在手机上完整可读。
 
 ### Changed
 

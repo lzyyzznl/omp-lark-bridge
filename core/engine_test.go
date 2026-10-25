@@ -2885,7 +2885,6 @@ func TestEngine_CustomCommand_DisabledByRole(t *testing.T) {
 	}
 }
 
-
 // --- role-based rate limit tests ---
 
 func TestEngine_RateLimit_RoleSpecific(t *testing.T) {
@@ -6172,7 +6171,6 @@ func TestCmdAlias_UsesLegacyTextOnPlatformWithoutCardSupport(t *testing.T) {
 		t.Fatalf("alias text = %q, should not be card fallback text", p.sent[0])
 	}
 }
-
 
 func TestRenderListCard_MakesEveryVisibleSessionClickable(t *testing.T) {
 	sessions := make([]AgentSessionInfo, 0, 7)
@@ -13326,7 +13324,6 @@ func TestExecuteCronJob_WorkspacePrefixedSessionKey(t *testing.T) {
 		t.Fatalf("job.SessionKey = %q, want unchanged %q", job.SessionKey, prefixedKey)
 	}
 }
-
 
 func TestExtractSessionKeyParts(t *testing.T) {
 	tests := []struct {

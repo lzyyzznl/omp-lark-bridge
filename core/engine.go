@@ -385,6 +385,13 @@ type Engine struct {
 	aliases  map[string]string // trigger → command (e.g. "帮助" → "/help")
 	aliasMu  sync.RWMutex
 
+	// skills lists the agent's runnable skills, lazily fetched via SkillProvider
+	// (omp: `omp skill list`) and cached so slash-command resolution doesn't
+	// spawn an agent process on every message.
+	skillsMu sync.Mutex
+	skills   []Skill
+	skillsAt time.Time
+
 	aliasSaveAddFunc func(name, command string) error
 	aliasSaveDelFunc func(name string) error
 
@@ -1399,7 +1406,6 @@ func (e *Engine) ProjectName() string {
 	return e.name
 }
 
-
 // AgentTypeName returns the agent type name (e.g. "claudecode", "codex").
 func (e *Engine) AgentTypeName() string {
 	if e.agent != nil {
@@ -1540,7 +1546,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		return e.executeCronShell(effectivePlatform, replyCtx, job)
 	}
 
-	content := job.Prompt
+	content := e.expandSkillPrompt(job.Prompt)
 
 	msg := &Message{
 		SessionKey:   sessionKey,
@@ -1784,7 +1790,7 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		return e.executeTimerShell(effectivePlatform, replyCtx, job)
 	}
 
-	content := job.Prompt
+	content := e.expandSkillPrompt(job.Prompt)
 
 	msg := &Message{
 		SessionKey:   sessionKey,
@@ -6392,6 +6398,7 @@ var builtinCommands = []struct {
 	{[]string{"timer", "at", "remind"}, "timer"},
 	{[]string{"heartbeat", "hb"}, "heartbeat"},
 	{[]string{"compress", "compact"}, "compress"},
+	{[]string{"skills"}, "skills"},
 	{[]string{"stop"}, "stop"},
 	{[]string{"cancel"}, "cancel"},
 	{[]string{"help"}, "help"},
@@ -6657,6 +6664,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		return true
 	case "whoami":
 		e.cmdWhoami(p, msg)
+	case "skills":
+		e.cmdSkills(p, msg)
 	case "web":
 		e.cmdWeb(p, msg, args)
 	case "ps":
@@ -6674,6 +6683,13 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 				"user_id", msg.UserID, "platform", msg.Platform,
 				"project", e.name, "command", custom.Name, "type", "custom")
 			e.executeCustomCommand(p, msg, custom, args)
+			return true
+		}
+		if skill, found := e.resolveSkill(context.Background(), cmd); found {
+			slog.Info("audit: command_executed",
+				"user_id", msg.UserID, "platform", msg.Platform,
+				"project", e.name, "command", skill.Name, "type", "skill")
+			e.executeSkillCommand(p, msg, skill, args)
 			return true
 		}
 		// Not a in-one-chat command — notify user, then fall through to agent
@@ -9456,6 +9472,9 @@ func (e *Engine) commandSupported(id string) bool {
 	case "history":
 		_, ok := e.agent.(HistoryProvider)
 		return ok
+	case "skills":
+		_, ok := e.agent.(SkillProvider)
+		return ok
 	}
 	return true
 }
@@ -9514,7 +9533,6 @@ func (e *Engine) GetAllCommands() []BotCommandInfo {
 			Description: desc,
 		})
 	}
-
 
 	return commands
 }
@@ -13492,7 +13510,6 @@ func (e *Engine) renderConfigCard() *Card {
 		Build()
 }
 
-
 func (e *Engine) renderDoctorCard() *Card {
 	results := RunDoctorChecks(e.ctx, e.agent, e.platforms)
 	report := FormatDoctorResults(results, e.i18n)
@@ -14641,7 +14658,6 @@ func (e *Engine) cmdCommandsDel(p Platform, msg *Message, args []string) {
 
 	e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandsDeleted), name))
 }
-
 
 // ── /config command ──────────────────────────────────────────
 

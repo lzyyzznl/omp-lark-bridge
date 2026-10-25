@@ -110,7 +110,7 @@ the `omp-sessions/` stores.
 ## Slash commands (in chat)
 
 Sessions: `/new` `/switch` `/list` `/delete` `/history` `/retry`
-Agent: `/model` `/reasoning` `/memory` `/shell`
+Agent: `/model` `/reasoning` `/memory` `/shell` `/skills`
 System: `/help` `/status` `/whoami` `/doctor` `/mode` no-op (fixed yolo),
 plus cron/timer via `/cron` `/timer` and CLI equivalents
 (`in-one-chat cron add`, `in-one-chat timer add`, `in-one-chat send -m "…"`).
@@ -126,6 +126,14 @@ listing an entry. omp therefore shows no `/compress` (no compaction command),
 `/delete` (no `SessionDeleter`), `/mode`, `/reasoning`, `/provider`, `/usage`
 or `/history`.
 
+Skills: `/skills` lists the skills the agent resolves for this project. omp
+exposes them via its own protocol — `omp skill list <cwd> --json` — so the
+bridge shows exactly what the agent itself would load (user + project SKILL.md).
+Every visible skill is also a slash command: `/edw-zmail 查邮件` forwards
+`/skill:edw-zmail 查邮件` to the agent's native skill protocol, letting omp
+build the skill prompt from its own store. Cron/timer prompts that start with
+`/技能名` expand the same way.
+
 On Feishu the bot also syncs these commands into the client's `/` panel
 (`application/v7/app_slash_commands`): grant the `application:app_slash_command:write`
 and `:read` scopes, publish a new app version, and use client 7.70+. Each start
@@ -138,10 +146,10 @@ never shows dead commands. The client caches the list for a few minutes. Set
 
 `/cron` and `/timer` render a paged card (8 jobs per page) with a per-job status
 line: `✅`/`❗`/`⏸`, schedule + next-run countdown, last run, consecutive-failure
-streak and the last error. Buttons per job: **立即运行**, **启用/停用**,
-**静音/取消静音**, **删除** and the session toggle (**每次新建会话** /
-**复用本会话**); the footer toggles between *this chat only* and
-*all jobs in the project*.
+streak and the last error. Buttons per job are split across two equal-width
+rows so every label fits on Feishu: row 1 **立即运行** · **启用/停用** ·
+**新建会话/复用会话**, row 2 **静音/取消静音** · **删除**. The footer toggles
+between *this chat only* and *all jobs in the project*.
 
 ### Cron session policy
 

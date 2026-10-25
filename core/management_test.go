@@ -3,8 +3,10 @@ package core
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -3210,5 +3212,192 @@ func mustAddCronJob(t *testing.T, mgmt *ManagementServer, id, sessionKey string)
 		CronExpr: "0 6 * * *", Description: "x", Enabled: true, CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("add cron job: %v", err)
+	}
+}
+
+// ── transcripts/{id}/chat：网页「继续对话」SSE 流式接口 ──────────────
+
+type chatStubSession struct {
+	stubAgentSession
+	mu       sync.Mutex
+	events   chan Event
+	resumeID string
+	prompt   string
+	images   []ImageAttachment
+	files    []FileAttachment
+}
+
+func newChatStubSession() *chatStubSession { return &chatStubSession{events: make(chan Event, 64)} }
+
+func (s *chatStubSession) Send(prompt string, _ string, images []ImageAttachment, files []FileAttachment) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.prompt = prompt
+	s.images = images
+	s.files = files
+	return nil
+}
+
+func (s *chatStubSession) Events() <-chan Event { return s.events }
+func (s *chatStubSession) Close() error         { return nil }
+
+func (s *chatStubSession) snap() (string, []ImageAttachment, []FileAttachment, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.prompt, s.images, s.files, s.resumeID
+}
+
+// chatTranscriptAgent 记录 StartSession 传入的 resume 目标并返回可控的会话，
+// 让测试能注入事件流观察 SSE 序列化。
+type chatTranscriptAgent struct {
+	stubTranscriptAgent
+	mu      sync.Mutex
+	session *chatStubSession
+}
+
+func (a *chatTranscriptAgent) StartSession(_ context.Context, id string) (AgentSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.session == nil {
+		a.session = newChatStubSession()
+	}
+	a.session.resumeID = id
+	return a.session, nil
+}
+
+func (a *chatTranscriptAgent) getSession() *chatStubSession {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.session
+}
+
+func waitChatSession(t *testing.T, a *chatTranscriptAgent) *chatStubSession {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if s := a.getSession(); s != nil {
+			return s
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("agent session never started")
+	return nil
+}
+
+func TestMgmt_Transcripts_Chat(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "2026-01-01_a.jsonl"),
+		[]byte("{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"), 0o644)
+
+	agent := &chatTranscriptAgent{stubTranscriptAgent: stubTranscriptAgent{dir: dir}}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{
+		"message": "继续分析",
+		"images":  []map[string]any{{"mime_type": "image/png", "filename": "a.png", "data": base64.StdEncoding.EncodeToString([]byte("img"))}},
+		"files":   []map[string]any{{"mime_type": "text/plain", "filename": "b.txt", "data": base64.StdEncoding.EncodeToString([]byte("hello"))}},
+	})
+
+	respCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/api/v1/projects/test-project/transcripts/2026-01-01_a/chat", "application/json", bytes.NewReader(body))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			errCh <- fmt.Errorf("status %d: %s", resp.StatusCode, b)
+			return
+		}
+		respCh <- string(b)
+	}()
+
+	sess := waitChatSession(t, agent)
+	go func() {
+		sess.events <- Event{Type: EventText, Content: "你好"}
+		sess.events <- Event{Type: EventThinking, Content: "思考"}
+		sess.events <- Event{Type: EventText, Content: "世界"}
+		sess.events <- Event{Type: EventToolUse, ToolName: "Bash", ToolInput: "ls"}
+		sess.events <- Event{Type: EventResult, Content: "final", Done: true}
+	}()
+
+	var got string
+	select {
+	case got = <-respCh:
+	case err := <-errCh:
+		t.Fatalf("chat request failed: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("chat streaming timed out")
+	}
+
+	// 按 SSE 帧解析，校验事件类型顺序与关键字段（map JSON 字段顺序随机，不能比字符串）。
+	var msgs []map[string]string
+	for _, frame := range strings.Split(got, "\n\n") {
+		var line string
+		for _, ln := range strings.Split(frame, "\n") {
+			if strings.HasPrefix(ln, "data:") {
+				line = strings.TrimSpace(strings.TrimPrefix(ln, "data:"))
+				break
+			}
+		}
+		if line == "" {
+			continue
+		}
+		var m map[string]string
+		if err := json.Unmarshal([]byte(line), &m); err != nil {
+			t.Errorf("bad SSE frame %q: %v", line, err)
+			continue
+		}
+		msgs = append(msgs, m)
+	}
+	wantTypes := []string{"text", "thinking", "text", "tool_use", "done"}
+	if len(msgs) != len(wantTypes) {
+		t.Fatalf("SSE frames = %v, want %d types %v", msgs, len(wantTypes), wantTypes)
+	}
+	for i, want := range wantTypes {
+		if msgs[i]["type"] != want {
+			t.Errorf("frame %d type = %q, want %q", i, msgs[i]["type"], want)
+		}
+	}
+	if msgs[0]["content"] != "你好" || msgs[1]["content"] != "思考" || msgs[2]["content"] != "世界" {
+		t.Errorf("text/thinking contents = %q / %q / %q, want 你好/思考/世界", msgs[0]["content"], msgs[1]["content"], msgs[2]["content"])
+	}
+	if msgs[3]["tool"] != "Bash" || msgs[3]["intent"] != "ls" {
+		t.Errorf("tool_use = %v, want Bash/ls", msgs[3])
+	}
+
+	prompt, images, files, resumeID := sess.snap()
+	if resumeID != filepath.Join(dir, "2026-01-01_a.jsonl") {
+		t.Errorf("resumeID = %q, want session file path", resumeID)
+	}
+	if prompt != "继续分析" {
+		t.Errorf("prompt = %q", prompt)
+	}
+	if len(images) != 1 || string(images[0].Data) != "img" || images[0].MimeType != "image/png" {
+		t.Errorf("images = %+v, want decoded png bytes", images)
+	}
+	if len(files) != 1 || string(files[0].Data) != "hello" || files[0].FileName != "b.txt" {
+		t.Errorf("files = %+v, want decoded text bytes", files)
+	}
+
+	// 空消息且无附件 → 400
+	empty, _ := json.Marshal(map[string]any{"message": "  "})
+	resp, err := http.Post(ts.URL+"/api/v1/projects/test-project/transcripts/2026-01-01_a/chat", "application/json", bytes.NewReader(empty))
+	if err != nil {
+		t.Fatalf("empty chat post: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Errorf("empty message: status = %d, want 400", resp.StatusCode)
 	}
 }

@@ -667,6 +667,40 @@ textarea.input { resize: vertical; min-height: 72px; }
 .sess-tx-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
 .t-flow .btn-ghost { margin-bottom: 8px; }
 .sess-copy { margin-left: 8px; }
+/* ── 会话详情：继续对话输入区 ── */
+.sess-composer {
+  position: sticky;
+  bottom: 0;
+  background: var(--surface);
+  border-top: 1.5px solid var(--ink);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.sess-composer textarea.input { min-height: 56px; }
+.sess-picked { display: flex; flex-wrap: wrap; gap: 6px; font-size: 12px; }
+.sess-picked span {
+  background: var(--surface-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  color: var(--ink);
+  word-break: break-all;
+}
+.sess-picked button {
+  border: none;
+  background: none;
+  color: var(--red);
+  cursor: pointer;
+  font-weight: 700;
+  margin-left: 4px;
+  padding: 0;
+}
+.sess-composer-actions { display: flex; align-items: center; gap: 10px; }
+.sess-attach { cursor: pointer; user-select: none; display: inline-block; }
+.sess-streaming { font-size: 11px; color: var(--ink-dim); flex: 1; }
+.sess-stream-err { font-size: 12px; color: var(--red); }
 
 /* ── 项目管理页 ── */
 .prj-page { display: flex; gap: 16px; padding: 0 24px 24px; align-items: flex-start; }

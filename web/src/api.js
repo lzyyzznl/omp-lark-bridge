@@ -88,6 +88,17 @@ export const api = {
   listTranscripts: (project) => request(`/projects/${encodeURIComponent(project)}/transcripts`),
   getTranscript: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}`),
 
+  // POST /projects/{name}/transcripts/{id}/chat → SSE 流式继续对话。
+  // 返回原始 Response（前端读 response.body 流），不是解析后的 JSON。
+  chatTranscript: (project, id, payload) => {
+    const headers = { 'Content-Type': 'application/json' }
+    const tk = getToken()
+    if (tk) headers.Authorization = `Bearer ${tk}`
+    return fetch(`${BASE}/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/chat`, {
+      method: 'POST', headers, body: JSON.stringify(payload),
+    })
+  },
+
   // GET /api/v1/projects/{name} → 项目详情（work_dir/settings/platform_configs...）
   getProject: (project) => request(`/projects/${encodeURIComponent(project)}`),
   // PATCH /api/v1/projects/{name} {field:value,...} → 改项目参数（work_dir/model/admin_from/...）

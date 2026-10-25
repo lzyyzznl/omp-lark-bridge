@@ -5,9 +5,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log/slog"
 	"net/http"
@@ -50,6 +52,10 @@ type ManagementServer struct {
 
 	mu      sync.RWMutex
 	engines map[string]*Engine // project name → engine
+
+	// chatMu 串行化网页「继续对话」turn（多个 turn resume 同一份 transcript
+	// 文件会竞态，见 chatWithTranscript）。
+	chatMu sync.Mutex
 
 	cronScheduler      *CronScheduler
 	timerScheduler     *TimerScheduler
@@ -649,7 +655,7 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 	}
 	rest := ""
 	if len(parts) > 2 {
-		rest = parts[2]
+		rest = parts[2] // SplitN(path, "/", 3)：parts[2] 已含剩余全部 `/` 段
 	}
 
 	// add-platform and bot-QR binding work against config only; they must work
@@ -2273,11 +2279,20 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 		mgmtError(w, http.StatusNotImplemented, "agent does not expose session transcripts")
 		return
 	}
+	dir := dirProv.SessionDir()
 	if rest == "" {
-		m.listTranscripts(w, dirProv.SessionDir())
+		m.listTranscripts(w, dir)
 		return
 	}
-	m.readTranscript(w, dirProv.SessionDir(), rest)
+	// rest = {id}（读取详情）或 {id}/chat（SSE 继续对话）。仅 {id}/chat 是细分路由；
+	// 其它含斜杠或非 POST 的 rest 一律交给 readTranscript 走原 400 校验，
+	// 不改变既有路径穿越拒绝行为。
+	id, action, hasAction := strings.Cut(rest, "/")
+	if hasAction && action == "chat" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
+		m.chatWithTranscript(w, r, e, dir, id)
+		return
+	}
+	m.readTranscript(w, dir, rest)
 }
 
 func (m *ManagementServer) listTranscripts(w http.ResponseWriter, dir string) {
@@ -2416,6 +2431,147 @@ func readTranscriptEvents(path string) ([]map[string]any, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+// chatAttachment is one uploaded image/file in a web chat request. Data is
+// base64-encoded raw bytes (the web UI reads the file locally and inlines it).
+type chatAttachment struct {
+	MimeType string `json:"mime_type"`
+	FileName string `json:"filename"`
+	Data     string `json:"data"`
+}
+
+// decodeChatAttachments decodes base64 raw bytes into core attachment types.
+// Non-nil images/files picks the target slice.
+func decodeChatAttachments(raw []chatAttachment, images *[]ImageAttachment, files *[]FileAttachment) error {
+	for _, a := range raw {
+		if a.Data == "" {
+			continue
+		}
+		b, err := base64.StdEncoding.DecodeString(a.Data)
+		if err != nil {
+			return fmt.Errorf("invalid base64 in %q: %w", a.FileName, err)
+		}
+		if images != nil {
+			*images = append(*images, ImageAttachment{MimeType: a.MimeType, Data: b, FileName: a.FileName})
+		} else {
+			*files = append(*files, FileAttachment{MimeType: a.MimeType, Data: b, FileName: a.FileName})
+		}
+	}
+	return nil
+}
+
+// chatWithTranscript resumes the transcript's agent session with the user's
+// message (text + images + files) and streams the agent's events back as
+// Server-Sent Events. Each turn spawns its own agent process — cron transcripts
+// belong to finished jobs — and the session is closed when the turn ends. The
+// agent persists the turn into the transcript file itself, so the web UI
+// re-reads the transcript for the authoritative history afterwards.
+func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Request, e *Engine, dir, id string) {
+	if id != filepath.Base(id) {
+		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
+		return
+	}
+	sessionFile := filepath.Join(dir, id+".jsonl")
+	if _, err := os.Stat(sessionFile); err != nil {
+		mgmtError(w, http.StatusNotFound, "transcript not found")
+		return
+	}
+	var body struct {
+		Message string           `json:"message"`
+		Images  []chatAttachment `json:"images"`
+		Files   []chatAttachment `json:"files"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 96<<20)).Decode(&body); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	var images []ImageAttachment
+	var files []FileAttachment
+	if err := decodeChatAttachments(body.Images, &images, nil); err != nil {
+		mgmtError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := decodeChatAttachments(body.Files, nil, &files); err != nil {
+		mgmtError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	msg := strings.TrimSpace(body.Message)
+	if msg == "" && len(images) == 0 && len(files) == 0 {
+		mgmtError(w, http.StatusBadRequest, "message or attachment is required")
+		return
+	}
+
+	// 同一时刻只允许一个网页对话：两个并发 turn 同时 resume 同一份 .jsonl，
+	// 会在 omp 写文件时产生竞态。// ponytail: 全局锁；若需并行聊天再按会话粒度加锁。
+	m.chatMu.Lock()
+	defer m.chatMu.Unlock()
+
+	sess, err := e.agent.StartSession(r.Context(), sessionFile)
+	if err != nil {
+		mgmtError(w, http.StatusInternalServerError, "start session: "+err.Error())
+		return
+	}
+	defer sess.Close()
+
+	fl, ok := w.(http.Flusher)
+	if !ok {
+		mgmtError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("X-Accel-Buffering", "no")
+	sse := func(payload any) bool {
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return false
+		}
+		if _, err := fmt.Fprintf(w, "data: %s\n\n", b); err != nil {
+			return false
+		}
+		fl.Flush()
+		return true
+	}
+
+	if err := sess.Send(msg, "web"+id, images, files); err != nil {
+		sse(map[string]any{"type": "error", "error": err.Error()})
+		return
+	}
+	for ev := range sess.Events() {
+		switch ev.Type {
+		case EventText:
+			if ev.Content != "" && !sse(map[string]any{"type": "text", "content": ev.Content}) {
+				return
+			}
+		case EventThinking:
+			if ev.Content != "" && !sse(map[string]any{"type": "thinking", "content": ev.Content}) {
+				return
+			}
+		case EventToolUse:
+			if !sse(map[string]any{"type": "tool_use", "tool": ev.ToolName, "intent": ev.ToolInput}) {
+				return
+			}
+		case EventToolResult:
+			if !sse(map[string]any{"type": "tool_result", "tool": ev.ToolName, "status": ev.ToolStatus, "result": ev.ToolResult}) {
+				return
+			}
+		case EventError:
+			errMsg := "session error"
+			if ev.Error != nil {
+				errMsg = ev.Error.Error()
+			}
+			sse(map[string]any{"type": "error", "error": errMsg})
+			return
+		case EventResult:
+			if ev.Done {
+				sse(map[string]any{"type": "done"})
+				return
+			}
+		}
+	}
+	// events channel closed without a terminal event（进程在 turn 中途退出）。
+	sse(map[string]any{"type": "error", "error": "session ended unexpectedly"})
 }
 
 // ── omp agent personas (catalog + user-scope CRUD) ─────────────────────────

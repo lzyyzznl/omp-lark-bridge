@@ -105,7 +105,6 @@ export default function ProjectsPage({ onToast }) {
     if (fsPath && draft) setDraft({ ...draft, work_dir: fsPath })
     setFsOpen(false)
   }
-
   const openNew = () => {
     stopQR()
     setNewName(''); setNewWorkDir(''); setNewAgentType(''); setBindMode('none')

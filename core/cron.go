@@ -37,6 +37,7 @@ type CronJob struct {
 	Mode          string    `json:"mode,omitempty"`           // permission mode override for this job; "" = use project default
 	Model         string    `json:"model,omitempty"`          // agent model override for this job; "" = use agent default (missing model falls back to default)
 	ThinkingLevel string    `json:"thinking_level,omitempty"` // thinking/effort for this job; "" = inherit; inherit|off|minimal|low|medium|high|xhigh|max
+	Agent         string    `json:"agent,omitempty"`          // omp subagent this job is delegated to (bundled/user/project); "" = main session agent
 	TimeoutMins   *int      `json:"timeout_mins,omitempty"`   // nil = default 30m wait; 0 = no limit; >0 = minutes
 	CreatedAt     time.Time `json:"created_at"`
 	LastRun       time.Time `json:"last_run,omitempty"`
@@ -132,7 +133,29 @@ func validateCronJob(j *CronJob) error {
 	if j.TimeoutMins != nil && *j.TimeoutMins < 0 {
 		return fmt.Errorf("timeout_mins must be >= 0")
 	}
+	if a := strings.TrimSpace(j.Agent); a != "" {
+		if !ValidAgentName(a) {
+			return fmt.Errorf("invalid agent %q (want [A-Za-z0-9_-]{1,64})", j.Agent)
+		}
+		j.Agent = a
+	}
 	return nil
+}
+
+// validAgentName matches omp agent file names (frontmatter `name`), which are
+// kept to a safe charset because the name is interpolated into the delegated
+// prompt. Even though the web UI restricts choices to discovered agents, the
+// API is a trust boundary: reject anything that could inject prompt content.
+func ValidAgentName(s string) bool {
+	if s == "" || len(s) > 64 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '-') {
+			return false
+		}
+	}
+	return true
 }
 
 // CronStore persists cron jobs to a JSON file.

@@ -42,7 +42,7 @@ export default function CronTable({ jobs, now, busy, onRun, onToggleEnable, onTo
                 <td>
                   <button className="job-desc job-title" disabled={busy === j.id} onClick={() => onEdit(j)}
                     title="查看详情 / 编辑">{trunc(JobSummary(j), MAX_DESC)}</button>
-                  <div className="job-meta mono">{j.id}{j.exec ? ' · exec' : ''}{j.model ? ` · ${j.model}` : ''}{j.thinking_level ? ` · 思考:${j.thinking_level}` : ''}</div>
+                  <div className="job-meta mono">{j.id}{j.exec ? ' · exec' : ''}{j.agent ? ` · agent:${j.agent}` : ''}{j.model ? ` · ${j.model}` : ''}{j.thinking_level ? ` · 思考:${j.thinking_level}` : ''}</div>
                 </td>
                 <td>
                   <div className="mono num">{j.cron_expr || '—'}</div>

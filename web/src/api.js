@@ -95,4 +95,15 @@ export const api = {
   delProject: (project) => request(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' }),
   // POST /api/v1/projects/{name}/add-platform → 新建项目（type=feishu+work_dir+agent_type）或增平台
   addPlatform: (project, fields) => request(`/projects/${encodeURIComponent(project)}/add-platform`, { method: 'POST', body: fields }),
+  // omp agent personas（bundled/user/project）
+  // GET /api/v1/omp-agents → {agents:[{name,description,scope,model,tools,source,read_only,project}]}
+  listAgents: () => request('/omp-agents'),
+  // GET /api/v1/omp-agents/{name} → {agent:{...content}}
+  getAgent: (name) => request(`/omp-agents/${encodeURIComponent(name)}`),
+  // POST /api/v1/omp-agents {name,description,model,tools,body} → 创建 user agent
+  addAgent: (payload) => request('/omp-agents', { method: 'POST', body: payload }),
+  // PUT /api/v1/omp-agents/{name} {description,model,tools,body} → 更新 user agent
+  updateAgent: (name, payload) => request(`/omp-agents/${encodeURIComponent(name)}`, { method: 'PUT', body: payload }),
+  // DELETE /api/v1/omp-agents/{name}
+  delAgent: (name) => request(`/omp-agents/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 }

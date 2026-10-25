@@ -1040,3 +1040,108 @@ func TestExecuteCronJob_ResultOnly(t *testing.T) {
 		t.Errorf("delivered message = %q, want %q", sent[0], "final answer text")
 	}
 }
+
+// cronAgentApplier records ApplyCronAgent calls so tests can verify the engine
+// hands a job's delegated agent to the agent before a fresh-session run.
+type cronAgentApplier struct {
+	cronOverrideAgent
+	agent      string
+	agentCalls int
+}
+
+func (a *cronAgentApplier) ApplyCronAgent(agent string) {
+	a.agent, a.agentCalls = agent, a.agentCalls+1
+}
+
+// TestExecuteCronJob_AgentForcesFreshSessionAndApplies covers the cron
+// requirement "assign a job to a named omp agent": a job that pins an agent
+// must run in its own fresh session (delegation is a per-run concern, never
+// injected into the user's ongoing chat) and the engine must hand the name to
+// the agent before it starts.
+func TestExecuteCronJob_AgentForcesFreshSessionAndApplies(t *testing.T) {
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	base := cronOverrideAgent{resultAgent: resultAgent{session: newResultAgentSession("scout run done")}}
+	agent := &cronAgentApplier{cronOverrideAgent: base}
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+
+	job := &CronJob{
+		ID:          "agentjob",
+		Project:     "test",
+		SessionKey:  "discord:channel-1:user-1",
+		CronExpr:    "0 6 * * *",
+		Prompt:      "inspect the codebase",
+		Enabled:     true,
+		SessionMode: "", // default = reuse; the agent pin must still force a fresh session
+		Agent:       "scout",
+		CreatedAt:   time.Now(),
+	}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+
+	if agent.agentCalls != 1 {
+		t.Fatalf("ApplyCronAgent calls = %d, want 1", agent.agentCalls)
+	}
+	if agent.agent != "scout" {
+		t.Errorf("delegated agent = %q, want scout", agent.agent)
+	}
+}
+
+// TestExecuteCronJob_NoAgentDoesNotApply guards the default path: a plain job
+// without an agent pin must never delegate.
+func TestExecuteCronJob_NoAgentDoesNotApply(t *testing.T) {
+	platform := &stubCronReplyTargetPlatform{stubPlatformEngine: stubPlatformEngine{n: "discord"}}
+	base := cronOverrideAgent{resultAgent: resultAgent{session: newResultAgentSession("plain run")}}
+	agent := &cronAgentApplier{cronOverrideAgent: base}
+	e := NewEngine("test", agent, []Platform{platform}, "", LangEnglish)
+	defer e.cancel()
+
+	job := &CronJob{
+		ID:         "plainjob",
+		Project:    "test",
+		SessionKey: "discord:channel-1:user-1",
+		CronExpr:   "0 6 * * *",
+		Prompt:     "summarize",
+		Enabled:    true,
+		CreatedAt:  time.Now(),
+	}
+	if err := e.ExecuteCronJob(job); err != nil {
+		t.Fatalf("ExecuteCronJob() error = %v", err)
+	}
+	if agent.agentCalls != 0 {
+		t.Fatalf("ApplyCronAgent calls = %d, want 0 for a job without an agent pin", agent.agentCalls)
+	}
+}
+
+// TestValidateCronJob_AgentName pins the accepted agent-name charset. The name
+// is interpolated into the delegated prompt, so anything that could inject
+// prompt content must fail fast with a 400.
+func TestValidateCronJob_AgentName(t *testing.T) {
+	valid := []string{"scout", "reviewer", "my-agent", "my_agent", "A-Z_0", "a", ""}
+	for _, a := range valid {
+		j := &CronJob{SessionKey: "discord:ch:u", Agent: a}
+		if err := validateCronJob(j); err != nil {
+			t.Errorf("validateCronJob(agent=%q) error = %v, want nil", a, err)
+		}
+	}
+	invalid := []string{"with space", "a b", "x\nnewline", "a/b", "a.b", "a:b", strings.Repeat("a", 65)}
+	for _, a := range invalid {
+		j := &CronJob{SessionKey: "discord:ch:u", Agent: a}
+		if err := validateCronJob(j); err == nil {
+			t.Errorf("validateCronJob(agent=%q) = nil, want error", a)
+		}
+	}
+}
+
+// TestUpdateJobField_Agent pins that a PATCH {"agent": ...} round-trips through
+// the reflection fallback used by the management API.
+func TestUpdateJobField_Agent(t *testing.T) {
+	job := &CronJob{}
+	if err := updateJobField(job, "agent", "sonic"); err != nil {
+		t.Fatalf("updateJobField(agent) error = %v", err)
+	}
+	if job.Agent != "sonic" {
+		t.Errorf("job.Agent = %q, want sonic", job.Agent)
+	}
+}

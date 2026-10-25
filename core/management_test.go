@@ -61,6 +61,8 @@ func testManagementServer(t *testing.T, token string) (*ManagementServer, *httpt
 	mux.HandleFunc(prefix+"/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
 	mux.HandleFunc(prefix+"/cron", mgmt.wrap(mgmt.handleCron))
 	mux.HandleFunc(prefix+"/cron/", mgmt.wrap(mgmt.handleCronByID))
+	mux.HandleFunc(prefix+"/omp-agents", mgmt.wrap(mgmt.handleOmpAgents))
+	mux.HandleFunc(prefix+"/omp-agents/", mgmt.wrap(mgmt.handleOmpAgentByID))
 	mux.HandleFunc(prefix+"/providers", mgmt.wrap(mgmt.handleGlobalProviders))
 	mux.HandleFunc(prefix+"/providers/", mgmt.wrap(mgmt.handleGlobalProviderRoutes))
 	mux.HandleFunc(prefix+"/bridge/adapters", mgmt.wrap(mgmt.handleBridgeAdapters))
@@ -3051,5 +3053,151 @@ func TestReadTranscriptEvents_SkipsMalformed(t *testing.T) {
 	}
 	if events[0]["type"] != "session" {
 		t.Errorf("event type = %v, want session", events[0]["type"])
+	}
+}
+// TestMgmt_OmpAgents_Lifecycle exercises the full HTTP surface for custom omp
+// agents: create → list → detail (markdown source) → update → delete, plus a
+// cron job PATCH carrying the delegated agent field.
+func TestMgmt_OmpAgents_Lifecycle(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // user agents go to the test HOME, never the dev's
+	mgmt, ts, _ := testManagementServer(t, "tok")
+	tok := "tok"
+
+	// Create.
+	created := mgmtPost(t, ts.URL+"/api/v1/omp-agents", tok, map[string]any{
+		"name": "qa-bot", "description": "Runs QA", "model": "deepseek/flash",
+		"tools": "bash, read", "body": "Run the tests and report.",
+	})
+	if !created.OK {
+		t.Fatalf("create agent failed: %s", created.Error)
+	}
+
+	// Duplicate create must fail.
+	dup := mgmtPost(t, ts.URL+"/api/v1/omp-agents", tok, map[string]any{
+		"name": "qa-bot", "description": "dupe", "body": "x",
+	})
+	if dup.OK {
+		t.Fatal("duplicate create succeeded, want error")
+	}
+
+	// List contains it with user scope.
+	list := mgmtGet(t, ts.URL+"/api/v1/omp-agents", tok)
+	if !list.OK {
+		t.Fatalf("list agents failed: %s", list.Error)
+	}
+	var listed struct {
+		Agents []OmpAgentInfo `json:"agents"`
+	}
+	if err := json.Unmarshal(list.Data, &listed); err != nil {
+		t.Fatalf("unmarshal list: %v", err)
+	}
+	var found *OmpAgentInfo
+	for i := range listed.Agents {
+		if listed.Agents[i].Name == "qa-bot" {
+			found = &listed.Agents[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("qa-bot missing from listing: %+v", listed.Agents)
+	}
+	if found.Scope != "user" || found.ReadOnly {
+		t.Errorf("scope=%q read_only=%v, want user scope and writable", found.Scope, found.ReadOnly)
+	}
+
+	// Detail returns the markdown source (frontmatter + body).
+	detail := mgmtGet(t, ts.URL+"/api/v1/omp-agents/qa-bot", tok)
+	if !detail.OK {
+		t.Fatalf("detail failed: %s", detail.Error)
+	}
+	var got struct {
+		Agent map[string]any `json:"agent"`
+	}
+	if err := json.Unmarshal(detail.Data, &got); err != nil {
+		t.Fatalf("unmarshal detail: %v", err)
+	}
+	content, _ := got.Agent["content"].(string)
+	if !strings.Contains(content, "name: qa-bot") || !strings.Contains(content, "Run the tests") {
+		t.Errorf("detail content = %q", content)
+	}
+
+	// Update body + model.
+	upd := mgmtPost(t, ts.URL+"/api/v1/omp-agents/qa-bot", tok, map[string]any{
+		"description": "Runs QA harder", "model": "deepseek/deepseek-chat",
+		"tools": "bash", "body": "Run the tests and report, loudly.",
+	})
+	_ = upd
+	// PUT is the update verb; POST on the detail path is not implemented.
+	if upd.OK {
+		t.Fatal("POST on agent detail path should not be supported")
+	}
+
+	req, _ := http.NewRequest(http.MethodPut, ts.URL+"/api/v1/omp-agents/qa-bot", strings.NewReader(
+		`{"description":"Runs QA harder","model":"deepseek/deepseek-chat","tools":"bash","body":"Run the tests and report, loudly."}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+tok)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("PUT: %v", err)
+	}
+	var updR mgmtResponse
+	_ = json.NewDecoder(resp.Body).Decode(&updR)
+	resp.Body.Close()
+	if !updR.OK {
+		t.Fatalf("PUT update failed: %s", updR.Error)
+	}
+	detail2 := mgmtGet(t, ts.URL+"/api/v1/omp-agents/qa-bot", tok)
+	_ = json.Unmarshal(detail2.Data, &got)
+	content2, _ := got.Agent["content"].(string)
+	if !strings.Contains(content2, "loudly") || strings.Contains(content2, "Report.") {
+		t.Errorf("updated content = %q", content2)
+	}
+
+	// Cron PATCH carries the agent field end to end (reuse the same server).
+	mgmt.SetCronScheduler(NewCronScheduler(mustNewCronStore(t)))
+	mustAddCronJob(t, mgmt, "c1", "discord:ch:u")
+	patch := mgmtPatch(t, ts.URL+"/api/v1/cron/c1", tok, map[string]any{"agent": "scout"})
+	if !patch.OK {
+		t.Fatalf("PATCH agent failed: %s", patch.Error)
+	}
+	job := mgmt.cronScheduler.Store().Get("c1")
+	if job == nil || job.Agent != "scout" {
+		t.Fatalf("job.Agent after PATCH = %+v, want scout", job)
+	}
+
+	// Delete (user scope).
+	delReq, _ := http.NewRequest(http.MethodDelete, ts.URL+"/api/v1/omp-agents/qa-bot", nil)
+	delReq.Header.Set("Authorization", "Bearer "+tok)
+	delResp, err := http.DefaultClient.Do(delReq)
+	if err != nil {
+		t.Fatalf("DELETE: %v", err)
+	}
+	var delR mgmtResponse
+	_ = json.NewDecoder(delResp.Body).Decode(&delR)
+	delResp.Body.Close()
+	if !delR.OK {
+		t.Fatalf("DELETE failed: %s", delR.Error)
+	}
+	after := mgmtGet(t, ts.URL+"/api/v1/omp-agents/qa-bot", tok)
+	if after.OK {
+		t.Fatal("agent still present after delete")
+	}
+}
+
+func mustNewCronStore(t *testing.T) *CronStore {
+	t.Helper()
+	s, err := NewCronStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("cron store: %v", err)
+	}
+	return s
+}
+
+func mustAddCronJob(t *testing.T, mgmt *ManagementServer, id, sessionKey string) {
+	t.Helper()
+	if err := mgmt.cronScheduler.AddJob(&CronJob{
+		ID: id, Project: "test-project", SessionKey: sessionKey,
+		CronExpr: "0 6 * * *", Description: "x", Enabled: true, CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("add cron job: %v", err)
 	}
 }

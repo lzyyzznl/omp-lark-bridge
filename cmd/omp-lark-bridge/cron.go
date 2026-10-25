@@ -57,7 +57,7 @@ func closeCronResponseBody(body io.Closer) {
 }
 
 func runCronAdd(args []string) {
-	var project, sessionKey, cronExpr, prompt, execCmd, desc, dataDir, sessionMode, model, thinking string
+	var project, sessionKey, cronExpr, prompt, execCmd, desc, dataDir, sessionMode, model, thinking, agent string
 	var timeoutMins *int
 	var silent bool
 
@@ -113,6 +113,11 @@ func runCronAdd(args []string) {
 			if i+1 < len(args) {
 				i++
 				thinking = args[i]
+			}
+		case "--agent":
+			if i+1 < len(args) {
+				i++
+				agent = args[i]
 			}
 		case "--timeout-mins":
 			if i+1 < len(args) {
@@ -187,6 +192,9 @@ func runCronAdd(args []string) {
 	}
 	if thinking != "" {
 		body["thinking_level"] = thinking
+	}
+	if agent != "" {
+		body["agent"] = agent
 	}
 	if timeoutMins != nil {
 		body["timeout_mins"] = *timeoutMins
@@ -302,6 +310,7 @@ func runCronList(args []string) {
 		prompt, _ := j["prompt"].(string)
 		execCmd, _ := j["exec"].(string)
 		desc, _ := j["description"].(string)
+		agent, _ := j["agent"].(string)
 		display := desc
 		if display == "" {
 			if execCmd != "" {
@@ -313,7 +322,11 @@ func runCronList(args []string) {
 				display = display[:60] + "..."
 			}
 		}
-		fmt.Printf("  %s %s  %s  %s%s\n", enabled, id, expr, display, streakStr)
+		agentTag := ""
+		if agent != "" {
+			agentTag = "  [" + agent + "]"
+		}
+		fmt.Printf("  %s %s  %s  %s%s%s\n", enabled, id, expr, display, agentTag, streakStr)
 	}
 }
 
@@ -653,6 +666,7 @@ Options:
       --timeout-mins <n>     Max minutes to wait per run (0 = no limit; default 30 if omitted)
       --model <name>         Agent model for this job (blank = default; runs in its own fresh session)
       --thinking <level>     Thinking level: inherit|off|minimal|low|medium|high|xhigh|max (blank = inherit)
+      --agent <name>         Delegated sub-agent persona for this job (blank = no delegation)
       --silent               Suppress cron start notification
       --data-dir <path>      Data directory (default: ~/.omp-lark-bridge)
   -h, --help                 Show this help
@@ -660,6 +674,7 @@ Options:
 Examples:
   omp-lark-bridge cron add --cron "0 6 * * *" --prompt "Collect GitHub trending data" --desc "Daily Trending"
   omp-lark-bridge cron add --cron "*/30 * * * *" --exec "df -h" --desc "Disk usage check"
+  omp-lark-bridge cron add --cron "0 9 * * *" --prompt "审计发布风险" --agent security-reviewer --thinking high --silent
   omp-lark-bridge cron add --cron "0 9 * * *" --prompt "Daily standup reminder" --silent
   omp-lark-bridge cron add 0 6 * * * Collect GitHub trending data and send me a summary`)
 }
@@ -692,6 +707,9 @@ Editable Fields (string):
   work_dir      Working directory for exec
   description   Short description
   session_mode  reuse or new_per_run
+  model         Agent model (blank = default)
+  thinking_level  Thinking level (blank = inherit)
+  agent         Delegated sub-agent persona (blank = no delegation)
 
 Editable Fields (bool: true/false):
   enabled       Enable or disable the task

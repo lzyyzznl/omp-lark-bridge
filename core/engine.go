@@ -1436,6 +1436,15 @@ type CronOverrideApplier interface {
 	ApplyCronOverrides(model, thinkingLevel string)
 }
 
+// CronAgentApplier is optionally implemented by agents that can delegate a cron
+// job to a named subagent (omp: `Agent` frontmatter discovered from the user /
+// project config). The engine calls it before a cron job runs in its own fresh
+// session; the agent defers the job's first prompt to that subagent. Standalone
+// so agents that only adopt CronOverrideApplier keep compiling unchanged.
+type CronAgentApplier interface {
+	ApplyCronAgent(agent string)
+}
+
 // ExecuteCronJob runs a cron job by injecting a synthetic message into the engine.
 // It finds the platform that owns the session key, reconstructs a reply context,
 // and processes the message as if the user sent it.
@@ -1600,7 +1609,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	// A job that pins its own model or thinking level runs in a fresh session:
 	// applying it to the shared active session would leak the cron's model into
 	// the user's ongoing chat (and reuse cannot safely switch models mid-run).
-	if job.Model != "" || job.ThinkingLevel != "" {
+	if job.Model != "" || job.ThinkingLevel != "" || job.Agent != "" {
 		useNewSession = true
 	}
 
@@ -1619,6 +1628,9 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		// it is about to start. Ignored by agents that do not implement it.
 		if applier, ok := agent.(CronOverrideApplier); ok {
 			applier.ApplyCronOverrides(job.Model, job.ThinkingLevel)
+		}
+		if applier2, ok := agent.(CronAgentApplier); ok {
+			applier2.ApplyCronAgent(job.Agent)
 		}
 		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
 		e.cleanupInteractiveState(iKey)

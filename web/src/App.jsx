@@ -8,6 +8,7 @@ import ConfirmDialog from './components/ConfirmDialog.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
 import SessionsPage from './components/SessionsPage.jsx'
 import ProjectsPage from './components/ProjectsPage.jsx'
+import AgentsPage from './components/AgentsPage.jsx'
 import LoginScreen from './components/LoginScreen.jsx'
 import Toast from './components/Toast.jsx'
 export default function App() {
@@ -112,6 +113,7 @@ export default function App() {
     { id: 'cron', label: '定时任务' },
     { id: 'sessions', label: '会话查看' },
     { id: 'projects', label: '项目管理' },
+    { id: 'agents', label: 'agent 人格' },
   ]
   const tabTitle = TABS.find((t) => t.id === tab)?.label || ''
 
@@ -199,6 +201,8 @@ export default function App() {
       {tab === 'sessions' && <SessionsPage initialId={sessionsId} />}
 
       {tab === 'projects' && <ProjectsPage onToast={push} />}
+
+      {tab === 'agents' && <AgentsPage onToast={push} />}
 
       <JobDialog
         open={!!dialog}

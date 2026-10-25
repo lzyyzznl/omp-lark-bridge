@@ -357,6 +357,27 @@ func waitForFrame(t *testing.T, cmds func() []map[string]any, want string) {
 		time.Sleep(2 * time.Millisecond)
 	}
 }
+// waitForPromptCount polls until at least n prompt frames are visible, so a
+// second Send's frame has landed before the assertions read the transcript.
+func waitForPromptCount(t *testing.T, cmds func() []map[string]any, n int) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		count := 0
+		for _, c := range cmds() {
+			if rpcFrameType(c) == "prompt" {
+				count++
+			}
+		}
+		if count >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d prompt frames (have %d)", n, count)
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
 
 // A rejected set_model ("Model not found") must NOT fail the session — the job
 // keeps its default model and still runs (cron requirement).
@@ -545,3 +566,67 @@ func mustExecutable(t *testing.T) string {
 	}
 	return self
 }
+// TestSend_DelegatesFirstPrompt pins cron agent delegation: the very first
+// Send of a session that pinned an agent wraps the message in a "use the named
+// specialist" instruction, and later sends pass through unchanged.
+func TestSend_DelegatesFirstPrompt(t *testing.T) {
+	// prompt frames are fire-and-forget here: answering them would make the
+	// fake peer block in its waitResponse loop (no pending slot exists) and
+	// stall reading later frames.
+	ok := func(req map[string]any) map[string]any {
+		if req["type"] == "prompt" {
+			return nil
+		}
+		return map[string]any{"type": "response", "command": req["type"], "success": true}
+	}
+	s, cmds := fakeOmpRPC(t, ok)
+	s.dir = t.TempDir()
+	if err := s.enterSession("", "", ""); err != nil {
+		t.Fatalf("enterSession() error = %v", err)
+	}
+	s.delegatedAgent = "scout"
+
+	if err := s.Send("inspect the codebase", "m1", nil, nil); err != nil {
+		t.Fatalf("Send() error = %v", err)
+	}
+	waitForFrame(t, cmds, "prompt")
+
+	var prompts []string
+	for _, c := range cmds() {
+		if rpcFrameType(c) != "prompt" {
+			continue
+		}
+		m, _ := c["message"].(string)
+		prompts = append(prompts, m)
+	}
+	if len(prompts) != 1 {
+		t.Fatalf("prompt frames = %d, want 1: %v", len(prompts), prompts)
+	}
+	if !strings.Contains(prompts[0], "scout") {
+		t.Errorf("first prompt missing delegated agent name: %q", prompts[0])
+	}
+	if !strings.Contains(prompts[0], "inspect the codebase") {
+		t.Errorf("first prompt missing original task: %q", prompts[0])
+	}
+
+	// A second send must NOT be wrapped again (one-shot per session).
+	if err := s.Send("another task", "m2", nil, nil); err != nil {
+		t.Fatalf("Send() #2 error = %v", err)
+	}
+	waitForPromptCount(t, cmds, 2)
+	prompts = prompts[:0]
+	for _, c := range cmds() {
+		if rpcFrameType(c) != "prompt" {
+			continue
+		}
+		m, _ := c["message"].(string)
+		prompts = append(prompts, m)
+	}
+	if len(prompts) != 2 {
+		t.Fatalf("prompt frames = %d, want 2", len(prompts))
+	}
+	if prompts[1] != "another task" {
+		t.Errorf("second prompt = %q, want unchanged %q", prompts[1], "another task")
+	}
+}
+

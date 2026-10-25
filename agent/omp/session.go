@@ -50,6 +50,13 @@ type ompSession struct {
 	ompSessID   string // omp-side session id (from get_state)
 	ompSessFile string // absolute .jsonl path; the value persisted as AgentSessionID
 
+	// delegatedAgent is the cron-assigned subagent name. omp has no RPC command
+	// to select an agent, so Send injects a delegation instruction into this
+	// session's first prompt (main session asks its `task` tool to use the
+	// named specialist). One-shot per session; only cron jobs set it.
+	delegatedAgent string
+	agentUsed      bool
+
 	writeMu sync.Mutex
 	pMu     sync.Mutex
 	pending map[string]chan map[string]any
@@ -107,15 +114,11 @@ func sanitizeSessionName(sessionID string) string {
 	return defaultSessionName
 }
 
-func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, ccDataDir, sessionID string, env []string, systemPrompt string) (*ompSession, error) {
-	sctx, cancel := context.WithCancel(ctx)
-
-	// The store directory is a stable container for every conversation of this
-	// project. Per-conversation identity is carried by the session *file* path
-	// (see enterSession), so the directory must NOT be derived from the agent
-	// session id: that produced a fresh empty directory per restart and made
-	// resume impossible.
-	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env, systemPrompt)
+func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, delegatedAgent, ccDataDir, sessionID string, env []string, systemPrompt string) (*ompSession, error) {
+	// spawnOmpProcess derives its own cancellable context (the returned session
+	// owns it via ompSession.cancel), so this function needs no extra layer.
+	// On enter failure we cancel that process context to tear the child down.
+	s, err := spawnOmpProcess(ctx, bin, extraArgs, workDir, ccDataDir, env, systemPrompt)
 	if err != nil {
 		return nil, err
 	}
@@ -124,7 +127,7 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 	// is whatever CurrentSessionID() reported last time: an absolute session file
 	// path (current builds) or a bare id / directory name (legacy).
 	if err := s.enterSession(model, thinking, sessionID); err != nil {
-		cancel()
+		s.cancel()
 		return nil, err
 	}
 
@@ -133,6 +136,7 @@ func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir,
 	// shape: the select path below still renders questions as cards.
 	go s.enableAskDialog()
 
+	s.delegatedAgent = delegatedAgent
 	return s, nil
 }
 
@@ -304,6 +308,15 @@ func (s *ompSession) Send(prompt string, messageID string, images []core.ImageAt
 	if !s.alive.Load() {
 		return fmt.Errorf("omp: session closed")
 	}
+	// Delegated-agent cron jobs wrap their very first message in a delegation
+	// instruction so the main session routes the work to the named specialist
+	// (omp's native "ask the session to use the agent by name" flow). Injected
+	// exactly once, before the message enters the session, so resume and later
+	// turns are unaffected.
+	if s.delegatedAgent != "" && !s.agentUsed {
+		s.agentUsed = true
+		prompt = fmt.Sprintf(delegationTemplate(s.delegatedAgent), prompt)
+	}
 	filePaths := core.SaveFilesToDisk(s.dir, messageID, files)
 	prompt = core.AppendFileRefs(prompt, filePaths)
 	if len(images) > 0 {
@@ -315,6 +328,13 @@ func (s *ompSession) Send(prompt string, messageID string, images []core.ImageAt
 		"type":    "prompt",
 		"message": prompt,
 	})
+}
+
+// delegationTemplate wraps a cron job's first prompt so the main omp session
+// routes the work to the named specialist (omp's native "use the agent by
+// name" flow). The returned string has a single %s for the task body.
+func delegationTemplate(agent string) string {
+	return "本任务已指派给专用子代理 " + agent + " 执行。请使用 " + agent + " 专用子代理完成以下任务,完成后把它的结论完整汇报给用户。不要以主会话身份直接回答。\n\n任务内容:\n%s"
 }
 
 func (s *ompSession) appendImageRefs(prompt, messageID string, images []core.ImageAttachment) string {

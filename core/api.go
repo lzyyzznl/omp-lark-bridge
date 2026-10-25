@@ -327,6 +327,7 @@ type CronAddRequest struct {
 	Mode          string `json:"mode,omitempty"`
 	Model         string `json:"model,omitempty"`
 	ThinkingLevel string `json:"thinking_level,omitempty"`
+	Agent         string `json:"agent,omitempty"`
 	TimeoutMins   *int   `json:"timeout_mins,omitempty"`
 	ResultOnly    bool   `json:"result_only,omitempty"`
 }
@@ -409,6 +410,7 @@ func (s *APIServer) handleCronAdd(w http.ResponseWriter, r *http.Request) {
 		Mode:          req.Mode,
 		Model:         req.Model,
 		ThinkingLevel: req.ThinkingLevel,
+		Agent:         req.Agent,
 		TimeoutMins:   req.TimeoutMins,
 		ResultOnly:    req.ResultOnly,
 	}

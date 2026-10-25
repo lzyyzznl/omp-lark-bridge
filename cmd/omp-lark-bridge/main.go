@@ -225,6 +225,7 @@ var topLevelCommandHandlers = map[string]func([]string){
 	"at":        runTimer,
 	"relay":     runRelay,
 	"sessions":  runSessions,
+	"agents":    runAgentsCommand,
 	"agent-sid": runAgentSID,
 	"daemon":    runDaemon,
 	"feishu":    runFeishu,
@@ -1646,7 +1647,15 @@ Commands:
     list             List all sessions (pipe-friendly)
     show <id>        Show session messages (-n N for last N)
 
+  agents             Manage omp agent personas (mirrors the web 人格 page)
+    list             List bundled / user / project agents
+    show <name>      Show an agent's full markdown source
+    new <name>       Create a custom (user-scope) agent
+    edit <name>      Edit a custom agent (unchanged fields kept)
+    del <name>       Delete a custom agent
+
   agent-sid          Print the agent session ID for the current session
+
 
   relay              Cross-project message relay
     send             Send a message to another project and get the response

@@ -6,7 +6,28 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- CLI 桥驾驶手册技能 `skills/omp-lark-bridge/SKILL.md`：沉淀 send/cron/timer/
+  agents（含 `cron add --agent`）的调用姿势与坑，供 omp 会话按需取用；
+  `npx skills add ./skills/omp-lark-bridge -g` 全局安装到 `~/.agents/skills`
+  （omp 以 `agents:user` 发现，`/skill:omp-lark-bridge` 或 `skill://` 读取正文）。
+- omp agent 人格目录 + 定时任务指派 agent：
+  - Web 新增「agent 人格」页：列出三档 omp 专用子代理 —— 内置（bundled，
+    `omp agents unpack` 实时物化）、自定义（user，`~/.omp/agent/agents/*.md`）、
+    项目（`.omp/agents/*.md`）；可查看完整源码（frontmatter + 指令），
+    并创建 / 编辑 / 删除自定义 agent（name/description/model/tools/body
+    重建 markdown，prewalk/advisor 等高级 frontmatter 不在编辑范围）。
+  - 管理 API：`GET /omp-agents`（目录）、`GET /omp-agents/{name}`（源码）、
+    `POST /omp-agents`（创建）、`PUT|DELETE /omp-agents/{name}`（仅 user scope 可写）。
+  - cron 任务新增 `agent` 字段：Web/API 指派给定 omp 专用子代理执行（如
+    `scout`/`reviewer`/自定义）；指定后任务强制独立会话，omp 会话把委派指令
+    注入该任务的**首条** prompt，由主会话按名派生专用子代理并汇报结果
+    （omp RPC 无会话级 agent 命令，此为官方"按名使用专用子代理"路径）。
+    代理自带的 model/thinking 优先于任务级覆盖。
 
+  - CLI 补齐 agent 人格能力：`omp-lark-bridge agents list|show|new|edit|del`
+    （与 Web 人格页同源后端函数，工作目录映射来自 config 的项目 work_dir；
+    new/edit/del 仅允许 user scope）；`cron add` 支持 `--agent` 指派专用
+    子代理，`cron list` 显示 agent 标签。
 - 多项目管理（模型 A：每项目 = 独立 omp agent/工作目录 + 独立飞书应用）：
   - CLI `project list|create|show|set|remove`（`--config` 可放 root 位，子命令继承，
     不再回落默认配置污染真实 config；`project create`/`set` 支持 model，

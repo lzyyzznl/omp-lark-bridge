@@ -1,8 +1,10 @@
 import { useState } from 'react'
 import { getToken } from '../api.js'
+import { useEsc } from '../hooks/useEsc.js'
 
 // management API token 设置。token 存 cookie（30 天自动续期，见 api.js）。
 export default function SettingsDialog({ open, onClose, onSave }) {
+  useEsc(open, onClose)
   const [val, setVal] = useState(() => getToken())
   if (!open) return null
   return (

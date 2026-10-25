@@ -1,5 +1,8 @@
+import { useEsc } from '../hooks/useEsc.js'
+
 // 通用确认对话框（删除等破坏性操作）。
 export default function ConfirmDialog({ open, title, body, danger, confirmLabel, onConfirm, onCancel }) {
+  useEsc(open, onCancel)
   if (!open) return null
   return (
     <div className="overlay" onClick={onCancel}>

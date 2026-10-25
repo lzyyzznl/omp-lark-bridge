@@ -679,3 +679,35 @@ textarea.input { resize: vertical; min-height: 72px; }
 .prj-saved { margin-left: 8px; color: var(--green); font-weight: 600; }
 .prj-new .help, .prj-form .help { font-size: 11px; color: var(--ink-dim); line-height: 1.5; }
 .prj-new code, .prj-form code { background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 4px; border-radius: 4px; font: 11px var(--font-mono); word-break: break-all; }
+
+/* ── agent 人格页 ── */
+.btn-danger { background: var(--red); color: #fff; border-color: var(--border); }
+.tab-row { display: flex; gap: 6px; margin-bottom: 16px; border-bottom: 1.5px solid var(--border); }
+.tab-row .tab { padding: 5px 12px; font-size: 12px; border: none; border-radius: 0; box-shadow: none; }
+.tab-row .tab.tab-on { border-bottom: 2.5px solid var(--red); color: var(--ink); background: transparent; }
+.agent-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 12px; }
+.agent-card {
+  border: 2px solid var(--border);
+  background: var(--surface);
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.agent-card-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.agent-name { font-weight: 700; font-size: 14px; word-break: break-all; }
+.agent-desc { font-size: 12px; color: var(--ink-dim); line-height: 1.55; min-height: 18px; }
+.agent-meta { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 11px; }
+.agent-card-actions { display: flex; gap: 8px; margin-top: auto; padding-top: 6px; }
+.agent-card-actions .btn { flex: 1; }
+.agent-source {
+  border: 2px solid var(--border);
+  background: var(--surface-dim);
+  padding: 10px;
+  font: 11.5px/1.55 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-all;
+  max-height: 320px;
+  overflow: auto;
+  margin: 0;
+}

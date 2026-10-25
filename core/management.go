@@ -225,6 +225,10 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	// Agents & Platforms (registry)
 	mux.HandleFunc(prefix+"/agents", m.wrap(m.handleAgents))
 
+	// omp agent personas (bundled/user/project catalog + user-scope CRUD)
+	mux.HandleFunc(prefix+"/omp-agents", m.wrap(m.handleOmpAgents))
+	mux.HandleFunc(prefix+"/omp-agents/", m.wrap(m.handleOmpAgentByID))
+
 	// Projects
 	mux.HandleFunc(prefix+"/projects", m.wrap(m.handleProjects))
 	mux.HandleFunc(prefix+"/projects/", m.wrap(m.handleProjectRoutes))
@@ -1553,6 +1557,7 @@ func (m *ManagementServer) handleCron(w http.ResponseWriter, r *http.Request) {
 			Mode:          req.Mode,
 			Model:         req.Model,
 			ThinkingLevel: req.ThinkingLevel,
+			Agent:         req.Agent,
 			TimeoutMins:   req.TimeoutMins,
 			CreatedAt:     time.Now(),
 		}
@@ -2102,4 +2107,122 @@ func readTranscriptEvents(path string) ([]map[string]any, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+// ── omp agent personas (catalog + user-scope CRUD) ─────────────────────────
+
+// OmpAgentWriteRequest is the JSON body for POST/PUT on the omp-agents API.
+// The UI edits the durable frontmatter subset
+// (name/description/model/tools/thinking_level/spawns) plus the instruction
+// body; the backend renders the markdown file.
+type OmpAgentWriteRequest struct {
+	Name          string `json:"name"`
+	Description   string `json:"description"`
+	Model         string `json:"model"`
+	Tools         string `json:"tools"`
+	ThinkingLevel string `json:"thinking_level"`
+	Spawns        string `json:"spawns"`
+	Body          string `json:"body"`
+}
+
+// handleOmpAgents serves GET (catalog) and POST (create user agent).
+func (m *ManagementServer) handleOmpAgents(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		agents := DiscoverOmpAgents(m.projectWorkdirs())
+		if agents == nil {
+			agents = []*OmpAgentInfo{}
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"agents": agents})
+
+	case http.MethodPost:
+		var req OmpAgentWriteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		name := strings.TrimSpace(req.Name)
+		if !ValidAgentName(name) {
+			mgmtError(w, http.StatusBadRequest, "invalid agent name (want [A-Za-z0-9_-]{1,64})")
+			return
+		}
+		info, err := CreateUserAgent(name, strings.TrimSpace(req.Description), strings.TrimSpace(req.Model), strings.TrimSpace(req.Tools), strings.TrimSpace(req.ThinkingLevel), strings.TrimSpace(req.Spawns), req.Body)
+		if err != nil {
+			mgmtError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"agent": info})
+
+	default:
+		mgmtError(w, http.StatusMethodNotAllowed, "GET or POST only")
+	}
+}
+
+// handleOmpAgentByID serves GET (detail source), PUT (edit), DELETE (remove) for
+// a single agent by name. Edit/delete are user-scope only: bundled and project
+// agents are read-only through this API (see isEditableAgentScope).
+func (m *ManagementServer) handleOmpAgentByID(w http.ResponseWriter, r *http.Request) {
+	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/omp-agents/")
+	rest = strings.Trim(rest, "/")
+	if rest == "" || strings.Contains(rest, "/") {
+		mgmtError(w, http.StatusBadRequest, "agent name required")
+		return
+	}
+	name := rest
+
+	switch r.Method {
+	case http.MethodGet:
+		a := m.findOmpAgent(m.projectWorkdirs(), name)
+		if a == nil {
+			mgmtError(w, http.StatusNotFound, "agent not found: "+name)
+			return
+		}
+		content, err := ReadAgentDetail(a)
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"agent": map[string]any{
+				"name": a.Name, "scope": a.Scope, "source": a.Source,
+				"read_only": a.ReadOnly, "description": a.Description,
+				"model": a.Model, "tools": a.Tools,
+				"thinking_level": a.ThinkingLevel, "spawns": a.Spawns,
+				"content": content,
+			},
+		})
+
+	case http.MethodPut:
+		var req OmpAgentWriteRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		a := m.findOmpAgent(m.projectWorkdirs(), name)
+		if a == nil || !IsEditableAgentScope(a.Scope) {
+			mgmtError(w, http.StatusNotFound, "agent not editable through this API: "+name)
+			return
+		}
+		info, err := UpdateUserAgent(name, strings.TrimSpace(req.Description), strings.TrimSpace(req.Model), strings.TrimSpace(req.Tools), strings.TrimSpace(req.ThinkingLevel), strings.TrimSpace(req.Spawns), req.Body)
+		if err != nil {
+			mgmtError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"agent": info})
+
+	case http.MethodDelete:
+		a := m.findOmpAgent(m.projectWorkdirs(), name)
+		if a == nil || !IsEditableAgentScope(a.Scope) {
+			mgmtError(w, http.StatusNotFound, "agent not deletable through this API: "+name)
+			return
+		}
+		if err := DeleteUserAgent(name); err != nil {
+			mgmtError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mgmtOK(w, "agent deleted")
+
+	default:
+		mgmtError(w, http.StatusMethodNotAllowed, "GET, PUT, or DELETE only")
+	}
 }

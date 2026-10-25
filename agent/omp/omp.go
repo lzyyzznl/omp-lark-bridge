@@ -54,6 +54,7 @@ type Agent struct {
 	overrideMu      sync.Mutex
 	pendingModel    string
 	pendingThinking string
+	pendingAgent    string // delegated subagent for the next cron-run session
 
 	// modelsCache caches the get_available_models discovery result so a web
 	// dropdown doesn't spawn an omp process on every page load.
@@ -163,6 +164,20 @@ func (a *Agent) ApplyCronOverrides(model, thinkingLevel string) {
 	}
 }
 
+// ApplyCronAgent implements core.CronAgentApplier. It stores a one-shot
+// delegated subagent name that StartSession consumes for the next session it
+// creates. There is no RPC command to set an omp agent (agents are spawned by
+// the main session's `task` tool), so the session injects the delegation
+// instruction into its very first prompt instead (see ompSession.Send).
+func (a *Agent) ApplyCronAgent(agent string) {
+	a.overrideMu.Lock()
+	defer a.overrideMu.Unlock()
+	a.pendingAgent = agent
+	if agent != "" {
+		slog.Info("omp: cron agent override queued", "agent", agent)
+	}
+}
+
 // AvailableModels implements core.ModelSwitcher's discovery entrypoint. It
 // spawns a throwaway omp process to fetch the provider's real model list
 // (cached for modelCacheTTL); on any failure it falls back to the configured
@@ -246,17 +261,21 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	extraEnv = append(extraEnv, a.sessionEnv...)
 	a.mu.RUnlock()
 
-	// Consume any queued cron override (model overrides the agent default; the
-	// thinking level is applied by the session at enter time).
+	// Consume any queued cron overrides (model overrides the agent default; the
+	// thinking level is applied by the session at enter time; the delegated
+	// agent is injected into the session's first prompt). All three are
+	// one-shot: they belong to exactly the next session this agent creates.
 	a.overrideMu.Lock()
 	thinking := a.pendingThinking
+	agent := a.pendingAgent
 	if a.pendingModel != "" {
 		model = a.pendingModel
 	}
-	a.pendingModel, a.pendingThinking = "", ""
+	a.pendingModel, a.pendingThinking, a.pendingAgent = "", "", ""
 	a.overrideMu.Unlock()
 
-	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
+	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, agent, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
+
 }
 
 // ListSessions lists the omp session stores this omp-lark-bridge instance owns.

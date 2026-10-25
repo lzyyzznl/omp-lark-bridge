@@ -34,7 +34,11 @@ func captureStdout(t *testing.T, fn func()) string {
 // core delegates), but this locks the CLI/UX contract so the subcommands cannot
 // drift from the web UI's agent 人格 page.
 func TestAgentsCommandLifecycle(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows; without it the test would
+	// write into the developer's real profile and fail on a second run.
+	t.Setenv("USERPROFILE", home)
 	runAgentsNew([]string{"qabot", "--desc", "run QA", "--model", "@slow", "--thinking", "high", "--spawns", "scout, task", "--body", "Run the test suite and report."})
 	path := filepath.Join(os.Getenv("HOME"), ".omp", "agent", "agents", "qabot.md")
 	if _, err := os.Stat(path); err != nil {

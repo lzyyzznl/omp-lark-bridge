@@ -84,6 +84,9 @@ func withTempAgentHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Windows resolves the home directory from USERPROFILE, so HOME alone
+	// leaves these tests writing into the real profile.
+	t.Setenv("USERPROFILE", home)
 	return home
 }
 

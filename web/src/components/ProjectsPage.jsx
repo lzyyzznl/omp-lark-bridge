@@ -20,7 +20,8 @@ export default function ProjectsPage({ onToast }) {
   const [manualSecret, setManualSecret] = useState('')
   const [newBusy, setNewBusy] = useState(false)
   const [qrModal, setQrModal] = useState(false) // 二维码显示在新建弹窗内
-  const [draft, setDraft] = useState(null) // 编辑草稿 {work_dir, model, admin_from, disabled_commands, allow_from}
+  const [draft, setDraft] = useState(null) // 编辑草稿 {display_name, work_dir, model, admin_from, disabled_commands, allow_from}
+  const [baseline, setBaseline] = useState(null) // 载入时的快照：保存只提交与它不同的字段，避免旧页面覆盖别人的修改
   const [saved, setSaved] = useState(false) // 最近保存 → 提示
   const [botDraft, setBotDraft] = useState({}) // { [platformType]: {app_id, app_secret} }；secret 仅输入用，不回显
   const [qr, setQr] = useState(null) // {platform, device_code, interval, expires_in}
@@ -54,20 +55,25 @@ export default function ProjectsPage({ onToast }) {
 
   useEffect(() => { load() }, [])
 
+  // 详情 → 表单草稿。baseline 与 draft 共用同一形状，便于逐字段 diff。
+  const draftFrom = (d) => ({
+    display_name: d.display_name || '',
+    work_dir: d.work_dir || '',
+    model: d.model || '',
+    admin_from: d.settings?.admin_from || '',
+    disabled_commands: (d.settings?.disabled_commands || []).join(', '),
+    allow_from: (d.platform_configs || [])[0]?.allow_from || '',
+  })
+
   const select = async (p) => {
     setSelected(p.name)
     setDetail(null)
     try {
       const d = await api.getProject(p.name)
+      const dd = draftFrom(d)
       setDetail(d)
-      setDraft({
-        display_name: d.display_name || '',
-        work_dir: d.work_dir || '',
-        model: d.model || '',
-        admin_from: d.settings?.admin_from || '',
-        disabled_commands: (d.settings?.disabled_commands || []).join(', '),
-        allow_from: (d.platform_configs || [])[0]?.allow_from || '',
-      })
+      setDraft(dd)
+      setBaseline(dd)
       setBotDraft(initBotDraft(d))
       setSaved(false)
       setQr(null); setQrImg(''); setQrStatus('')
@@ -154,14 +160,22 @@ export default function ProjectsPage({ onToast }) {
     if (!selected || !draft) return
     setBusy(true)
     try {
+      // 只提交实际改动过的字段：整表单提交会在旧页面/旧缓存下把别人刚改的
+      // 值（名称、work_dir 等）覆盖回去。
       const fields = {}
-      // 显示名可改且立即生效（内部 ID = selected，不变）。
-      fields.display_name = (draft.display_name || '').trim()
-      fields.work_dir = draft.work_dir
-      fields.model = draft.model
-      fields.admin_from = draft.admin_from
-      fields.disabled_commands = draft.disabled_commands.split(',').map((s) => s.trim()).filter(Boolean)
-      fields.platform_allow_from = { feishu: draft.allow_from }
+      const base = baseline || {}
+      const execCmds = draft.disabled_commands.split(',').map((s) => s.trim()).filter(Boolean)
+      const baseCmds = (base.disabled_commands || '').split(',').map((s) => s.trim()).filter(Boolean)
+      if ((draft.display_name || '').trim() !== (base.display_name || '')) fields.display_name = (draft.display_name || '').trim()
+      if ((draft.work_dir || '').trim() !== (base.work_dir || '')) fields.work_dir = draft.work_dir
+      if ((draft.model || '').trim() !== (base.model || '')) fields.model = draft.model
+      if ((draft.admin_from || '').trim() !== (base.admin_from || '')) fields.admin_from = draft.admin_from
+      if (JSON.stringify(execCmds) !== JSON.stringify(baseCmds)) fields.disabled_commands = execCmds
+      if ((draft.allow_from || '') !== (base.allow_from || '')) fields.platform_allow_from = { feishu: draft.allow_from }
+      if (Object.keys(fields).length === 0) {
+        onToast?.('ok', '没有改动')
+        return
+      }
       const resp = await api.patchProject(selected, fields)
       setSaved(true)
       // 保存后立即刷新左侧列表与详情，无需重启。

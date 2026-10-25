@@ -62,8 +62,13 @@ _TAGS_FLAG  := $(if $(_BUILD_TAGS),-tags '$(_BUILD_TAGS)',)
 
 .PHONY: build run clean test pre-test lint release release-all
 
-build:
+build: web-dist
 	go build $(_TAGS_FLAG) -ldflags "$(LDFLAGS)" -o $(APP) $(CMD)
+
+# Build the embedded admin UI (dist/ is gitignored; go:embed needs it present).
+web-dist:
+	@cd web && test -d node_modules || npm install
+	npm --prefix web run build
 
 run: build
 	./$(APP)

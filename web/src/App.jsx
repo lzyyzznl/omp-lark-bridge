@@ -210,7 +210,7 @@ export default function App() {
       </div>
       )}
 
-      {tab === 'sessions' && <SessionsPage initialId={sessionsId} />}
+      {tab === 'sessions' && <SessionsPage initialId={sessionsId} onToast={push} />}
 
       {tab === 'projects' && <ProjectsPage onToast={push} />}
 

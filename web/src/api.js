@@ -99,6 +99,9 @@ export const api = {
     })
   },
 
+  // POST /projects/{name}/transcripts/{id}/title → 用最近对话一键生成会话标题
+  regenerateTitle: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/title`, { method: 'POST', body: {} }),
+
   // GET /api/v1/projects/{name} → 项目详情（work_dir/settings/platform_configs...）
   getProject: (project) => request(`/projects/${encodeURIComponent(project)}`),
   // PATCH /api/v1/projects/{name} {field:value,...} → 改项目参数（work_dir/model/admin_from/...）

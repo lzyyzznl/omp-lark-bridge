@@ -706,7 +706,7 @@ textarea.input { resize: vertical; min-height: 72px; }
 }
 .sess-tx-item:hover { background: var(--cream); }
 .sess-tx-name { font: 600 12px var(--font-mono); word-break: break-all; }
-.sess-tx-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
+.sess-tx-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .t-flow .btn-ghost { margin-bottom: 8px; }
 .sess-copy { margin-left: 8px; }
 /* ── 会话详情：继续对话输入区 ── */
@@ -775,6 +775,9 @@ textarea.input { resize: vertical; min-height: 72px; }
 .prj-new-actions { display: flex; gap: 8px; }
 .prj-form-actions { display: flex; gap: 8px; margin-top: 4px; }
 .prj-saved { margin-left: 8px; color: var(--green); font-weight: 600; }
+.prj-rename { display: flex; align-items: center; gap: 8px; }
+.prj-rename .input { min-width: 180px; }
+.prj-rename-btn { margin-left: 8px; }
 .prj-new .help, .prj-form .help { font-size: 11px; color: var(--ink-dim); line-height: 1.5; }
 .prj-new code, .prj-form code { background: color-mix(in srgb, var(--ink) 8%, transparent); padding: 1px 4px; border-radius: 4px; font: 11px var(--font-mono); word-break: break-all; }
 .prj-form .bot-tag { display: inline-block; margin-left: 8px; font: 11px var(--font-mono); font-weight: 600; padding: 1px 6px; border: 1.5px solid var(--border); border-radius: 4px; }

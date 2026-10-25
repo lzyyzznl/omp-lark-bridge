@@ -3478,3 +3478,87 @@ func TestRemoveGlobalProvider_CleansUpProviderRefs(t *testing.T) {
 		t.Errorf("proj2 provider_refs: want [], got %v", refs2)
 	}
 }
+
+func readFixtureProjects(t *testing.T, path string) []ProjectConfig {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg Config
+	if err := toml.Unmarshal(data, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	return cfg.Projects
+}
+
+func TestRenameProject_RenamesKeyAndKeepsFields(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+[[projects]]
+name = "alpha"
+
+[projects.agent]
+type = "codex"
+
+[projects.agent.options]
+work_dir = "/tmp/alpha"
+
+[[projects.platforms]]
+type = "feishu"
+
+[projects.platforms.options]
+app_id = "keep_me"
+
+[[projects]]
+name = "beta"
+
+[projects.agent]
+type = "ompx"
+`)
+	patchConfigPath(t, configPath)
+
+	if err := RenameProject("alpha", "omega"); err != nil {
+		t.Fatalf("RenameProject: %v", err)
+	}
+	projects := readFixtureProjects(t, configPath)
+	if len(projects) != 2 {
+		t.Fatalf("projects = %d, want 2", len(projects))
+	}
+	if projects[0].Name != "omega" {
+		t.Errorf("projects[0].Name = %q, want omega", projects[0].Name)
+	}
+	if projects[0].Platforms[0].Type != "feishu" ||
+		projects[0].Platforms[0].Options["app_id"] != "keep_me" {
+		t.Errorf("rename dropped platform details: %+v", projects[0].Platforms)
+	}
+}
+
+func TestRenameProject_Errors(t *testing.T) {
+	configPath := writeConfigFixture(t, `
+[[projects]]
+name = "alpha"
+
+[projects.agent]
+type = "codex"
+
+[[projects]]
+name = "beta"
+
+[projects.agent]
+type = "ompx"
+`)
+	patchConfigPath(t, configPath)
+
+	if err := RenameProject("alpha", "beta"); err == nil {
+		t.Error("renaming onto an existing name should fail")
+	}
+	if err := RenameProject("nope", "gamma"); err == nil {
+		t.Error("renaming a missing project should fail")
+	}
+	if err := RenameProject("alpha", "  "); err == nil {
+		t.Error("renaming to an empty name should fail")
+	}
+	if err := RenameProject("alpha", "alpha"); err != nil {
+		t.Errorf("same-name rename should be a no-op, got %v", err)
+	}
+}

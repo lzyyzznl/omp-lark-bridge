@@ -21,7 +21,9 @@ export default function ProjectsPage({ onToast }) {
   const [newBusy, setNewBusy] = useState(false)
   const [qrModal, setQrModal] = useState(false) // 二维码显示在新建弹窗内
   const [draft, setDraft] = useState(null) // 编辑草稿 {work_dir, model, admin_from, disabled_commands, allow_from}
-  const [saved, setSaved] = useState(false) // 最近保存 → 提示
+  const [renameMode, setRenameMode] = useState(false)
+  const [renameVal, setRenameVal] = useState('')
+  const [renameBusy, setRenameBusy] = useState(false)
   const [botDraft, setBotDraft] = useState({}) // { [platformType]: {app_id, app_secret} }；secret 仅输入用，不回显
   const [qr, setQr] = useState(null) // {platform, device_code, interval, expires_in}
   const [qrImg, setQrImg] = useState('')
@@ -53,6 +55,23 @@ export default function ProjectsPage({ onToast }) {
   }
 
   useEffect(() => { load() }, [])
+  const renameProj = async () => {
+    const nv = (renameVal || '').trim()
+    if (!nv) { setError('项目名不能为空'); return }
+    if (nv === selected) { setRenameMode(false); return }
+    setRenameBusy(true)
+    try {
+      await api.patchProject(selected, { name: nv })
+      setRenameMode(false)
+      onToast?.('ok', `项目已改名为「${nv}」，重启后生效`)
+      setSelected(nv)
+      await load()
+    } catch (e) {
+      setError(e.message || '改名失败')
+    } finally {
+      setRenameBusy(false)
+    }
+  }
 
   const select = async (p) => {
     setSelected(p.name)
@@ -299,7 +318,20 @@ export default function ProjectsPage({ onToast }) {
         {selected && detail && (
           <>
             <div className="sess-detail-head">
-              <div className="sess-detail-title">{selected}</div>
+              <div className="sess-detail-title">
+                {renameMode ? (
+                  <span className="prj-rename">
+                    <input className="input mono" value={renameVal} onChange={(e) => setRenameVal(e.target.value)} placeholder="新项目名" spellCheck={false} />
+                    <button className="btn btn-sm" onClick={renameProj} disabled={renameBusy}>{renameBusy ? '保存中…' : '保存'}</button>
+                    <button className="btn btn-sm btn-ghost" onClick={() => setRenameMode(false)}>取消</button>
+                  </span>
+                ) : (
+                  <>
+                    {selected}
+                    <button className="btn btn-sm btn-ghost prj-rename-btn" title="重命名项目" onClick={() => { setRenameMode(true); setRenameVal(selected) }}>✎ 改名</button>
+                  </>
+                )}
+              </div>
               <div className="sess-detail-sub">
                 {detail.agent_type || '—'} · {detail.work_dir || '默认目录'}
                 {saved && <span className="prj-saved">保存成功，已热换或重启生效</span>}

@@ -3404,3 +3404,138 @@ func TestMgmt_Transcripts_Chat(t *testing.T) {
 		t.Errorf("empty message: status = %d, want 400", resp.StatusCode)
 	}
 }
+
+// doReq sends a JSON request (body nil → empty) and decodes the mgmt envelope.
+func doReq(t *testing.T, method, url string, body any) (int, map[string]any) {
+	t.Helper()
+	var rdr io.Reader
+	if body != nil {
+		b, _ := json.Marshal(body)
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequest(method, url, rdr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var m map[string]any
+	json.NewDecoder(resp.Body).Decode(&m)
+	return resp.StatusCode, m
+}
+
+// titleStubAgent implements SessionDirProvider + TitleGenerator for tests.
+type titleStubAgent struct {
+	stubTranscriptAgent
+	title string
+}
+
+func (a *titleStubAgent) GenerateTitle(ctx context.Context, prompt string) (string, error) {
+	return a.title, nil
+}
+
+func titleValue(t *testing.T, path string) string {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := strings.SplitN(string(data), "\n", 2)[0]
+	var ev struct {
+		Type  string `json:"type"`
+		Title string `json:"title"`
+	}
+	if err := json.Unmarshal([]byte(first), &ev); err != nil {
+		t.Fatalf("first line not a title event: %v", err)
+	}
+	return ev.Title
+}
+
+func TestMgmt_ProjectRename(t *testing.T) {
+	agent := &stubTranscriptAgent{stubAgent: stubAgent{}, dir: t.TempDir()}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+
+	var renamedOld, renamedNew string
+	mgmt.SetRenameProject(func(oldName, newName string) error {
+		renamedOld, renamedNew = oldName, newName
+		return nil
+	})
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// 运行中项目改名 → 200 + restart_required，透传 config 回调
+	status, got := doReq(t, http.MethodPatch, ts.URL+"/api/v1/projects/test-project", map[string]any{"name": "new-name"})
+	if status != http.StatusOK {
+		t.Fatalf("rename status = %d (%v), want 200", status, got)
+	}
+	if renamedOld != "test-project" || renamedNew != "new-name" {
+		t.Errorf("rename callback = %q→%q, want test-project→new-name", renamedOld, renamedNew)
+	}
+	if data, _ := got["data"].(map[string]any); data["restart_required"] != true {
+		t.Errorf("rename response missing restart_required: %v", got)
+	}
+
+	// 未运行（config-only）项目改名 → 200
+	status, _ = doReq(t, http.MethodPatch, ts.URL+"/api/v1/projects/not-running", map[string]any{"name": "cfg-renamed"})
+	if status != http.StatusOK {
+		t.Errorf("config-only rename status = %d, want 200", status)
+	}
+	if renamedOld != "not-running" || renamedNew != "cfg-renamed" {
+		t.Errorf("config-only rename callback = %q→%q", renamedOld, renamedNew)
+	}
+
+	// 空名 → 400（config-only 走 handleProjectRename 严格校验）
+	status, _ = doReq(t, http.MethodPatch, ts.URL+"/api/v1/projects/not-running", map[string]any{"name": "  "})
+	if status != http.StatusBadRequest {
+		t.Errorf("blank name (config-only) status = %d, want 400", status)
+	}
+}
+
+func TestMgmt_Transcripts_RegenTitle(t *testing.T) {
+	dir := t.TempDir()
+	withTitle := filepath.Join(dir, "with.jsonl")
+	os.WriteFile(withTitle, []byte("{\"type\":\"title\",\"v\":1,\"title\":\"\",\"updatedAt\":\"2026-01-01T00:00:00Z\"}\n"+
+		"{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"), 0o644)
+	bare := filepath.Join(dir, "bare.jsonl")
+	os.WriteFile(bare, []byte("{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"), 0o644)
+
+	agent := &titleStubAgent{stubTranscriptAgent: stubTranscriptAgent{dir: dir}, title: "一键生成标题"}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// 已有空 title 首行 → 改写
+	status, got := doReq(t, http.MethodPost, ts.URL+"/api/v1/projects/test-project/transcripts/with/title", nil)
+	if status != http.StatusOK {
+		t.Fatalf("title status = %d (%v), want 200", status, got)
+	}
+	if data, _ := got["data"].(map[string]any); data["title"] != "一键生成标题" {
+		t.Errorf("response title = %v, want 一键生成标题", got)
+	}
+	if v := titleValue(t, withTitle); v != "一键生成标题" {
+		t.Errorf("first title line = %q, want 一键生成标题", v)
+	}
+
+	// 无 title 事件 → 首行插入
+	status, got = doReq(t, http.MethodPost, ts.URL+"/api/v1/projects/test-project/transcripts/bare/title", nil)
+	if status != http.StatusOK {
+		t.Fatalf("bare title status = %d (%v), want 200", status, got)
+	}
+	if v := titleValue(t, bare); v != "一键生成标题" {
+		t.Errorf("inserted title = %q, want 一键生成标题", v)
+	}
+}

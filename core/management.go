@@ -66,6 +66,7 @@ type ManagementServer struct {
 	setupWeixinSave      func(req WeixinSetupSaveRequest) error
 	addPlatformToProject func(projectName, platType string, opts map[string]any, workDir, agentType string) error
 	removeProject        func(projectName string) error
+	renameProject        func(oldName, newName string) error
 	saveProjectSettings  func(projectName string, update ProjectSettingsUpdate) error
 	rebuildPlatform      func(projectName, platformType, appID, appSecret string) error
 	getProjectConfig     func(projectName string) map[string]any
@@ -119,6 +120,10 @@ func (m *ManagementServer) SetAddPlatformToProject(fn func(string, string, map[s
 
 func (m *ManagementServer) SetRemoveProject(fn func(string) error) {
 	m.removeProject = fn
+}
+
+func (m *ManagementServer) SetRenameProject(fn func(string, string) error) {
+	m.renameProject = fn
 }
 
 func (m *ManagementServer) SetConfigFilePath(path string) {
@@ -691,6 +696,10 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 				})
 				return
 			}
+			if r.Method == http.MethodPatch {
+				m.handleProjectRename(w, r, projName)
+				return
+			}
 			m.handleProjectConfigDetail(w, r, projName)
 			return
 		}
@@ -885,6 +894,42 @@ func (m *ManagementServer) handleProjectBot(w http.ResponseWriter, r *http.Reque
 		mgmtError(w, http.StatusNotFound, "not found")
 	}
 }
+
+// handleProjectRename renames a project's key in the config (used for
+// config-only projects without a running engine). Running engines keep the old
+// key until the bridge restarts with the new config, hence restart_required.
+func (m *ManagementServer) handleProjectRename(w http.ResponseWriter, r *http.Request, oldName string) {
+	var body struct {
+		Name *string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
+		return
+	}
+	if body.Name == nil || strings.TrimSpace(*body.Name) == "" {
+		mgmtError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	newName := strings.TrimSpace(*body.Name)
+	if newName == oldName {
+		mgmtJSON(w, http.StatusOK, map[string]any{"message": "no change", "name": newName})
+		return
+	}
+	if m.renameProject == nil {
+		mgmtError(w, http.StatusNotImplemented, "project rename not configured")
+		return
+	}
+	if err := m.renameProject(oldName, newName); err != nil {
+		mgmtError(w, http.StatusInternalServerError, "rename project: "+err.Error())
+		return
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{
+		"message":          fmt.Sprintf("project renamed to %q", newName),
+		"name":             newName,
+		"restart_required": true,
+	})
+}
+
 func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Request, name string, e *Engine) {
 	if r.Method == http.MethodGet {
 		platInfos := make([]map[string]any, len(e.allPlatforms()))
@@ -979,9 +1024,10 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			ReplyFooter          *bool             `json:"reply_footer"`
 			InjectSender         *bool             `json:"inject_sender"`
 			Model                *string           `json:"model"`
+			PlatformAppSecret    map[string]string `json:"platform_app_secret"`
 			PlatformAllowFrom    map[string]string `json:"platform_allow_from"`
 			PlatformAppID        map[string]string `json:"platform_app_id"`
-			PlatformAppSecret    map[string]string `json:"platform_app_secret"`
+			Name                 *string           `json:"name"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -1108,6 +1154,20 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 				hotSwapped = true
 			}
 		} else if len(hotSwapTypes) > 0 {
+			restartRequired = true
+		}
+		// 改名放在其它配置持久化之后：renameProject 换配置里的 key，若先改名
+		// 再 saveProjectSettings(name=旧名) 会找不到项目而丢字段。
+		if body.Name != nil && strings.TrimSpace(*body.Name) != "" && strings.TrimSpace(*body.Name) != name {
+			newName := strings.TrimSpace(*body.Name)
+			if m.renameProject == nil {
+				mgmtError(w, http.StatusNotImplemented, "project rename not configured")
+				return
+			}
+			if err := m.renameProject(name, newName); err != nil {
+				mgmtError(w, http.StatusInternalServerError, "rename project: "+err.Error())
+				return
+			}
 			restartRequired = true
 		}
 		resp := map[string]any{"message": "settings updated"}
@@ -2271,6 +2331,12 @@ type SessionDirProvider interface {
 	SessionDir() string
 }
 
+// TitleGenerator is implemented by agents that can synthesize a title for a
+// transcript from a text prompt using their own model (one-shot `omp -p`).
+type TitleGenerator interface {
+	GenerateTitle(ctx context.Context, prompt string) (string, error)
+}
+
 // handleProjectTranscripts serves the transcript list (rest == "") or a single
 // transcript's JSON event stream (rest = file base name without .jsonl).
 func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *http.Request, e *Engine, rest string) {
@@ -2290,6 +2356,10 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 	id, action, hasAction := strings.Cut(rest, "/")
 	if hasAction && action == "chat" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
 		m.chatWithTranscript(w, r, e, dir, id)
+		return
+	}
+	if hasAction && action == "title" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
+		m.regenerateTranscriptTitle(w, r, e, dir, id)
 		return
 	}
 	m.readTranscript(w, dir, rest)
@@ -2431,6 +2501,136 @@ func readTranscriptEvents(path string) ([]map[string]any, error) {
 		return nil, err
 	}
 	return events, nil
+}
+
+// titleMu serializes concurrent title rewrites of transcript files.
+var titleMu sync.Mutex
+
+func (m *ManagementServer) regenerateTranscriptTitle(w http.ResponseWriter, r *http.Request, e *Engine, dir, id string) {
+	if id != filepath.Base(id) {
+		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
+		return
+	}
+	gen, ok := e.agent.(TitleGenerator)
+	if !ok {
+		mgmtError(w, http.StatusNotImplemented, "agent does not support title generation")
+		return
+	}
+	path := filepath.Join(dir, id+".jsonl")
+	prompt := buildTitlePrompt(path)
+	if prompt == "" {
+		mgmtError(w, http.StatusInternalServerError, "transcript is empty")
+		return
+	}
+	title, err := gen.GenerateTitle(r.Context(), prompt)
+	if err != nil {
+		mgmtError(w, http.StatusInternalServerError, "generate title: "+err.Error())
+		return
+	}
+	if title == "" {
+		mgmtError(w, http.StatusInternalServerError, "model returned an empty title")
+		return
+	}
+	titleMu.Lock()
+	err = writeTranscriptTitle(path, title)
+	titleMu.Unlock()
+	if err != nil {
+		if os.IsNotExist(err) {
+			mgmtError(w, http.StatusNotFound, "transcript not found")
+			return
+		}
+		mgmtError(w, http.StatusInternalServerError, "write title: "+err.Error())
+		return
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{"title": title})
+}
+
+// buildTitlePrompt reads the head of a transcript and assembles a compact
+// prompt asking the model to title the conversation. Input is bounded so a long
+// session doesn't blow the model context on a title-only call.
+func buildTitlePrompt(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	var parts []string
+	size := 0
+	for sc.Scan() && len(parts) < 40 && size < 20000 {
+		var ev struct {
+			Type    string `json:"type"`
+			Message *struct {
+				Role    string `json:"role"`
+				Content []struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"content"`
+			} `json:"message"`
+		}
+		if json.Unmarshal(sc.Bytes(), &ev) != nil || ev.Type != "message" || ev.Message == nil {
+			continue
+		}
+		var text strings.Builder
+		for _, b := range ev.Message.Content {
+			if b.Type == "text" {
+				text.WriteString(b.Text)
+			}
+		}
+		t := strings.TrimSpace(text.String())
+		if t == "" {
+			continue
+		}
+		size += len(t)
+		parts = append(parts, ev.Message.Role+": "+t)
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "这是一个 AI 编程助手会话，请根据对话内容生成一个不超过30字的简洁标题，只输出标题本身，不要引号、不要解释：\n\n" + strings.Join(parts, "\n")
+}
+
+// writeTranscriptTitle rewrites the title field of the first title event in a
+// transcript (omp writes an empty title event as the first line). If none
+// exists, one is prepended. The file is rewritten atomically.
+func writeTranscriptTitle(path, title string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	lines := bytes.Split(data, []byte("\n"))
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	titleLine := func() []byte {
+		ev := map[string]any{"type": "title", "v": 1, "title": title, "updatedAt": now}
+		b, _ := json.Marshal(ev)
+		return b
+	}
+	written := false
+	for i := 0; i < len(lines) && i < 800; i++ {
+		var ev struct {
+			Type string `json:"type"`
+		}
+		if len(bytes.TrimSpace(lines[i])) == 0 || json.Unmarshal(lines[i], &ev) != nil || ev.Type != "title" {
+			continue
+		}
+		lines[i] = titleLine()
+		written = true
+		break
+	}
+	if !written {
+		lines = append([][]byte{titleLine()}, lines...)
+	}
+	out := bytes.Join(lines, []byte("\n"))
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, out, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 // chatAttachment is one uploaded image/file in a web chat request. Data is

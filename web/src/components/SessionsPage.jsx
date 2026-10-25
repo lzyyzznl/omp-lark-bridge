@@ -182,7 +182,7 @@ function renderEvent(ev, i, toolResults, streaming = false) {
 
 // ── 页面：左侧定时任务 → 右侧该任务的会话 ──────────────────────
 // 只展示定时任务的会话；普通聊天 transcript 不出现。
-export default function SessionsPage({ initialId }) {
+export default function SessionsPage({ initialId, onToast }) {
   const [jobs, setJobs] = useState(null)
   const [error, setError] = useState('')
   const [selectedJob, setSelectedJob] = useState(initialId || '')
@@ -190,7 +190,7 @@ export default function SessionsPage({ initialId }) {
   const [selectedTx, setSelectedTx] = useState('')
   const [txDetail, setTxDetail] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
-  const [copied, setCopied] = useState({})
+  const [titleBusy, setTitleBusy] = useState('')
   const [sending, setSending] = useState(false)     // 网页「继续对话」进行中
   const [composerText, setComposerText] = useState('')
   const [attachments, setAttachments] = useState([]) // {kind:'image'|'file', name, mime, b64}
@@ -295,6 +295,21 @@ export default function SessionsPage({ initialId }) {
     () => jobs?.find((j) => j.id === selectedJob)?.project || '',
     [jobs, selectedJob],
   )
+
+  // 一键生成会话标题：后端用最近对话调 omp 生成并写回 transcript 首行。
+  const genTitle = async (id) => {
+    if (titleBusy) return
+    setTitleBusy(id)
+    try {
+      const data = await api.regenerateTitle(activeProject, id)
+      setJobTxs((prev) => (prev || []).map((x) => (x.id === id ? { ...x, title: data.title } : x)))
+      onToast?.('ok', '会话标题已更新')
+    } catch (e) {
+      setError(e.message || '标题生成失败')
+    } finally {
+      setTitleBusy('')
+    }
+  }
   // ── 网页继续对话：SSE 流式事件转成 transcript 事件行，实时追加渲染 ──
   // 注意协议语义：EventText.content 是增量（直接入队逐字）；EventThinking.content
   // 是「当前累积全量」快照（同一 turn 会多次 flush），需与已显示量 diff 出增量，
@@ -535,7 +550,17 @@ export default function SessionsPage({ initialId }) {
               {jobTxs && jobTxs.map((t) => (
                 <div key={t.id} className="sess-tx-item" onClick={() => setSelectedTx(t.id)}>
                   <div className="sess-tx-name">{t.title || t.name}</div>
-                  <div className="sess-tx-sub">{formatTime(t.updated_at)} · {(t.size / 1024).toFixed(1)} KB</div>
+                  <div className="sess-tx-sub">
+                    <span>{formatTime(t.updated_at)} · {(t.size / 1024).toFixed(1)} KB</span>
+                    <button
+                      className="btn btn-sm btn-ghost sess-title-btn"
+                      disabled={titleBusy === t.id}
+                      title="根据最近对话重新生成标题"
+                      onClick={(e) => { e.stopPropagation(); genTitle(t.id) }}
+                    >
+                      {titleBusy === t.id ? '生成中…' : '生成标题'}
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

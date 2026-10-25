@@ -3716,6 +3716,46 @@ func RemoveProject(projectName string) error {
 	return saveConfig(cfg)
 }
 
+// RenameProject renames a project block (its unique key in the config). It only
+// rewrites the config file — runtime engines and session files keep the old
+// name until restart; running engines must be restarted to pick up the change.
+func RenameProject(oldName, newName string) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if ConfigPath == "" {
+		return fmt.Errorf("config path not set")
+	}
+	newName = strings.TrimSpace(newName)
+	if newName == "" {
+		return fmt.Errorf("new project name must not be empty")
+	}
+	if newName == oldName {
+		return nil
+	}
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	found := -1
+	for i := range cfg.Projects {
+		if cfg.Projects[i].Name == newName {
+			return fmt.Errorf("project %q already exists", newName)
+		}
+		if cfg.Projects[i].Name == oldName {
+			found = i
+		}
+	}
+	if found < 0 {
+		return fmt.Errorf("project %q not found", oldName)
+	}
+	cfg.Projects[found].Name = newName
+	return saveConfig(cfg)
+}
+
 // AddPlatformToProject appends a platform config to a project.
 // If the project doesn't exist, it is created using agentType and workDir when provided,
 // otherwise agent config is cloned from the first existing project when present.

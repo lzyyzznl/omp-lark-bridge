@@ -1184,6 +1184,7 @@ func main() {
 			return config.AddPlatformToProject(projectName, config.PlatformConfig{Type: platType, Options: opts}, workDir, agentType)
 		})
 		mgmtSrv.SetRemoveProject(config.RemoveProject)
+		mgmtSrv.SetRenameProject(config.RenameProject)
 		mgmtSrv.SetSaveProjectSettings(func(name string, u core.ProjectSettingsUpdate) error {
 			return config.SaveProjectSettings(name, config.ProjectSettingsUpdate{
 				Language:             u.Language,

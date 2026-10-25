@@ -3376,6 +3376,8 @@ type ProjectSettingsUpdate struct {
 	InjectSender         *bool
 	Model                *string
 	PlatformAllowFrom    map[string]string
+	PlatformAppID        map[string]string
+	PlatformAppSecret    map[string]string
 }
 
 // SaveProjectSettings persists project-level settings and the global language to config.toml.
@@ -3519,6 +3521,41 @@ func SaveProjectSettings(projectName string, update ProjectSettingsUpdate) error
 				proj.Platforms[j].Options["allow_from"] = strings.TrimSpace(af)
 			}
 		}
+		if update.PlatformAppID != nil || update.PlatformAppSecret != nil {
+			for j := range proj.Platforms {
+				typ := strings.TrimSpace(proj.Platforms[j].Type)
+				if typ == "" {
+					continue
+				}
+				var appID, secret string
+				appIDFound := false
+				secretFound := false
+				for k, v := range update.PlatformAppID {
+					if strings.EqualFold(strings.TrimSpace(k), typ) {
+						appID, appIDFound = strings.TrimSpace(v), true
+						break
+					}
+				}
+				for k, v := range update.PlatformAppSecret {
+					if strings.EqualFold(strings.TrimSpace(k), typ) {
+						secret, secretFound = strings.TrimSpace(v), true
+						break
+					}
+				}
+				if !appIDFound && !secretFound {
+					continue
+				}
+				if proj.Platforms[j].Options == nil {
+					proj.Platforms[j].Options = map[string]any{}
+				}
+				if appIDFound {
+					proj.Platforms[j].Options["app_id"] = appID
+				}
+				if secretFound {
+					proj.Platforms[j].Options["app_secret"] = secret
+				}
+			}
+		}
 		return saveConfig(cfg)
 	}
 	return fmt.Errorf("project %q not found", projectName)
@@ -3542,6 +3579,7 @@ func GetProjectConfigDetails(projectName string) map[string]any {
 			continue
 		}
 		result := map[string]any{}
+		result["agent_type"] = p.Agent.Type
 		if p.Agent.Options != nil {
 			if wd, ok := p.Agent.Options["work_dir"].(string); ok && strings.TrimSpace(wd) != "" {
 				result["work_dir"] = wd
@@ -3569,6 +3607,11 @@ func GetProjectConfigDetails(projectName string) map[string]any {
 		for j, plat := range p.Platforms {
 			pc := map[string]any{"type": plat.Type}
 			if plat.Options != nil {
+				// app_id is exposed to the management UI so a bound bot can be
+				// identified. app_secret must NEVER be returned.
+				if id, ok := plat.Options["app_id"].(string); ok {
+					pc["app_id"] = id
+				}
 				if af, ok := plat.Options["allow_from"].(string); ok {
 					pc["allow_from"] = af
 				}
@@ -3582,6 +3625,42 @@ func GetProjectConfigDetails(projectName string) map[string]any {
 		return result
 	}
 	return nil
+}
+
+// GetProjectPlatformOptions returns the live options for one platform of a
+// project from the config file. It is used to rebuild a platform in place when
+// credentials are rotated through the management API (hot-swap).
+func GetProjectPlatformOptions(projectName, platformType string) (map[string]any, error) {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if ConfigPath == "" {
+		return nil, fmt.Errorf("config path not set")
+	}
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return nil, fmt.Errorf("parse config: %w", err)
+	}
+	for _, p := range cfg.Projects {
+		if p.Name != projectName {
+			continue
+		}
+		for _, plat := range p.Platforms {
+			if !strings.EqualFold(strings.TrimSpace(plat.Type), platformType) {
+				continue
+			}
+			opts := make(map[string]any, len(plat.Options)+2)
+			for k, v := range plat.Options {
+				opts[k] = v
+			}
+			return opts, nil
+		}
+		return nil, fmt.Errorf("platform %q not found in project %q", platformType, projectName)
+	}
+	return nil, fmt.Errorf("project %q not found", projectName)
 }
 
 // SaveProviderRefs updates provider_refs for a project.

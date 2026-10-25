@@ -21,8 +21,20 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   const [busyId, setBusyId] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const [tab, setTab] = useState('cron') // 'cron' | 'sessions' | 'projects'
+  const TAB_IDS = ['cron', 'sessions', 'projects', 'agents']
+  const tabFromHash = () => {
+    const h = window.location.hash.replace(/^#\/?/, '')
+    return TAB_IDS.includes(h) ? h : 'cron'
+  }
+  const [tab, setTab] = useState(tabFromHash) // 'cron' | 'sessions' | 'projects' | 'agents'
   const [sessionsId, setSessionsId] = useState('')
+
+  // URL hash 导航：刷新/前进后退都留在当前 tab（#/projects 等）
+  useEffect(() => {
+    const onHash = () => setTab(tabFromHash())
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 30000)
@@ -137,7 +149,7 @@ export default function App() {
       </header>
       <nav className="tabs">
         {TABS.map((t) => (
-          <button key={t.id} className={`tab ${tab === t.id ? 'tab-on' : ''}`} onClick={() => { setTab(t.id); if (t.id === 'sessions') setSessionsId('') }}>
+          <button key={t.id} className={`tab ${tab === t.id ? 'tab-on' : ''}`} onClick={() => { setTab(t.id); window.location.hash = '/' + t.id; if (t.id === 'sessions') setSessionsId('') }}>
             {t.label}
           </button>
         ))}
@@ -190,7 +202,7 @@ export default function App() {
                 onToggleMute={toggleMute}
                 onEdit={(job) => setDialog({ mode: 'edit', job })}
                 onDelete={(job) => setConfDel(job)}
-                onViewSession={(id) => { setSessionsId(id); setTab('sessions') }}
+                onViewSession={(id) => { setSessionsId(id); setTab('sessions'); window.location.hash = '/sessions' }}
               />
             )}
           </>

@@ -5,6 +5,7 @@
 // token 存 cookie（30 天，每次成功请求自动续期），页面以此判断是否已登录。
 
 const BASE = import.meta.env.VITE_API_BASE || '/api/v1'
+
 const TOKEN_KEY = 'ompLarkToken'
 const TOKEN_MAX_AGE_DAYS = 30
 
@@ -95,6 +96,12 @@ export const api = {
   delProject: (project) => request(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' }),
   // POST /api/v1/projects/{name}/add-platform → 新建项目（type=feishu+work_dir+agent_type）或增平台
   addPlatform: (project, fields) => request(`/projects/${encodeURIComponent(project)}/add-platform`, { method: 'POST', body: fields }),
+  // POST /api/v1/projects/{name}/bot/qr/begin {platform?, app_id?} → 扫码绑定流程
+  beginBotQR: (project, fields) => request(`/projects/${encodeURIComponent(project)}/bot/qr/begin`, { method: 'POST', body: fields }),
+  // POST /api/v1/projects/{name}/bot/qr/poll {device_code, platform?} → {status, app_id?, hot_swapped?}
+  pollBotQR: (project, payload) => request(`/projects/${encodeURIComponent(project)}/bot/qr/poll`, { method: 'POST', body: payload }),
+  // GET /api/v1/fs/dirs?path= → {path, parent, dirs:[{name, path}]}（work_dir 选择）
+  listDirs: (path) => request(`/fs/dirs?path=${encodeURIComponent(path || '')}`),
   // omp agent personas（bundled/user/project）
   // GET /api/v1/omp-agents → {agents:[{name,description,scope,model,tools,source,read_only,project}]}
   listAgents: () => request('/omp-agents'),

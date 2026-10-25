@@ -1771,7 +1771,6 @@ func TestMgmt_ProviderPresets_Error(t *testing.T) {
 	}
 }
 
-
 // ── Cron PATCH (update job) ──
 
 func TestMgmt_CronPatch(t *testing.T) {
@@ -2177,8 +2176,19 @@ func TestMgmt_ProjectDelete_Success(t *testing.T) {
 	}
 	var data map[string]any
 	json.Unmarshal(r.Data, &data)
-	if data["restart_required"] != true {
-		t.Fatal("expected restart_required=true")
+	if data["removed"] != true {
+		t.Fatal("expected removed=true")
+	}
+	// Deleting a running project drops its engine so the list refreshes
+	// immediately; it must no longer require a restart.
+	if _, exists := data["restart_required"]; exists {
+		t.Fatal("expected no restart_required; the project should be removed immediately")
+	}
+	mgmt.mu.RLock()
+	_, stillRegistered := mgmt.engines["test-project"]
+	mgmt.mu.RUnlock()
+	if stillRegistered {
+		t.Fatal("engine still registered after project delete")
 	}
 }
 
@@ -3055,6 +3065,7 @@ func TestReadTranscriptEvents_SkipsMalformed(t *testing.T) {
 		t.Errorf("event type = %v, want session", events[0]["type"])
 	}
 }
+
 // TestMgmt_OmpAgents_Lifecycle exercises the full HTTP surface for custom omp
 // agents: create → list → detail (markdown source) → update → delete, plus a
 // cron job PATCH carrying the delegated agent field.

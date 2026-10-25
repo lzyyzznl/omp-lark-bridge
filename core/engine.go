@@ -467,6 +467,9 @@ type Engine struct {
 	interactiveMu     sync.Mutex
 	interactiveStates map[string]*interactiveState // key = sessionKey
 
+	// platformsMu guards the platforms slice: hot-replace swaps a platform in
+	// place while message goroutines may be iterating it, so readers take RLock.
+	platformsMu         sync.RWMutex
 	platformLifecycleMu sync.Mutex
 	platformReady       map[Platform]bool
 	stopping            bool
@@ -1029,6 +1032,8 @@ func (e *Engine) SetLanguageSaveFunc(fn func(Language) error) {
 // findObserverTarget returns the first platform that implements ObserverTarget,
 // or nil if none do.
 func (e *Engine) findObserverTarget() ObserverTarget {
+	e.platformsMu.RLock()
+	defer e.platformsMu.RUnlock()
 	for _, p := range e.platforms {
 		if ot, ok := p.(ObserverTarget); ok {
 			return ot
@@ -1065,11 +1070,64 @@ func (e *Engine) SetModelSaveFunc(fn func(model string) error) {
 	e.modelSaveFunc = fn
 }
 
-// AddPlatform appends a platform to the engine after construction.
-// The platform is started and wired during the next Engine.Start call,
-// or if the engine is already running, it is started immediately.
 func (e *Engine) AddPlatform(p Platform) {
+	e.platformsMu.Lock()
 	e.platforms = append(e.platforms, p)
+	e.platformsMu.Unlock()
+}
+
+// allPlatforms returns a snapshot copy of the platform list under the
+// platformsMu read lock, so iterating over it cannot race with
+// ReplacePlatform. Callers read platform names and references from the copy.
+func (e *Engine) allPlatforms() []Platform {
+	e.platformsMu.RLock()
+	defer e.platformsMu.RUnlock()
+	return append([]Platform(nil), e.platforms...)
+}
+
+// ReplacePlatform hot-swaps a running platform for a freshly-constructed one
+// with the same name (e.g. rebinding a Feishu bot to new credentials without
+// restarting the process). The old platform is stopped before the new one is
+// started; commands are re-registered through the normal OnPlatformReady path.
+func (e *Engine) ReplacePlatform(newP Platform) error {
+	name := newP.Name()
+
+	e.platformsMu.Lock()
+	idx := -1
+	for i, p := range e.platforms {
+		if p.Name() == name {
+			idx = i
+			break
+		}
+	}
+	if idx >= 0 {
+		old := e.platforms[idx]
+		e.platforms[idx] = newP
+		e.platformsMu.Unlock()
+
+		// Shut the old platform down so it stops receiving/sending traffic
+		// before the replacement takes over.
+		if err := old.Stop(); err != nil {
+			slog.Warn("replaced platform stop failed", "project", e.name, "platform", name, "error", err)
+		}
+		e.OnPlatformUnavailable(old, fmt.Errorf("platform replaced for %s", name))
+	} else {
+		e.platformsMu.Unlock()
+		e.AddPlatform(newP)
+	}
+
+	// Mirror Engine.Start: async platforms manage their own readiness,
+	// synchronous ones are marked ready immediately.
+	if async, ok := newP.(AsyncRecoverablePlatform); ok {
+		async.SetLifecycleHandler(e)
+	}
+	if err := newP.Start(e.handleMessage); err != nil {
+		return fmt.Errorf("[%s] start replacement platform %s: %w", e.name, name, err)
+	}
+	if _, isAsync := newP.(AsyncRecoverablePlatform); !isAsync {
+		e.onPlatformReady(newP)
+	}
+	return nil
 }
 
 func (e *Engine) SetCronScheduler(cs *CronScheduler) {
@@ -1472,7 +1530,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	}
 
 	var targetPlatform Platform
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if p.Name() == platformName {
 			targetPlatform = p
 			break
@@ -1482,7 +1540,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	// with the workspace path (e.g. "/home/user/project:slack:C123:U456").
 	// Search for a known platform name within the key and strip the prefix.
 	if targetPlatform == nil {
-		for _, p := range e.platforms {
+		for _, p := range e.allPlatforms() {
 			needle := ":" + p.Name() + ":"
 			if idx := strings.Index(sessionKey, needle); idx >= 0 {
 				targetPlatform = p
@@ -1741,7 +1799,7 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 	}
 
 	var targetPlatform Platform
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if p.Name() == platformName {
 			targetPlatform = p
 			break
@@ -1749,7 +1807,7 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 	}
 	// Multi-workspace fallback: strip workspace prefix from session key.
 	if targetPlatform == nil {
-		for _, p := range e.platforms {
+		for _, p := range e.allPlatforms() {
 			needle := ":" + p.Name() + ":"
 			if idx := strings.Index(sessionKey, needle); idx >= 0 {
 				targetPlatform = p
@@ -2303,7 +2361,7 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 	}
 
 	var targetPlatform Platform
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if p.Name() == platformName {
 			targetPlatform = p
 			break
@@ -2313,7 +2371,7 @@ func (e *Engine) ExecuteHeartbeat(sessionKey, prompt string, silent bool) error 
 	// with the workspace path (e.g. "/home/user/project:slack:C123:U456").
 	// Search for a known platform name within the key and strip the prefix.
 	if targetPlatform == nil {
-		for _, p := range e.platforms {
+		for _, p := range e.allPlatforms() {
 			needle := ":" + p.Name() + ":"
 			if idx := strings.Index(sessionKey, needle); idx >= 0 {
 				targetPlatform = p
@@ -2363,7 +2421,7 @@ func (e *Engine) Start() error {
 	var startErrs []error
 	readyCount := 0
 	pendingCount := 0
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		_, isAsync := p.(AsyncRecoverablePlatform)
 		if async, ok := p.(AsyncRecoverablePlatform); ok {
 			async.SetLifecycleHandler(e)
@@ -2391,11 +2449,11 @@ func (e *Engine) Start() error {
 			"pending", pendingCount,
 			"failed", len(startErrs))
 	} else {
-		slog.Info("engine started", "project", e.name, "agent", e.agent.Name(), "platforms", len(e.platforms))
+		slog.Info("engine started", "project", e.name, "agent", e.agent.Name(), "platforms", len(e.allPlatforms()))
 	}
 
 	// Only return error if ALL platforms failed
-	if len(startErrs) == len(e.platforms) && len(e.platforms) > 0 {
+	if len(startErrs) == len(e.allPlatforms()) && len(e.allPlatforms()) > 0 {
 		return startErrs[0] // Return first error
 	}
 
@@ -2417,7 +2475,7 @@ func (e *Engine) Stop() error {
 
 	// Stop platforms after cancellation so they can unwind against the closed context.
 	var errs []error
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if err := p.Stop(); err != nil {
 			errs = append(errs, fmt.Errorf("stop platform %s: %w", p.Name(), err))
 		}
@@ -2482,6 +2540,14 @@ func (e *Engine) onPlatformReady(p Platform) {
 	}
 	slog.Info("platform ready", "project", e.name, "platform", p.Name())
 	e.initPlatformCapabilities(p)
+}
+
+// IsPlatformReady reports whether the given platform instance has reached the
+// ready state (used by management views to show live connection status).
+func (e *Engine) IsPlatformReady(p Platform) bool {
+	e.platformLifecycleMu.Lock()
+	defer e.platformLifecycleMu.Unlock()
+	return e.platformReady[p]
 }
 
 func (e *Engine) markPlatformReady(p Platform) bool {
@@ -8636,8 +8702,8 @@ func (e *Engine) cmdStatus(p Platform, msg *Message) {
 			e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgWsResolutionError, err))
 			return
 		}
-		platNames := make([]string, len(e.platforms))
-		for i, pl := range e.platforms {
+		platNames := make([]string, len(e.allPlatforms()))
+		for i, pl := range e.allPlatforms() {
 			platNames[i] = pl.Name()
 		}
 		platformStr := strings.Join(platNames, ", ")
@@ -9055,8 +9121,8 @@ func (e *Engine) renderDirCardSafe(sessionKey string, page int) *Card {
 
 func (e *Engine) renderStatusCard(sessionKey string, userID string) *Card {
 	agent, sessions := e.sessionContextForKey(sessionKey)
-	platNames := make([]string, len(e.platforms))
-	for i, pl := range e.platforms {
+	platNames := make([]string, len(e.allPlatforms()))
+	for i, pl := range e.allPlatforms() {
 		platNames[i] = pl.Name()
 	}
 	platformStr := strings.Join(platNames, ", ")
@@ -11194,14 +11260,14 @@ func (e *Engine) resolveSendTarget(sessionKey string, attachments bool) (sendTar
 			platformName = strippedKey[:idx]
 		}
 		var targetPlatform Platform
-		for _, candidate := range e.platforms {
+		for _, candidate := range e.allPlatforms() {
 			if candidate.Name() == platformName {
 				targetPlatform = candidate
 				break
 			}
 		}
 		if targetPlatform == nil {
-			for _, candidate := range e.platforms {
+			for _, candidate := range e.allPlatforms() {
 				needle := ":" + candidate.Name() + ":"
 				if idx := strings.Index(strippedKey, needle); idx >= 0 {
 					targetPlatform = candidate
@@ -11480,7 +11546,7 @@ func (e *Engine) resolveOutboundSessionTarget(sessionKey string, hasAttachments 
 			platformName = strippedKey[:idx]
 		}
 		var targetPlatform Platform
-		for _, candidate := range e.platforms {
+		for _, candidate := range e.allPlatforms() {
 			if candidate.Name() == platformName {
 				targetPlatform = candidate
 				break
@@ -11489,7 +11555,7 @@ func (e *Engine) resolveOutboundSessionTarget(sessionKey string, hasAttachments 
 		// Fallback: multi-workspace mode may prefix the session key with the
 		// workspace path (same heuristic as ExecuteCronJob / ExecuteHeartbeat).
 		if targetPlatform == nil {
-			for _, candidate := range e.platforms {
+			for _, candidate := range e.allPlatforms() {
 				needle := ":" + candidate.Name() + ":"
 				if idx := strings.Index(strippedKey, needle); idx >= 0 {
 					targetPlatform = candidate
@@ -12633,7 +12699,7 @@ func (e *Engine) pushDeleteModeResultCard(sessionKey string) {
 
 	platformName := extractPlatformName(sessionKey)
 	var targetPlatform Platform
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if p.Name() == platformName {
 			targetPlatform = p
 			break
@@ -12696,7 +12762,7 @@ func (e *Engine) performModelSwitchAsync(sessionKey string, state *interactiveSt
 func (e *Engine) pushModelSwitchResultCard(sessionKey string, card *Card) {
 	platformName := extractPlatformName(sessionKey)
 	var targetPlatform Platform
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if p.Name() == platformName {
 			targetPlatform = p
 			break
@@ -15538,7 +15604,7 @@ func relayConversationKey(fromProject, platformName, chatID string) string {
 }
 
 func (e *Engine) platformForName(name string) Platform {
-	for _, p := range e.platforms {
+	for _, p := range e.allPlatforms() {
 		if strings.EqualFold(p.Name(), name) {
 			return p
 		}

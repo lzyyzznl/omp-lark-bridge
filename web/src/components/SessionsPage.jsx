@@ -456,14 +456,17 @@ export default function SessionsPage({ initialId }) {
   }, [live, sending, stickBottom])
 
   // 进入/切换会话时滚到最新消息（底部），而非停在最早消息。
+  // 需等 txDetail 渲染就绪后再滚（fetch 返回后才有实际高度）。
+  const [scrollOnLoad, setScrollOnLoad] = useState(false)
+  useEffect(() => { setScrollOnLoad(!!selectedTx) }, [selectedTx])
   useEffect(() => {
-    if (!selectedTx) return
+    if (!scrollOnLoad || !txDetail) return
     const t = setTimeout(() => {
       const el = flowRef.current
-      if (el) el.scrollTop = el.scrollHeight
-    }, 60)
+      if (el) { el.scrollTop = el.scrollHeight; setScrollOnLoad(false) }
+    }, 30)
     return () => clearTimeout(t)
-  }, [selectedTx])
+  }, [scrollOnLoad, txDetail])
 
   return (
     <div className="sess-page">

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { marked } from 'marked'
 import { api } from '../api.js'
 import { formatTime } from '../lib/time.js'
@@ -82,7 +82,7 @@ function ToolCallRow({ call, result }) {
             {result.isError ? '失败 · ' : ''}{formatBytes(result.bytes)}
           </span>
         )}
-        {!result && <span className="t-call-size">…</span>}
+        {!result && <span className="t-call-size"><span className="t-call-spin" aria-hidden />执行中</span>}
       </summary>
       <div className="t-call-body">
         {hasArgs && (
@@ -191,6 +191,9 @@ export default function SessionsPage({ initialId }) {
   const [attachments, setAttachments] = useState([]) // {kind:'image'|'file', name, mime, b64}
   const [live, setLive] = useState([])               // 流式对话期间追加的事件（transcript 格式）
   const [sendErr, setSendErr] = useState('')
+  const [typing, setTyping] = useState('')       // 打字机缓冲：未刷入 live 的回复文本增量
+  const typingRef = useRef('')
+  const flowRef = useRef(null)                   // 消息流容器（自动滚动用）
 
 
   const loadJobs = useCallback(async () => {
@@ -240,7 +243,7 @@ export default function SessionsPage({ initialId }) {
     const fetchOne = async () => {
       try {
         const d = await api.getTranscript(project, selectedTx)
-        if (alive) { setTxDetail(d.transcript); setTxLoading(false) }
+        if (alive) { setTxDetail(d.transcript); setLive([]); setTxLoading(false) }
       } catch (e) {
         if (alive) { setError(e.message); setTxLoading(false) }
       }
@@ -280,22 +283,17 @@ export default function SessionsPage({ initialId }) {
   )
 
   // ── 网页继续对话：SSE 流式事件转成 transcript 事件行，实时追加渲染 ──
-  // 文本/思考按 delta 累积进当前一条 assistant 消息；工具调用按独立行显示，
-  // 其结果由发送结束后的 transcript 刷新补齐（与 toolCall 配对渲染）。
+  // 思考/工具调用直接插入；回复文本先进打字机缓冲（typingRef），由周期
+  // flush 逐字刷入 live，形成一个字一个字往外冒的流式观感。
   const appendLive = useCallback((ev) => {
+    if (ev.type === 'text' && ev.content) {
+      typingRef.current += ev.content
+      setTyping(typingRef.current)
+      return
+    }
     setLive((prev) => {
       const next = prev.slice()
-      if (ev.type === 'text' && ev.content) {
-        const last = next[next.length - 1]
-        if (last && last.type === 'message' && last.message?.role === 'assistant') {
-          const blocks = last.message.content || []
-          const b = blocks[blocks.length - 1]
-          if (b && b.type === 'text') b.text = (b.text || '') + ev.content
-          else blocks.push({ type: 'text', text: ev.content })
-        } else {
-          next.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: ev.content }] } })
-        }
-      } else if (ev.type === 'thinking' && ev.content) {
+      if (ev.type === 'thinking' && ev.content) {
         const last = next[next.length - 1]
         if (last && last.type === 'message' && last.message?.role === 'assistant') {
           const b = (last.message.content || []).find((x) => x.type === 'thinking')
@@ -311,6 +309,37 @@ export default function SessionsPage({ initialId }) {
       return next
     })
   }, [])
+
+  // 打字机：把缓冲增量按字符周期刷入当前 assistant 消息的 text 块。
+  const appendLiveText = useCallback((part) => {
+    setLive((prev) => {
+      const next = prev.slice()
+      const last = next[next.length - 1]
+      if (last && last.type === 'message' && last.message?.role === 'assistant') {
+        const blocks = last.message.content || []
+        const b = blocks[blocks.length - 1]
+        if (b && b.type === 'text') b.text = (b.text || '') + part
+        else blocks.push({ type: 'text', text: part })
+      } else {
+        next.push({ type: 'message', message: { role: 'assistant', content: [{ type: 'text', text: part }] } })
+      }
+      return next
+    })
+  }, [])
+
+  useEffect(() => {
+    if (!sending) { typingRef.current = ''; return }
+    if (!typing) return
+    const t = setInterval(() => {
+      const cur = typingRef.current
+      if (!cur) return
+      const n = Math.min(cur.length, 2)   // 每拍 2 字符，约 40 字符/秒
+      typingRef.current = cur.slice(n)
+      setTyping(typingRef.current)
+      appendLiveText(cur.slice(0, n))
+    }, 25)
+    return () => clearInterval(t)
+  }, [sending, typing, appendLiveText])
 
   // 选择图片/文件附件：本地读为 base64 内联提交（不另走上传接口）。
   const onPickFile = useCallback((e) => {
@@ -344,6 +373,10 @@ export default function SessionsPage({ initialId }) {
     setLive([])
     setSendErr('')
     setSending(true)
+    // 立即清空输入区，界面马上反馈「已发送」，不必等整轮回复结束。
+    setComposerText('')
+    setAttachments([])
+
     try {
       const res = await api.chatTranscript(activeProject, selectedTx, {
         message: text,
@@ -381,18 +414,25 @@ export default function SessionsPage({ initialId }) {
     } catch (err) {
       setSendErr(err.message || '发送失败')
     } finally {
+      // live 保留到轮询取回权威 transcript 后再清空（见 fetchOne），
+      // 避免发送结束到刷新之间回复内容断档。
       setSending(false)
-      setLive([])
-      setComposerText('')
-      setAttachments([])
     }
   }, [sending, composerText, attachments, selectedTx, activeProject, appendLive])
 
-  // 流式对话期间把 live 事件追加在历史之后一起渲染；结束后 txDetail 会被
-  // 轮询刷新为 omp 写入的权威 transcript，live 随即清空。
-  const viewEvents = (sending || live.length > 0) ? [...(txDetail || []), ...live] : txDetail
-  const toolResults = useMemo(() => (viewEvents ? indexToolResults(viewEvents) : new Map()), [viewEvents])
-  const rendered = useMemo(() => (viewEvents || []).map((ev, i) => renderEvent(ev, i, toolResults)), [viewEvents, toolResults])
+  // 历史（权威）与流式 live 拆分渲染：流式期间只重建 live 尾部，避免
+  // 整棵消息树每次重算导致的卡顿；结束后 live 由轮询刷新取代并清空。
+  const histToolResults = useMemo(() => indexToolResults(txDetail || []), [txDetail])
+  const histRendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, histToolResults)), [txDetail, histToolResults])
+  const liveToolResults = useMemo(() => indexToolResults(live), [live])
+  const liveRendered = useMemo(() => live.map((ev, i) => renderEvent(ev, (txDetail?.length || 0) + i, liveToolResults)), [live, liveToolResults, txDetail])
+  const rendered = [...histRendered, ...liveRendered]
+
+  // 流式逐字追加时自动滚动到底，保证新内容可见。
+  useEffect(() => {
+    const el = flowRef.current
+    if (el && (sending || live.length)) el.scrollTop = el.scrollHeight
+  }, [live, sending])
 
   return (
     <div className="sess-page">
@@ -450,10 +490,13 @@ export default function SessionsPage({ initialId }) {
               <div className="sess-detail-title">{txDetail ? (jobTxs?.find((t) => t.id === selectedTx)?.title || selectedTx) : selectedTx}</div>
               <div className="sess-detail-sub">{activeProject} · {selectedTx}</div>
             </div>
-            <div className="t-flow">
+            <div className="t-flow" ref={flowRef}>
               {txLoading && !txDetail && <div className="sess-empty">加载中…</div>}
               {txDetail && rendered.length === 0 && <div className="sess-empty">此会话没有可渲染的事件</div>}
               {txDetail && rendered}
+              {sending && (
+                <div className="sess-typing"><span className="sess-spin" aria-hidden />助手正在回复…</div>
+              )}
             </div>
             <div className="sess-composer">
               {sendErr && <div className="sess-stream-err">⚠ {sendErr}</div>}

@@ -535,15 +535,55 @@ textarea.input { resize: vertical; min-height: 72px; }
 .sess-detail-title { font: 700 13px var(--font-mono); word-break: break-all; }
 .sess-detail-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; }
 .t-flow { padding: 14px 16px; }
-.t-msg { margin-bottom: 14px; display: flex; gap: 10px; }
+/* 聊天气泡：用户消息靠右，助手消息靠左。 */
+.t-msg { margin-bottom: 12px; display: flex; gap: 8px; align-items: flex-start; }
+.t-msg[data-role='user'] { flex-direction: row-reverse; }
 .t-role {
   flex: none;
-  width: 44px;
-  font: 700 11px var(--font-ui);
+  align-self: flex-start;
+  font: 700 10px var(--font-ui);
   color: var(--ink-dim);
-  padding-top: 2px;
+  background: var(--surface-dim);
+  border-radius: 6px;
+  padding: 2px 6px;
+  margin-top: 2px;
 }
 .t-msg[data-role='user'] .t-role { color: var(--ink); }
+.t-body {
+  min-width: 0;
+  max-width: 82%;
+  border-radius: 12px;
+  padding: 8px 12px;
+}
+.t-msg[data-role='assistant'] .t-body {
+  background: var(--cream);
+  border: 1px solid color-mix(in srgb, var(--ink) 12%, transparent);
+}
+.t-msg[data-role='user'] .t-body {
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+/* 发送中 / 工具执行：转圈 */
+@keyframes sess-spin { to { transform: rotate(360deg); } }
+.sess-spin, .t-call-spin {
+  display: inline-block;
+  flex: none;
+  border-radius: 50%;
+  border: 2px solid color-mix(in srgb, var(--ink) 25%, transparent);
+  border-top-color: var(--ink);
+  border-right-color: var(--ink);
+  animation: sess-spin 0.8s linear infinite;
+}
+.sess-spin { width: 14px; height: 14px; vertical-align: -3px; }
+.t-call-spin { width: 11px; height: 11px; vertical-align: -2px; margin-right: 6px; }
+.sess-typing {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--ink-dim);
+  padding: 4px 0 10px;
+}
 .t-text { margin: 0; white-space: pre-wrap; word-break: break-word; font: 13px/1.6 var(--font-ui); }
 .t-tool, .t-toolres {
   border: 1px solid color-mix(in srgb, var(--ink) 40%, transparent);

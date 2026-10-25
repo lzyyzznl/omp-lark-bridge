@@ -113,6 +113,7 @@ type Config struct {
 	Webhook            WebhookConfig           `toml:"webhook"`
 	Bridge             BridgeConfig            `toml:"bridge"`
 	Management         ManagementConfig        `toml:"management"`
+	Archive            ArchiveConfig           `toml:"archive"` // session library auto-archiving
 	Hooks              []HookConfig            `toml:"hooks"`
 	IdleTimeoutMins    *int                    `toml:"idle_timeout_mins,omitempty"`  // max minutes between consecutive agent events; 0 = no timeout; default 120
 	MaxTurnTimeMins    *int                    `toml:"max_turn_time_mins,omitempty"` // absolute wall-clock cap per turn in minutes; 0 = disabled (default)
@@ -137,6 +138,66 @@ type Config struct {
 	// (50 MiB). Raise it to send larger files; the request body limit on the
 	// API side scales with this value to account for base64 expansion.
 	MaxAttachmentSizeMB int `toml:"max_attachment_size_mb,omitempty"`
+}
+
+// ArchiveConfig controls automatic archiving of old session transcripts.
+// Archiving is a soft delete: transcript files are never removed.
+type ArchiveConfig struct {
+	Enabled       bool `toml:"enabled"`
+	OlderThanDays int  `toml:"older_than_days"`
+	ExcludeCron   bool `toml:"exclude_cron"`
+}
+
+// DefaultArchiveOlderThanDays is used when older_than_days is unset or invalid.
+const DefaultArchiveOlderThanDays = 90
+
+// LoadArchiveConfig reads the [archive] section from config.toml, applying the
+// default retention window.
+func LoadArchiveConfig() (ArchiveConfig, error) {
+	cfg := ArchiveConfig{}
+	if ConfigPath == "" {
+		cfg.OlderThanDays = DefaultArchiveOlderThanDays
+		return cfg, nil
+	}
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			cfg.OlderThanDays = DefaultArchiveOlderThanDays
+			return cfg, nil
+		}
+		return cfg, fmt.Errorf("read config: %w", err)
+	}
+	full := &Config{}
+	if err := toml.Unmarshal(data, full); err != nil {
+		return cfg, fmt.Errorf("parse config: %w", err)
+	}
+	cfg = full.Archive
+	if cfg.OlderThanDays < 1 {
+		cfg.OlderThanDays = DefaultArchiveOlderThanDays
+	}
+	return cfg, nil
+}
+
+// SaveArchiveConfig writes the [archive] section back to config.toml.
+func SaveArchiveConfig(c ArchiveConfig) error {
+	configMu.Lock()
+	defer configMu.Unlock()
+	if ConfigPath == "" {
+		return fmt.Errorf("config path not set")
+	}
+	data, err := os.ReadFile(ConfigPath)
+	if err != nil {
+		return fmt.Errorf("read config: %w", err)
+	}
+	cfg := &Config{}
+	if err := toml.Unmarshal(data, cfg); err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+	if c.OlderThanDays < 1 {
+		c.OlderThanDays = DefaultArchiveOlderThanDays
+	}
+	cfg.Archive = c
+	return saveConfig(cfg)
 }
 
 // CronConfig controls cron job behavior.

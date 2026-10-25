@@ -42,6 +42,13 @@ type ProjectSettingsUpdate struct {
 	PlatformAppSecret    map[string]string
 }
 
+// ArchiveSettings controls automatic archiving of old session transcripts.
+type ArchiveSettings struct {
+	Enabled       bool `json:"enabled"`
+	OlderThanDays int  `json:"older_than_days"`
+	ExcludeCron   bool `json:"exclude_cron"`
+}
+
 // ManagementServer provides an HTTP REST API for external management tools
 // (web dashboards, TUI clients, GUI desktop apps, Mac tray apps, etc.).
 type ManagementServer struct {
@@ -68,18 +75,23 @@ type ManagementServer struct {
 	addPlatformToProject func(projectName, platType string, opts map[string]any, workDir, agentType string) error
 	// createProject 生成不可变项目 ID 并写入 config，返回新 ID。
 	createProject func(displayName, platType string, opts map[string]any, workDir, agentType string) (string, error)
-	removeProject        func(projectName string) error
+	removeProject func(projectName string) error
 	// requestRestart 触发守护进程重启（systemd --no-block），用于让需要
 	// 重建引擎的变更自动生效。nil 时（前台运行）不重启，仅返回提示。
 	requestRestart func()
-	saveProjectSettings  func(projectName string, update ProjectSettingsUpdate) error
-	rebuildPlatform      func(projectName, platformType, appID, appSecret string) error
-	getProjectConfig     func(projectName string) map[string]any
-	saveProviderRefs     func(projectName string, refs []string) error
-	configFilePath       string
-	listConfigProjects   func() ([]string, error)
-	getGlobalSettings    func() map[string]any
-	saveGlobalSettings   func(map[string]any) error
+
+	// 会话库（全局 transcript 列表）与归档索引。
+	archiveStore        *ArchiveStore
+	getArchiveCfg       func() ArchiveSettings
+	saveArchiveCfg      func(ArchiveSettings) error
+	saveProjectSettings func(projectName string, update ProjectSettingsUpdate) error
+	rebuildPlatform     func(projectName, platformType, appID, appSecret string) error
+	getProjectConfig    func(projectName string) map[string]any
+	saveProviderRefs    func(projectName string, refs []string) error
+	configFilePath      string
+	listConfigProjects  func() ([]string, error)
+	getGlobalSettings   func() map[string]any
+	saveGlobalSettings  func(map[string]any) error
 
 	// Global provider callbacks (set by cmd/omp-lark-bridge)
 	listGlobalProviders  func() ([]GlobalProviderInfo, error)
@@ -148,6 +160,17 @@ func (m *ManagementServer) scheduleRestart() {
 		time.Sleep(400 * time.Millisecond)
 		m.requestRestart()
 	}()
+}
+
+// SetArchiveStore wires the soft-delete index for session transcripts.
+func (m *ManagementServer) SetArchiveStore(s *ArchiveStore) {
+	m.archiveStore = s
+}
+
+// SetArchiveSettings wires config persistence for the auto-archive settings.
+func (m *ManagementServer) SetArchiveSettings(get func() ArchiveSettings, save func(ArchiveSettings) error) {
+	m.getArchiveCfg = get
+	m.saveArchiveCfg = save
 }
 
 func (m *ManagementServer) SetConfigFilePath(path string) {
@@ -280,6 +303,10 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	// Projects
 	mux.HandleFunc(prefix+"/projects", m.wrap(m.handleProjects))
 	mux.HandleFunc(prefix+"/projects/", m.wrap(m.handleProjectRoutes))
+
+	// Global session library (all projects share one transcript dir) + archive.
+	mux.HandleFunc(prefix+"/transcripts", m.wrap(m.handleTranscriptLibrary))
+	mux.HandleFunc(prefix+"/transcripts/", m.wrap(m.handleTranscriptLibrary))
 
 	// File browser for the work_dir picker (server-side directory listing).
 	mux.HandleFunc(prefix+"/fs/dirs", m.wrap(m.handleFSDirs))
@@ -645,6 +672,10 @@ func (m *ManagementServer) handleProjects(w http.ResponseWriter, r *http.Request
 			if dn, ok := extra["display_name"].(string); ok && dn != "" {
 				entry["display_name"] = dn
 			}
+			// work_dir：前端按文件夹分组，必须带到列表里。
+			if wd, ok := extra["work_dir"].(string); ok && wd != "" {
+				entry["work_dir"] = wd
+			}
 		}
 		if running {
 			platNames := make([]string, len(e.allPlatforms()))
@@ -800,17 +831,17 @@ func (m *ManagementServer) handleProjectConfigDetail(w http.ResponseWriter, r *h
 			return
 		}
 		if err := m.saveProjectSettings(projName, ProjectSettingsUpdate{
-			DisplayName:          body.DisplayName,
-			Language:             body.Language,
-			AdminFrom:            body.AdminFrom,
-			DisabledCommands:     body.DisabledCommands,
-			WorkDir:              body.WorkDir,
-			Mode:                 body.Mode,
-			AgentType:            body.AgentType,
-			Model:                body.Model,
-			PlatformAllowFrom:    body.PlatformAllowFrom,
-			PlatformAppID:        body.PlatformAppID,
-			PlatformAppSecret:    body.PlatformAppSecret,
+			DisplayName:       body.DisplayName,
+			Language:          body.Language,
+			AdminFrom:         body.AdminFrom,
+			DisabledCommands:  body.DisabledCommands,
+			WorkDir:           body.WorkDir,
+			Mode:              body.Mode,
+			AgentType:         body.AgentType,
+			Model:             body.Model,
+			PlatformAllowFrom: body.PlatformAllowFrom,
+			PlatformAppID:     body.PlatformAppID,
+			PlatformAppSecret: body.PlatformAppSecret,
 		}); err != nil {
 			mgmtError(w, http.StatusInternalServerError, "save settings: "+err.Error())
 			return
@@ -2051,6 +2082,29 @@ func (m *ManagementServer) handleCronByID(w http.ResponseWriter, r *http.Request
 		action = parts[1]
 	}
 
+	if r.Method == http.MethodGet {
+		if action != "runs" {
+			mgmtError(w, http.StatusNotFound, "unknown cron route")
+			return
+		}
+		job := m.cronScheduler.Store().Get(id)
+		if job == nil {
+			mgmtError(w, http.StatusNotFound, fmt.Sprintf("cron job not found: %s", id))
+			return
+		}
+		runs := m.cronScheduler.Runs(id)
+		if runs == nil {
+			runs = []*CronRun{}
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"runs":        runs,
+			"last_run":    job.LastRun,
+			"last_error":  job.LastError,
+			"fail_streak": job.FailStreak,
+		})
+		return
+	}
+
 	switch r.Method {
 	case http.MethodDelete:
 		if action != "" {
@@ -2058,6 +2112,9 @@ func (m *ManagementServer) handleCronByID(w http.ResponseWriter, r *http.Request
 			return
 		}
 		if m.cronScheduler.RemoveJob(id) {
+			if m.cronScheduler.runs != nil {
+				m.cronScheduler.runs.Delete(id)
+			}
 			mgmtOK(w, "cron job deleted")
 		} else {
 			mgmtError(w, http.StatusNotFound, fmt.Sprintf("cron job not found: %s", id))
@@ -2455,15 +2512,107 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 }
 
 func (m *ManagementServer) listTranscripts(w http.ResponseWriter, dir string) {
+	mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": m.transcriptItems(dir, "")})
+}
+
+// transcriptDir returns the shared omp session directory. Every project writes
+// to the same data_dir, so any running project can report it.
+func (m *ManagementServer) transcriptDir() string {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, e := range m.engines {
+		if p, ok := e.agent.(SessionDirProvider); ok {
+			if d := p.SessionDir(); d != "" {
+				return d
+			}
+		}
+	}
+	return ""
+}
+
+type cronJobRef struct {
+	ID    string
+	Title string
+}
+
+// cronJobIndex maps transcript id → owning cron job. A transcript file carries
+// no source metadata, so job ownership can only be derived from the job store.
+func (m *ManagementServer) cronJobIndex() map[string]cronJobRef {
+	out := map[string]cronJobRef{}
+	if m.cronScheduler == nil {
+		return out
+	}
+	for _, j := range m.cronScheduler.Store().List() {
+		title := j.Description
+		if title == "" {
+			title = j.ID
+		}
+		ref := cronJobRef{ID: j.ID, Title: title}
+		ids := j.SessionIDs
+		if len(ids) == 0 && j.LastSessionID != "" {
+			ids = []string{j.LastSessionID}
+		}
+		for _, id := range ids {
+			out[id] = ref
+		}
+	}
+	return out
+}
+
+// transcriptContains reports whether the transcript body contains query
+// (case-insensitive). Reads line by line and stops at the first hit.
+func transcriptContains(path, query string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if strings.Contains(strings.ToLower(sc.Text()), query) {
+			return true
+		}
+	}
+	return false
+}
+
+// transcriptCwd extracts the work_dir recorded in the session event near the
+// head of the transcript; it is the only reliable folder attribution.
+func transcriptCwd(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 512*1024)
+	for i := 0; i < 40 && sc.Scan(); i++ {
+		line := sc.Text()
+		if !strings.Contains(line, `"type":"session"`) {
+			continue
+		}
+		var ev struct {
+			Cwd string `json:"cwd"`
+		}
+		if err := json.Unmarshal([]byte(line), &ev); err == nil {
+			return ev.Cwd
+		}
+	}
+	return ""
+}
+
+// transcriptItems builds the session library rows shared by both the
+// per-project endpoint and the global one. query filters on title or on any
+// line of the transcript body (bounded to keep a cold search cheap).
+func (m *ManagementServer) transcriptItems(dir string, query string) []map[string]any {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
-		if os.IsNotExist(err) {
-			mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": []any{}})
-			return
-		}
-		mgmtError(w, http.StatusInternalServerError, "read session dir: "+err.Error())
-		return
+		return []map[string]any{}
 	}
+	jobs := m.cronJobIndex()
+	q := strings.ToLower(strings.TrimSpace(query))
+	scanned := 0
 	ts := make([]map[string]any, 0, len(entries))
 	for _, ent := range entries {
 		if ent.IsDir() || !strings.HasSuffix(ent.Name(), ".jsonl") {
@@ -2473,18 +2622,216 @@ func (m *ManagementServer) listTranscripts(w http.ResponseWriter, dir string) {
 		if err != nil {
 			continue
 		}
-		ts = append(ts, map[string]any{
+		path := filepath.Join(dir, ent.Name())
+		id := strings.TrimSuffix(ent.Name(), ".jsonl")
+		item := map[string]any{
 			"name":       ent.Name(),
-			"id":         strings.TrimSuffix(ent.Name(), ".jsonl"),
-			"title":      transcriptHeadTitle(filepath.Join(dir, ent.Name())),
+			"id":         id,
+			"title":      transcriptHeadTitle(path),
 			"size":       info.Size(),
 			"updated_at": info.ModTime(),
-		})
+			"archived":   m.archiveStore.IsArchived(id),
+		}
+		if cwd := transcriptCwd(path); cwd != "" {
+			item["cwd"] = cwd
+		}
+		if ref, ok := jobs[id]; ok {
+			item["job_id"] = ref.ID
+			item["job_title"] = ref.Title
+		}
+		if q != "" {
+			title := strings.ToLower(fmt.Sprint(item["title"]))
+			if !strings.Contains(title, q) {
+				// 正文搜索：本地文件不大，命中即停；限制扫描数量避免上千文件阻塞。
+				if scanned >= 200 || !transcriptContains(path, q) {
+					continue
+				}
+				scanned++
+			}
+		}
+		ts = append(ts, item)
 	}
 	sort.Slice(ts, func(i, j int) bool {
 		return ts[i]["updated_at"].(time.Time).After(ts[j]["updated_at"].(time.Time))
 	})
-	mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": ts})
+	return ts
+}
+
+// handleTranscriptLibrary serves the global session library and archive ops:
+//
+//	GET    /api/v1/transcripts?view=&archived=1|all
+//	POST   /api/v1/transcripts/archive    {"ids":[...]}
+//	POST   /api/v1/transcripts/unarchive  {"ids":[...]}
+//	GET    /api/v1/transcripts/settings
+//	PATCH  /api/v1/transcripts/settings   {enabled,older_than_days,exclude_cron}
+//	POST   /api/v1/transcripts/run        （立即按当前设置执行一次自动归档）
+func (m *ManagementServer) handleTranscriptLibrary(w http.ResponseWriter, r *http.Request) {
+	sub := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/transcripts"), "/")
+	switch sub {
+	case "":
+		if r.Method != http.MethodGet {
+			mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+			return
+		}
+		dir := m.transcriptDir()
+		if dir == "" {
+			mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": []any{}, "archived_count": 0})
+			return
+		}
+		items := m.transcriptItems(dir, r.URL.Query().Get("q"))
+		view := r.URL.Query().Get("view")
+		out := make([]map[string]any, 0, len(items))
+		archivedCount := 0
+		for _, it := range items {
+			archived, _ := it["archived"].(bool)
+			if archived {
+				archivedCount++
+			}
+			switch view {
+			case "archived":
+				if archived {
+					out = append(out, it)
+				}
+			case "all":
+				out = append(out, it)
+			default:
+				if !archived {
+					out = append(out, it)
+				}
+			}
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": out, "archived_count": archivedCount})
+	case "archive", "unarchive":
+		if r.Method != http.MethodPost {
+			mgmtError(w, http.StatusMethodNotAllowed, "POST only")
+			return
+		}
+		var body struct {
+			IDs []string `json:"ids"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		if len(body.IDs) == 0 {
+			mgmtError(w, http.StatusBadRequest, "ids is required")
+			return
+		}
+		var err error
+		if sub == "archive" {
+			err = m.archiveStore.Archive(body.IDs, "manual")
+		} else {
+			err = m.archiveStore.Restore(body.IDs)
+		}
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"count": len(body.IDs)})
+	case "settings":
+		if m.getArchiveCfg == nil {
+			mgmtError(w, http.StatusServiceUnavailable, "archive settings not configured")
+			return
+		}
+		if r.Method == http.MethodPatch {
+			cur := m.getArchiveCfg()
+			var body struct {
+				Enabled       *bool `json:"enabled"`
+				OlderThanDays *int  `json:"older_than_days"`
+				ExcludeCron   *bool `json:"exclude_cron"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+				return
+			}
+			if body.Enabled != nil {
+				cur.Enabled = *body.Enabled
+			}
+			if body.OlderThanDays != nil {
+				if *body.OlderThanDays < 1 {
+					mgmtError(w, http.StatusBadRequest, "older_than_days must be >= 1")
+					return
+				}
+				cur.OlderThanDays = *body.OlderThanDays
+			}
+			if body.ExcludeCron != nil {
+				cur.ExcludeCron = *body.ExcludeCron
+			}
+			if m.saveArchiveCfg != nil {
+				if err := m.saveArchiveCfg(cur); err != nil {
+					mgmtError(w, http.StatusInternalServerError, "save settings: "+err.Error())
+					return
+				}
+			}
+			mgmtJSON(w, http.StatusOK, map[string]any{"settings": cur})
+			return
+		}
+		if r.Method != http.MethodGet {
+			mgmtError(w, http.StatusMethodNotAllowed, "GET or PATCH only")
+			return
+		}
+		count := 0
+		for _, it := range m.transcriptItems(m.transcriptDir(), "") {
+			if a, _ := it["archived"].(bool); a {
+				count++
+			}
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"settings":       m.getArchiveCfg(),
+			"archived_count": count,
+		})
+	case "run":
+		if r.Method != http.MethodPost {
+			mgmtError(w, http.StatusMethodNotAllowed, "POST only")
+			return
+		}
+		cfg := ArchiveSettings{OlderThanDays: 90}
+		if m.getArchiveCfg != nil {
+			cfg = m.getArchiveCfg()
+		}
+		days := cfg.OlderThanDays
+		if days < 1 {
+			days = 90
+		}
+		n, err := m.RunAutoArchive(time.Now().AddDate(0, 0, -days), cfg.ExcludeCron)
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"archived": n})
+	default:
+		mgmtError(w, http.StatusNotFound, "unknown transcripts sub-route")
+	}
+}
+
+// RunAutoArchive archives every non-archived transcript last updated before
+// cutoff. excludeCron skips transcripts owned by a cron job.
+func (m *ManagementServer) RunAutoArchive(cutoff time.Time, excludeCron bool) (int, error) {
+	dir := m.transcriptDir()
+	if dir == "" {
+		return 0, fmt.Errorf("no session directory available yet")
+	}
+	if m.archiveStore == nil {
+		return 0, fmt.Errorf("archive store not configured")
+	}
+	ids := make([]string, 0, 16)
+	for _, it := range m.transcriptItems(dir, "") {
+		if archived, _ := it["archived"].(bool); archived {
+			continue
+		}
+		if excludeCron {
+			if _, ok := it["job_id"]; ok {
+				continue
+			}
+		}
+		if t, ok := it["updated_at"].(time.Time); ok && t.Before(cutoff) {
+			ids = append(ids, it["id"].(string))
+		}
+	}
+	if len(ids) == 0 {
+		return 0, nil
+	}
+	return len(ids), m.archiveStore.Archive(ids, "auto")
 }
 
 // transcriptHeadTitle extracts the session title from the first

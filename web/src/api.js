@@ -108,6 +108,25 @@ export const api = {
   patchProject: (project, fields) => request(`/projects/${encodeURIComponent(project)}`, { method: 'PATCH', body: fields }),
   // DELETE /api/v1/projects/{name} → 移除项目
   delProject: (project) => request(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' }),
+  // GET /api/v1/transcripts?view=&q= → 全局会话库（含 cwd / job_id / archived）
+  library: (view, q) => {
+    const qs = new URLSearchParams()
+    if (view) qs.set('view', view)
+    if (q) qs.set('q', q)
+    const s = qs.toString()
+    return request(`/transcripts${s ? `?${s}` : ''}`)
+  },
+  // POST /api/v1/transcripts/archive {ids} → 软删除（隐藏）
+  archiveSessions: (ids) => request('/transcripts/archive', { method: 'POST', body: { ids } }),
+  // POST /api/v1/transcripts/unarchive {ids} → 从归档恢复
+  unarchiveSessions: (ids) => request('/transcripts/unarchive', { method: 'POST', body: { ids } }),
+  // GET/PATCH /api/v1/transcripts/settings → 自动归档设置
+  archiveSettings: () => request('/transcripts/settings'),
+  saveArchiveSettings: (fields) => request('/transcripts/settings', { method: 'PATCH', body: fields }),
+  // POST /api/v1/transcripts/run → 立即执行一次自动归档
+  runArchive: () => request('/transcripts/run', { method: 'POST' }),
+  // GET /api/v1/cron/{id}/runs → 任务执行历史（含失败记录）
+  cronRuns: (id) => request(`/cron/${encodeURIComponent(id)}/runs`),
   // POST /api/v1/projects → 创建项目（服务端生成不可变 ID；name 仅作显示名）
   createProject: (fields) => request('/projects', { method: 'POST', body: fields }),
   // POST /api/v1/projects/{name}/add-platform → 为已有项目追加平台

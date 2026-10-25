@@ -990,6 +990,8 @@ func main() {
 	var cronSched *core.CronScheduler
 	if cronStore != nil {
 		cronSched = core.NewCronScheduler(cronStore)
+		// 执行历史：失败执行没有 transcript，只能靠这份记录显示/重跑。
+		cronSched.AttachRunStore(core.NewCronRunStore(filepath.Join(cfg.DataDir, "crons", "runs.json")))
 		if cfg.Cron.Silent != nil && *cfg.Cron.Silent {
 			cronSched.SetDefaultSilent(true)
 		}
@@ -1314,6 +1316,42 @@ func main() {
 			core.SetPresetsURL(cfg.ProviderPresetsURL)
 		}
 		mgmtSrv.SetListCCSwitchProviders(listCCSwitchProvidersForWeb)
+
+		// 会话库归档：软删除索引 + 自动归档配置（config.toml [archive]）。
+		archiveStore := core.NewArchiveStore(filepath.Join(cfg.DataDir, "archive", "index.json"))
+		mgmtSrv.SetArchiveStore(archiveStore)
+		mgmtSrv.SetArchiveSettings(
+			func() core.ArchiveSettings {
+				ac, err := config.LoadArchiveConfig()
+				if err != nil {
+					slog.Warn("archive: load settings failed, using defaults", "error", err)
+				}
+				return core.ArchiveSettings{Enabled: ac.Enabled, OlderThanDays: ac.OlderThanDays, ExcludeCron: ac.ExcludeCron}
+			},
+			func(as core.ArchiveSettings) error {
+				return config.SaveArchiveConfig(config.ArchiveConfig{
+					Enabled:       as.Enabled,
+					OlderThanDays: as.OlderThanDays,
+					ExcludeCron:   as.ExcludeCron,
+				})
+			},
+		)
+		// 每天检查一次自动归档（启动 20s 后首次执行，避免拖慢冷启动）。
+		go func() {
+			time.Sleep(20 * time.Second)
+			for {
+				ac, err := config.LoadArchiveConfig()
+				if err == nil && ac.Enabled {
+					n, err := mgmtSrv.RunAutoArchive(time.Now().AddDate(0, 0, -ac.OlderThanDays), ac.ExcludeCron)
+					if err != nil {
+						slog.Warn("archive: auto run failed", "error", err)
+					} else if n > 0 {
+						slog.Info("archive: auto-archived old sessions", "count", n, "older_than_days", ac.OlderThanDays)
+					}
+				}
+				time.Sleep(24 * time.Hour)
+			}
+		}()
 		mgmtSrv.Start()
 	}
 

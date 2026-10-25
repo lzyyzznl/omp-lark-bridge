@@ -8,6 +8,7 @@ import ConfirmDialog from './components/ConfirmDialog.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
 import SessionsPage from './components/SessionsPage.jsx'
 import ProjectsPage from './components/ProjectsPage.jsx'
+import CronRunsPanel from './components/CronRunsPanel.jsx'
 import AgentsPage from './components/AgentsPage.jsx'
 import LoginScreen from './components/LoginScreen.jsx'
 import Toast from './components/Toast.jsx'
@@ -27,7 +28,8 @@ export default function App() {
     return TAB_IDS.includes(h) ? h : 'cron'
   }
   const [tab, setTab] = useState(tabFromHash) // 'cron' | 'sessions' | 'projects' | 'agents'
-  const [sessionsId, setSessionsId] = useState('')
+  const [sessionsId, setSessionsId] = useState('')  // 待定位的 transcript id
+  const [runsJob, setRunsJob] = useState(null)
 
   // URL hash 导航：刷新/前进后退都留在当前 tab（#/projects 等）
   useEffect(() => {
@@ -202,6 +204,7 @@ export default function App() {
                 onToggleMute={toggleMute}
                 onEdit={(job) => setDialog({ mode: 'edit', job })}
                 onDelete={(job) => setConfDel(job)}
+                onOpenRuns={(job) => setRunsJob(job)}
                 onViewSession={(id) => { setSessionsId(id); setTab('sessions'); window.location.hash = '/sessions' }}
               />
             )}
@@ -210,7 +213,7 @@ export default function App() {
       </div>
       )}
 
-      {tab === 'sessions' && <SessionsPage initialId={sessionsId} onToast={push} />}
+      {tab === 'sessions' && <SessionsPage initialTx={sessionsId} onToast={push} />}
 
       {tab === 'projects' && <ProjectsPage onToast={push} />}
 
@@ -233,6 +236,13 @@ export default function App() {
         body={confDel ? <>确定要删除任务 <b className="mono">{confDel.id}</b> 吗？<br />（{confDel.description || confDel.prompt || confDel.exec || ''}）</> : null}
         onConfirm={confirmDelete}
         onCancel={() => setConfDel(null)}
+      />
+
+      <CronRunsPanel
+        job={runsJob}
+        onClose={() => setRunsJob(null)}
+        onToast={push}
+        onViewTx={(id) => { setSessionsId(id); setTab('sessions'); window.location.hash = '/sessions' }}
       />
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />

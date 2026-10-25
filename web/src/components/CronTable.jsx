@@ -15,7 +15,7 @@ function JobSummary(job) {
   return job.id
 }
 
-export default function CronTable({ jobs, now, busy, onRun, onToggleEnable, onToggleMute, onEdit, onDelete, onViewSession }) {
+export default function CronTable({ jobs, now, busy, onRun, onToggleEnable, onToggleMute, onEdit, onDelete, onOpenRuns }) {
   if (jobs.length === 0) return null
   return (
     <div className="table-wrap">
@@ -37,7 +37,7 @@ export default function CronTable({ jobs, now, busy, onRun, onToggleEnable, onTo
             const cr = parseCron(j.cron_expr)
             const next = cr ? cr.next : null
             return (
-              <tr key={j.id}>
+              <tr key={j.id} className={j.fail_streak > 0 ? 'cron-row-failed' : ''}>
                 <td><StatusBadge job={j} /></td>
                 <td>
                   <button className="job-desc job-title" disabled={busy === j.id} onClick={() => onEdit(j)}
@@ -66,7 +66,9 @@ export default function CronTable({ jobs, now, busy, onRun, onToggleEnable, onTo
                       {j.mute ? '取消静音' : '静音'}
                     </button>
                     <button className="btn btn-sm" disabled={busy === j.id} onClick={() => onEdit(j)}>编辑</button>
-                    <button className="btn btn-sm" title="查看该任务执行过的会话（定时任务会话页）" onClick={() => onViewSession(j.id)}>会话</button>
+                    <button className="btn btn-sm" title="执行记录：查看会话 / 失败原因 / 一键重跑" onClick={() => onOpenRuns(j)}>
+                    记录{j.fail_streak > 0 ? ' ⚠' : ''}
+                  </button>
                     <button className="btn btn-sm btn-red" disabled={busy === j.id} onClick={() => onDelete(j)}>删除</button>
                   </div>
                 </td>

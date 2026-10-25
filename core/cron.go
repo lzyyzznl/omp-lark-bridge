@@ -539,6 +539,7 @@ func toExportedFieldName(s string) string {
 // CronScheduler runs cron jobs by injecting synthetic messages into engines.
 type CronScheduler struct {
 	store              *CronStore
+	runs               *CronRunStore // 执行历史（可为 nil：未配置时忽略）
 	cron               *cron.Cron
 	engines            map[string]*Engine // project name → engine
 	mu                 sync.RWMutex
@@ -762,6 +763,19 @@ func (cs *CronScheduler) Store() *CronStore {
 	return cs.store
 }
 
+// AttachRunStore wires the execution history store.
+func (cs *CronScheduler) AttachRunStore(runs *CronRunStore) {
+	cs.runs = runs
+}
+
+// Runs returns a job's execution history (newest first).
+func (cs *CronScheduler) Runs(jobID string) []*CronRun {
+	if cs.runs == nil {
+		return nil
+	}
+	return cs.runs.List(jobID)
+}
+
 // NextRun returns the next scheduled run time for a job, or zero if not scheduled.
 func (cs *CronScheduler) NextRun(jobID string) time.Time {
 	cs.mu.RLock()
@@ -838,11 +852,29 @@ func (cs *CronScheduler) runJob(job *CronJob, manual bool) {
 
 	if !ok {
 		slog.Error("cron: project not found", "job", job.ID, "project", job.Project, "manual", manual)
-		cs.store.MarkRun(job.ID, fmt.Errorf("project %q not found", job.Project))
+		err := fmt.Errorf("project %q not found", job.Project)
+		cs.store.MarkRun(job.ID, err)
+		if cs.runs != nil {
+			trigger := "schedule"
+			if manual {
+				trigger = "manual"
+			}
+			run := cs.runs.Start(job.ID, trigger)
+			cs.runs.Finish(job.ID, run.ID, err, "")
+		}
 		return
 	}
 
 	slog.Info("cron: executing job", "id", job.ID, "project", job.Project, "manual", manual, "prompt", truncateStr(job.Prompt, 60))
+
+	trigger := "schedule"
+	if manual {
+		trigger = "manual"
+	}
+	var run *CronRun
+	if cs.runs != nil {
+		run = cs.runs.Start(job.ID, trigger)
+	}
 
 	done := make(chan error, 1)
 	go func() {
@@ -862,6 +894,13 @@ func (cs *CronScheduler) runJob(job *CronJob, manual bool) {
 	}
 
 	cs.store.MarkRun(job.ID, err)
+	if cs.runs != nil && run != nil {
+		transcriptID := ""
+		if cur := cs.store.Get(job.ID); cur != nil {
+			transcriptID = cur.LastSessionID
+		}
+		cs.runs.Finish(job.ID, run.ID, err, transcriptID)
+	}
 
 	if err != nil {
 		slog.Error("cron: job failed", "id", job.ID, "manual", manual, "error", err)

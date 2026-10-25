@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { marked } from 'marked'
 import { api } from '../api.js'
 import { formatTime } from '../lib/time.js'
+import ProjectConfigPanel from './ProjectConfigPanel.jsx'
+import { useEsc } from '../hooks/useEsc.js'
 
 const ROLE_LABEL = { user: '你', assistant: 'Harness', tool: '工具', system: '系统' }
 
@@ -179,85 +181,139 @@ function renderEvent(ev, i, toolResults, streaming = false) {
   }
   return null
 }
+// ── 页面：会话库（文件夹 → 会话 → 对话） ─────────────────────────
+// 会话文件全局共享，按 transcript 内的 session.cwd 归入文件夹；来源
+// （定时任务 / 对话）只能由 cron 任务的 session_ids 反查得出。
+const ALL = '__all__'
 
-// ── 页面：左侧定时任务 → 右侧该任务的会话 ──────────────────────
-// 只展示定时任务的会话；普通聊天 transcript 不出现。
-export default function SessionsPage({ initialId, onToast }) {
-  const [jobs, setJobs] = useState(null)
+export default function SessionsPage({ initialTx, onToast }) {
+  const [library, setLibrary] = useState(null)      // 全局会话（含 cwd/job_id/archived）
+  const [projects, setProjects] = useState([])
+  const [archivedCount, setArchivedCount] = useState(0)
+  const [view, setView] = useState('active')        // active | archived
+  const [folder, setFolder] = useState(ALL)         // cwd / ''（未归类）/ ALL
+  const [source, setSource] = useState('all')       // all | cron | chat
+  const [qInput, setQInput] = useState('')
+  const [q, setQ] = useState('')                    // 提交后的关键词（后端搜正文）
+  const [days, setDays] = useState(30)              // 0 = 全部
+  const [checked, setChecked] = useState([])
   const [error, setError] = useState('')
-  const [selectedJob, setSelectedJob] = useState(initialId || '')
-  const [jobTxs, setJobTxs] = useState(null)   // 当前任务的 transcripts（已按 session_ids 过滤）
   const [selectedTx, setSelectedTx] = useState('')
   const [txDetail, setTxDetail] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
   const [titleBusy, setTitleBusy] = useState('')
   const [copied, setCopied] = useState({})
-  const [sending, setSending] = useState(false)     // 网页「继续对话」进行中
+  const [sending, setSending] = useState(false)
   const [composerText, setComposerText] = useState('')
-  const [attachments, setAttachments] = useState([]) // {kind:'image'|'file', name, mime, b64}
-  const [live, setLive] = useState([])               // 流式对话期间追加的事件（transcript 格式）
+  const [attachments, setAttachments] = useState([])
+  const [live, setLive] = useState([])
   const [sendErr, setSendErr] = useState('')
-  const [typingTick, setTypingTick] = useState(0)  // 打字机队列节拍（驱动 flush 重挂）
-  const pendingRef = useRef([])                    // [{type:'text'|'thinking', text}] 待逐字刷出的内容
-  const flowRef = useRef(null)                     // 消息流容器（自动滚动用）
-  const thinkingShownRef = useRef('')   // 已刷到界面的 thinking 全量（用于 diff SSE 快照取增量）
-  const [stickBottom, setStickBottom] = useState(true)  // 是否跟随底部（用户上滑历史则暂停自动滚动）
+  const [typingTick, setTypingTick] = useState(0)
+  const pendingRef = useRef([])
+  const flowRef = useRef(null)
+  const thinkingShownRef = useRef('')
+  const [stickBottom, setStickBottom] = useState(true)
+  const [configProject, setConfigProject] = useState('')  // 非空 → 打开配置抽屉
+  useEsc(!!configProject, () => setConfigProject(''))
 
-  // 滚动容器的滚动监听：离开底部区域时暂停自动跟随并显示「回到底部」，滚回底部后恢复。
+  const loadLibrary = useCallback(async () => {
+    try {
+      const d = await api.library(view === 'archived' ? 'archived' : '', q)
+      setLibrary(d.transcripts || [])
+      setArchivedCount(d.archived_count || 0)
+      setError('')
+    } catch (e) {
+      setError(e.message)
+    }
+  }, [view, q])
+
+  const loadProjects = useCallback(async () => {
+    try {
+      setProjects((await api.listProjects()).projects || [])
+    } catch { /* 列表失败时仍可浏览会话 */ }
+  }, [])
+
+  useEffect(() => { loadProjects() }, [loadProjects])
+  useEffect(() => { loadLibrary() }, [loadLibrary])
+
+  // 文件夹分组：项目配置 + 会话 cwd 的并集。有会话的按最近更新排序，
+  // 只有配置的排在后面，未归类固定最后。
+  const folders = useMemo(() => {
+    const map = new Map()
+    const ensure = (cwd) => {
+      const key = cwd || ''
+      let f = map.get(key)
+      if (!f) { f = { cwd: key, items: [], projects: [] }; map.set(key, f) }
+      return f
+    }
+    for (const p of projects) ensure(p.work_dir || '').projects.push(p)
+    for (const it of library || []) ensure(it.cwd || '').items.push(it)
+    const list = [...map.values()].filter((f) => f.items.length || f.projects.length)
+    for (const f of list) {
+      f.label = f.cwd || '未归类'
+      f.latest = f.items.length ? new Date(f.items[0].updated_at).getTime() : 0
+    }
+    list.sort((a, b) => {
+      if (!!a.cwd !== !!b.cwd) return a.cwd ? -1 : 1
+      if (a.items.length && b.items.length) return b.latest - a.latest
+      if (a.items.length !== b.items.length) return b.items.length - a.items.length
+      return a.label.localeCompare(b.label)
+    })
+    return list
+  }, [projects, library])
+
+  // 中栏过滤：文件夹 + 来源 + 时间（关键词已由后端处理）。
+  const visible = useMemo(() => {
+    let arr = library || []
+    if (folder !== ALL) arr = arr.filter((it) => (it.cwd || '') === folder)
+    if (source === 'cron') arr = arr.filter((it) => it.job_id)
+    if (source === 'chat') arr = arr.filter((it) => !it.job_id)
+    if (days > 0) {
+      const cut = Date.now() - days * 86400000
+      arr = arr.filter((it) => new Date(it.updated_at).getTime() >= cut)
+    }
+    return arr
+  }, [library, folder, source, days])
+
+  // 会话详情/对话需要一个项目名（后端按项目取 session dir；目录全局共享，
+  // 任意运行中的项目都可用）。
+  const projectFor = useCallback((it) => {
+    const cwd = it?.cwd || ''
+    if (cwd) {
+      const hit = projects.find((p) => (p.work_dir || '') === cwd)
+      if (hit) return hit.name
+    }
+    const running = projects.find((p) => p.running !== false)
+    return running?.name || projects[0]?.name || ''
+  }, [projects])
+
+  const currentTx = useMemo(() => (library || []).find((x) => x.id === selectedTx), [library, selectedTx])
+  const activeProject = useMemo(() => projectFor(currentTx), [currentTx, projectFor])
+
+  // 从任务执行记录点「查看对话」跳进来：定位到该会话所在文件夹。
+  useEffect(() => {
+    if (!initialTx || !library) return
+    const it = library.find((x) => x.id === initialTx)
+    if (!it) return
+    setFolder(it.cwd || ALL)
+    setSelectedTx(initialTx)
+  }, [initialTx, library])
+
   const onDetailScroll = useCallback(() => {
     const el = flowRef.current
     if (!el) return
     setStickBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 140)
   }, [])
 
-
-  const loadJobs = useCallback(async () => {
-    try {
-      const d = await api.list()
-      setJobs(d.jobs || [])
-      setError('')
-    } catch (e) {
-      setError(e.message)
-    }
-  }, [])
-
-  useEffect(() => { loadJobs() }, [loadJobs])
-
-  // 选中任务：拉该项目全部 transcripts，过滤出该任务 session_ids 对应的
-  // （旧任务无 session_ids → 回退 [last_session_id]）。
-  useEffect(() => {
-    if (!selectedJob) { setJobTxs(null); return }
-    let alive = true
-    ;(async () => {
-      try {
-        const job = (await api.list()).jobs?.find((x) => x.id === selectedJob)
-        if (!alive || !job) return
-        setJobTxs(null)
-        const proj = job.project
-        const wanted = (job.session_ids && job.session_ids.length ? job.session_ids : (job.last_session_id ? [job.last_session_id] : []))
-        const set = new Set(wanted)
-        const d = await api.listTranscripts(proj)
-        if (!alive) return
-        setSelectedTx('')
-        setTxDetail(null)
-        setJobTxs((d.transcripts || []).filter((t) => set.has(t.id)))
-      } catch (e) {
-        if (alive) setError(e.message)
-      }
-    })()
-    return () => { alive = false }
-  }, [selectedJob])
-
-  // 会话详情：选中后拉取，3s 轮询刷新
+  // 会话详情：选中后拉取，3s 轮询刷新（发送期间由 SSE 接管）。
   useEffect(() => {
     if (!selectedTx) { setTxDetail(null); return }
     if (sending) return
-    const project = jobs?.find((j) => j.id === selectedJob)?.project || ''
-    if (!project) return
+    if (!activeProject) return
     let alive = true
     const fetchOne = async () => {
       try {
-        const d = await api.getTranscript(project, selectedTx)
+        const d = await api.getTranscript(activeProject, selectedTx)
         if (alive) { setTxDetail(d.transcript); setLive([]); setTxLoading(false) }
       } catch (e) {
         if (alive) { setError(e.message); setTxLoading(false) }
@@ -267,9 +323,8 @@ export default function SessionsPage({ initialId, onToast }) {
     fetchOne()
     const timer = setInterval(fetchOne, 3000)
     return () => { alive = false; clearInterval(timer) }
-  }, [selectedTx, selectedJob, jobs, sending])
+  }, [selectedTx, activeProject, sending])
 
-  // 复制会话文本（dictating 会话内容：全部 message 文本）
   const copyTx = useCallback(() => {
     if (!txDetail) return
     const lines = []
@@ -290,34 +345,12 @@ export default function SessionsPage({ initialId, onToast }) {
     }).catch(() => {})
   }, [txDetail, copied])
 
-  // activeProject 必须先于 sendComposer 等 hook 声明（useCallback deps 会在
-  // 每次 render 求值它，置后再引用会触发 TDZ：Cannot access before init）。
-  // 项目显示名（display_name）映射：ID 不可变，展示名可改。
-  const [projectLabels, setProjectLabels] = useState({})
-  useEffect(() => {
-    let alive = true
-    api.listProjects().then((d) => {
-      if (!alive) return
-      const m = {}
-      for (const p of d?.projects || []) if (p.display_name) m[p.name] = p.display_name
-      setProjectLabels(m)
-    }).catch(() => {})
-    return () => { alive = false }
-  }, [])
-  const projectLabel = (id) => projectLabels[id] || id
-
-  const activeProject = useMemo(
-    () => jobs?.find((j) => j.id === selectedJob)?.project || '',
-    [jobs, selectedJob],
-  )
-
-  // 一键生成会话标题：后端用最近对话调 omp 生成并写回 transcript 首行。
   const genTitle = async (id) => {
     if (titleBusy) return
     setTitleBusy(id)
     try {
       const data = await api.regenerateTitle(activeProject, id)
-      setJobTxs((prev) => (prev || []).map((x) => (x.id === id ? { ...x, title: data.title } : x)))
+      setLibrary((prev) => (prev || []).map((x) => (x.id === id ? { ...x, title: data.title } : x)))
       onToast?.('ok', '会话标题已更新')
     } catch (e) {
       setError(e.message || '标题生成失败')
@@ -325,21 +358,24 @@ export default function SessionsPage({ initialId, onToast }) {
       setTitleBusy('')
     }
   }
-  // ── 网页继续对话：SSE 流式事件转成 transcript 事件行，实时追加渲染 ──
-  // 注意协议语义：EventText.content 是增量（直接入队逐字）；EventThinking.content
-  // 是「当前累积全量」快照（同一 turn 会多次 flush），需与已显示量 diff 出增量，
-  // 否则快照整段重复追加（见首帧孤立「用户」bug）。工具调用直接插入。
+
+  // ── 网页继续对话：SSE 事件流（与旧实现一致） ──
+  const pushPending = useCallback((type, text) => {
+    const q2 = pendingRef.current
+    const last = q2[q2.length - 1]
+    if (last && last.type === type) last.text += text
+    else q2.push({ type, text })
+    setTypingTick((t) => t + 1)
+  }, [])
+
   const appendLive = useCallback((ev) => {
     if (ev.type === 'text') {
-      const c = ev.content
-      if (c) pushPending('text', c)
+      if (ev.content) pushPending('text', ev.content)
       return
     }
     if (ev.type === 'thinking') {
       const full = ev.content || ''
       if (!full) return
-      // 基线 = 已刷到界面的 thinking + 队列中尚未 flush 的 thinking（快照是
-      // 全量累积，需与「已表达+表达中」diff，避免快照背靠背时增量重复）。
       let expressed = thinkingShownRef.current
       for (let k = pendingRef.current.length - 1; k >= 0; k--) {
         if (pendingRef.current[k].type !== 'thinking') break
@@ -347,9 +383,9 @@ export default function SessionsPage({ initialId, onToast }) {
       }
       let inc = ''
       if (full.startsWith(expressed)) {
-        inc = full.slice(expressed.length)   // 快照较上次多出新增 delta
+        inc = full.slice(expressed.length)
       } else {
-        inc = full                           // 快照与基线不连续（新 turn 等）→ 重置
+        inc = full
         thinkingShownRef.current = ''
         pendingRef.current = pendingRef.current.filter((x) => x.type !== 'thinking')
       }
@@ -366,17 +402,8 @@ export default function SessionsPage({ initialId, onToast }) {
         return next
       })
     }
-  }, [])
+  }, [pushPending])
 
-  const pushPending = useCallback((type, text) => {
-    const q = pendingRef.current
-    const last = q[q.length - 1]
-    if (last && last.type === type) last.text += text
-    else q.push({ type, text })
-    setTypingTick((t) => t + 1)
-  }, [])
-
-  // 把一小段字符追加到当前 assistant 消息的 text / thinking 块。
   const appendChunk = useCallback((type, part) => {
     if (type === 'thinking') thinkingShownRef.current += part
     setLive((prev) => {
@@ -404,20 +431,19 @@ export default function SessionsPage({ initialId, onToast }) {
     if (!sending) { pendingRef.current = []; return }
     if (pendingRef.current.length === 0) return
     const t = setInterval(() => {
-      const q = pendingRef.current
-      const head = q[0]
-      if (!head) return
-      const n = Math.min(head.text.length, 2)   // 每拍 2 字符，约 40 字符/秒
-      const part = head.text.slice(0, n)
-      head.text = head.text.slice(n)
-      if (!head.text) q.shift()
-      appendChunk(head.type, part)
+      const q2 = pendingRef.current
+      const headEv = q2[0]
+      if (!headEv) return
+      const n = Math.min(headEv.text.length, 2)
+      const part = headEv.text.slice(0, n)
+      headEv.text = headEv.text.slice(n)
+      if (!headEv.text) q2.shift()
+      appendChunk(headEv.type, part)
       setTypingTick((t2) => t2 + 1)
     }, 25)
     return () => clearInterval(t)
   }, [sending, typingTick, appendChunk])
 
-  // 选择图片/文件附件：本地读为 base64 内联提交（不另走上传接口）。
   const onPickFile = useCallback((e) => {
     const files = Array.from(e.target.files || [])
     if (files.length === 0) return
@@ -437,10 +463,9 @@ export default function SessionsPage({ initialId, onToast }) {
     e.target.value = ''
   }, [])
 
-  // 发送：立即回显用户消息，再经 SSE 流式接收助手的回复。
   const sendComposer = useCallback(async () => {
     const text = composerText.trim()
-    if (sending || (!text && attachments.length === 0)) return
+    if (sending || (!text && attachments.length === 0) || !activeProject) return
     const blocks = []
     if (text) blocks.push({ type: 'text', text })
     attachments.forEach((a) => blocks.push({ type: 'text', text: a.kind === 'image' ? `🖼 ${a.name}` : `📎 ${a.name}` }))
@@ -450,69 +475,64 @@ export default function SessionsPage({ initialId, onToast }) {
     thinkingShownRef.current = ''
     setSendErr('')
     setSending(true)
-    // 立即清空输入区，界面马上反馈「已发送」，不必等整轮回复结束。
     setComposerText('')
+    const sent = attachments
     setAttachments([])
 
     try {
       const res = await api.chatTranscript(activeProject, selectedTx, {
         message: text,
-        images: attachments.filter((a) => a.kind === 'image').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
-        files: attachments.filter((a) => a.kind === 'file').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
+        images: sent.filter((a) => a.kind === 'image').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
+        files: sent.filter((a) => a.kind === 'file').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
       })
       if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
       const reader = res.body.getReader()
       const decoder = new TextDecoder()
       let buf = ''
-      // omp 每次 resume 会 fork 新 session 文件，原始 transcript 不会更新；
-      // done 携带新 id 时切换到续写后的会话，详情页显示完整续篇。
       let newTxId = ''
       for (;;) {
         const { done, value } = await reader.read()
         if (done) break
         buf += decoder.decode(value, { stream: true })
-        let nl
-        while ((nl = buf.indexOf('\n\n')) !== -1) {
-          const frame = buf.slice(0, nl)
-          buf = buf.slice(nl + 2)
-          for (const line of frame.split('\n')) {
-            if (!line.startsWith('data:')) continue
-            const data = line.slice(5).trim()
-            if (!data) continue
-            let msg
-            try { msg = JSON.parse(data) } catch { continue }
-            if (msg.type === 'error') setSendErr(msg.error || '对话出错')
-            else if (msg.type === 'done') newTxId = msg.id || ''
-            else appendLive(msg)
-          }
+        let idx
+        while ((idx = buf.indexOf('\n\n')) >= 0) {
+          const chunk = buf.slice(0, idx)
+          buf = buf.slice(idx + 2)
+          const line = chunk.split('\n').find((l) => l.startsWith('data: '))
+          if (!line) continue
+          let ev
+          try { ev = JSON.parse(line.slice(6)) } catch { continue }
+          if (ev.type === 'done') { newTxId = ev.id || ''; continue }
+          if (ev.type === 'error') { setSendErr(ev.message || 'stream error'); continue }
+          appendLive(ev)
         }
       }
-      if (newTxId && newTxId !== selectedTx) setSelectedTx(newTxId)
+      // omp resume 会 fork 新文件：done 携带新 id 就切换过去。
+      if (newTxId && newTxId !== selectedTx) {
+        setSelectedTx(newTxId)
+        await loadLibrary()
+      }
     } catch (err) {
       setSendErr(err.message || '发送失败')
     } finally {
-      // live 保留到轮询取回权威 transcript 后再清空（见 fetchOne），
-      // 避免发送结束到刷新之间回复内容断档。
       setSending(false)
+      setLive([])
+      pendingRef.current = []
+      thinkingShownRef.current = ''
     }
-  }, [sending, composerText, attachments, selectedTx, activeProject, appendLive])
+  }, [sending, composerText, attachments, selectedTx, activeProject, appendLive, loadLibrary])
 
-  // 历史（权威）与流式 live 拆分渲染：流式期间只重建 live 尾部，避免
-  // 整棵消息树每次重算导致的卡顿；结束后 live 由轮询刷新取代并清空。
   const histToolResults = useMemo(() => indexToolResults(txDetail || []), [txDetail])
   const histRendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, histToolResults, false)), [txDetail, histToolResults])
   const liveToolResults = useMemo(() => indexToolResults(live), [live])
   const liveRendered = useMemo(() => live.map((ev, i) => renderEvent(ev, (txDetail?.length || 0) + i, liveToolResults, sending)), [live, liveToolResults, txDetail, sending])
   const rendered = [...histRendered, ...liveRendered]
 
-  // 流式逐字追加时自动滚动到底，保证新内容可见。
   useEffect(() => {
     const el = flowRef.current
     if (el && stickBottom && (sending || live.length)) el.scrollTop = el.scrollHeight
   }, [live, sending, stickBottom])
 
-  // 进入/切换会话时滚到最新消息（底部），而非停在最早消息。
-  // 需等 txDetail 渲染就绪后再滚（fetch 返回后才有实际高度）。
   const [scrollOnLoad, setScrollOnLoad] = useState(false)
   useEffect(() => { setScrollOnLoad(!!selectedTx) }, [selectedTx])
   useEffect(() => {
@@ -524,71 +544,203 @@ export default function SessionsPage({ initialId, onToast }) {
     return () => clearTimeout(t)
   }, [scrollOnLoad, txDetail])
 
+  const toggleChecked = (id) => {
+    setChecked((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]))
+  }
+
+  const archiveChecked = async () => {
+    if (checked.length === 0) return
+    try {
+      await api.archiveSessions(checked)
+      onToast?.('ok', `已归档 ${checked.length} 个会话，可在「归档」中恢复`)
+      setChecked([])
+      if (checked.includes(selectedTx)) { setSelectedTx(''); setTxDetail(null) }
+      await loadLibrary()
+    } catch (e) { setError(e.message) }
+  }
+
+  const restoreChecked = async () => {
+    if (checked.length === 0) return
+    try {
+      await api.unarchiveSessions(checked)
+      onToast?.('ok', `已恢复 ${checked.length} 个会话`)
+      setChecked([])
+      await loadLibrary()
+    } catch (e) { setError(e.message) }
+  }
+
+  const folderStats = (f) => {
+    const parts = []
+    if (f.items.length) parts.push(`${f.items.length} 会话`)
+    if (f.projects.length) parts.push(`${f.projects.length} 项目`)
+    if (!f.items.length) parts.push('无会话')
+    return parts.join(' · ')
+  }
+
   return (
-    <div className="sess-page">
-      {/* 左栏：定时任务列表 */}
-      <div className="sess-list">
-        <div className="sess-list-head"><span>定时任务</span></div>
+    <div className="sess-page lib-page">
+      {/* 左栏：文件夹（含其下项目）；齿轮打开配置抽屉 */}
+      <div className="sess-list lib-folders">
+        <div className="sess-list-head">
+          <span>文件夹 / 项目</span>
+          <button
+            className={`btn btn-sm ${view === 'archived' ? 'btn-solid' : 'btn-ghost'}`}
+            onClick={() => { setView(view === 'archived' ? 'active' : 'archived'); setChecked([]); setSelectedTx('') }}
+            title="查看已归档的会话"
+          >
+            归档{archivedCount ? ` (${archivedCount})` : ''}
+          </button>
+        </div>
         {error && <div className="err-txt" style={{ padding: 8 }}>{error}</div>}
-        {jobs === null && <div className="sess-empty">加载中…</div>}
-        {jobs !== null && jobs.length === 0 && <div className="sess-empty">暂无定时任务。创建后这里会出现，可查看它名下每次执行的会话。</div>}
-        {jobs && jobs.map((j) => {
-          const n = j.session_ids?.length ?? (j.last_session_id ? 1 : 0)
-          return (
+        <div
+          className={`sess-item ${folder === ALL ? 'sess-item-on' : ''}`}
+          onClick={() => setFolder(ALL)}
+        >
+          <div className="sess-item-name">全部会话</div>
+          <div className="sess-item-sub">{(library || []).length} 个</div>
+        </div>
+        {library === null && <div className="sess-empty">加载中…</div>}
+        {folders.map((f) => (
+          <div key={f.cwd || '__none__'}>
             <div
-              key={j.id}
-              className={`sess-item ${j.id === selectedJob ? 'sess-item-on' : ''}`}
-              onClick={() => { setSelectedJob(j.id) }}
+              className={`sess-item ${folder === f.cwd ? 'sess-item-on' : ''}`}
+              onClick={() => setFolder(f.cwd)}
+              title={f.cwd || '没有记录 cwd 的会话'}
             >
-              <div className="sess-item-name">{j.description || j.id}</div>
-              <div className="sess-item-sub">{j.id} · {n} 会话</div>
+              <div className="sess-item-name">
+                {f.cwd ? `📁 ${f.label.split('/').filter(Boolean).pop() || f.label}` : '未归类'}
+                {!f.cwd && <span className="bot-tag">无 cwd</span>}
+              </div>
+              <div className="sess-item-sub" title={f.cwd || ''}>{folderStats(f)}</div>
             </div>
-          )
-        })}
+            {f.projects.length > 0 && (
+              <div className="lib-badges">
+                {f.projects.map((p) => (
+                  <span key={p.name} className={`lib-badge ${p.running === false ? 'lib-badge-off' : ''}`}>
+                    <span onClick={() => setConfigProject(p.name)} title="编辑该项目配置">
+                      {p.display_name || p.name}
+                    </span>
+                    <button
+                      className="lib-gear"
+                      title="项目配置"
+                      onClick={(e) => { e.stopPropagation(); setConfigProject(p.name) }}
+                    >⚙</button>
+                  </span>
+                ))}
+              </div>
+            )}
+          </div>
+        ))}
+        <div className="lib-foot">
+          <button
+            className="btn btn-sm btn-green"
+            onClick={() => { window.location.hash = '/projects' }}
+          >+ 新建项目</button>
+        </div>
       </div>
 
-      {/* 右栏：该任务的会话列表 / 会话详情 */}
-      <div className="sess-detail" ref={flowRef} onScroll={onDetailScroll}>
-        {!selectedJob && <div className="sess-empty">← 选择一个定时任务，查看它名下所有会话</div>}
-
-        {selectedJob && !selectedTx && (
-          <>
-            <div className="sess-detail-head">
-              <div className="sess-detail-title">{jobs?.find((j) => j.id === selectedJob)?.description || selectedJob}</div>
-              <div className="sess-detail-sub">{projectLabel(activeProject)} · 该任务执行的会话（只列定时任务）</div>
+      {/* 中栏：会话列表；来源徽标 + 过滤 + 多选归档 */}
+      <div className="sess-list lib-txs">
+        <div className="sess-list-head">
+          <span>{view === 'archived' ? '已归档' : '会话'}</span>
+          {checked.length > 0 && (
+            view === 'archived'
+              ? <button className="btn btn-sm btn-green" onClick={restoreChecked}>恢复 {checked.length}</button>
+              : <button className="btn btn-sm btn-red" onClick={archiveChecked}>归档 {checked.length}</button>
+          )}
+        </div>
+        <div className="lib-filters">
+          <input
+            className="input"
+            placeholder="搜索标题或正文，回车"
+            value={qInput}
+            onChange={(e) => setQInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') setQ(qInput.trim()) }}
+            spellCheck={false}
+          />
+          <div className="lib-filter-row">
+            <select className="input" value={source} onChange={(e) => setSource(e.target.value)}>
+              <option value="all">全部来源</option>
+              <option value="cron">定时任务</option>
+              <option value="chat">对话</option>
+            </select>
+            <select className="input" value={days} onChange={(e) => setDays(Number(e.target.value))}>
+              <option value={7}>最近 7 天</option>
+              <option value={30}>最近 30 天</option>
+              <option value={90}>最近 90 天</option>
+              <option value={0}>全部时间</option>
+            </select>
+          </div>
+          {q && (
+            <div className="lib-query">
+              关键词：<code>{q}</code>
+              <button className="btn btn-sm btn-ghost" onClick={() => { setQ(''); setQInput('') }}>清除</button>
             </div>
-            <div className="t-flow">
-              {jobTxs === null && <div className="sess-empty">加载中…</div>}
-              {jobTxs !== null && jobTxs.length === 0 && (
-                <div className="sess-empty">该任务还没有执行记录。运行一次后（定时触发或手动「运行」），这里会出现它的会话。</div>
-              )}
-              {jobTxs && jobTxs.map((t) => (
-                <div key={t.id} className="sess-tx-item" onClick={() => setSelectedTx(t.id)}>
-                  <div className="sess-tx-name">{t.title || t.name}</div>
-                  <div className="sess-tx-sub">
-                    <span>{formatTime(t.updated_at)} · {(t.size / 1024).toFixed(1)} KB</span>
-                    <button
-                      className="btn btn-sm btn-ghost sess-title-btn"
-                      disabled={titleBusy === t.id}
-                      title="根据最近对话重新生成标题"
-                      onClick={(e) => { e.stopPropagation(); genTitle(t.id) }}
-                    >
-                      {titleBusy === t.id ? '生成中…' : '生成标题'}
-                    </button>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </>
+          )}
+        </div>
+        {library === null && <div className="sess-empty">加载中…</div>}
+        {library !== null && visible.length === 0 && (
+          <div className="sess-empty">
+            {view === 'archived' ? '归档里还没有会话。' : '没有匹配的会话。'}
+          </div>
         )}
+        <div className="lib-tx-scroll">
+          {visible.map((t) => (
+            <div
+              key={t.id}
+              className={`sess-tx-item ${selectedTx === t.id ? 'sess-tx-on' : ''}`}
+              onClick={() => setSelectedTx(t.id)}
+            >
+              <input
+                type="checkbox"
+                className="lib-check"
+                checked={checked.includes(t.id)}
+                onChange={(e) => { e.stopPropagation(); toggleChecked(t.id) }}
+                onClick={(e) => e.stopPropagation()}
+              />
+              <div className="lib-tx-main">
+                <div className="sess-tx-name">
+                  {t.job_id
+                    ? <span className="badge badge-cron" title={`定时任务：${t.job_title || t.job_id}`}>定时任务</span>
+                    : <span className="badge badge-chat">对话</span>}
+                  <span className="lib-tx-title" title={t.title || t.id}>{t.title || t.id}</span>
+                </div>
+                <div className="sess-tx-sub">
+                  <span>{formatTime(t.updated_at)} · {formatBytes(t.size)}</span>
+                  {t.cwd && folder === ALL && <span className="lib-cwd" title={t.cwd}>{t.cwd.split('/').filter(Boolean).pop()}</span>}
+                  <button
+                    className="btn btn-sm btn-ghost sess-title-btn"
+                    disabled={titleBusy === t.id}
+                    title="根据最近对话重新生成标题"
+                    onClick={(e) => { e.stopPropagation(); genTitle(t.id) }}
+                  >
+                    {titleBusy === t.id ? '生成中…' : '生成标题'}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
 
+      {/* 右栏：会话详情 / 继续对话 */}
+      <div className="sess-detail" ref={flowRef} onScroll={onDetailScroll}>
+        {!selectedTx && (
+          <div className="sess-empty">← 选择文件夹与会话；定时任务产生的会话带「定时任务」徽标</div>
+        )}
         {selectedTx && (
           <>
             <div className="sess-detail-head">
-              <button className="btn btn-sm btn-ghost" onClick={() => { setSelectedTx(''); setTxDetail(null) }}>← 返回任务会话</button>
+              <button className="btn btn-sm btn-ghost" onClick={() => { setSelectedTx(''); setTxDetail(null) }}>← 返回列表</button>
               <button className="btn btn-sm btn-ghost sess-copy" onClick={copyTx}>{copied.tx ? '已复制' : '复制文本'}</button>
-              <div className="sess-detail-title">{txDetail ? (jobTxs?.find((t) => t.id === selectedTx)?.title || selectedTx) : selectedTx}</div>
-              <div className="sess-detail-sub">{projectLabel(activeProject)} · {selectedTx}</div>
+              <div className="sess-detail-title">{txDetail ? (currentTx?.title || selectedTx) : selectedTx}</div>
+              <div className="sess-detail-sub">
+                {currentTx?.job_id
+                  ? `定时任务 · ${currentTx.job_title || currentTx.job_id}`
+                  : '对话'}
+                {currentTx?.cwd ? ` · ${currentTx.cwd}` : ''}
+                {` · ${selectedTx}`}
+              </div>
             </div>
             <div className="t-flow">
               {txLoading && !txDetail && <div className="sess-empty">加载中…</div>}
@@ -658,6 +810,21 @@ export default function SessionsPage({ initialId, onToast }) {
           </>
         )}
       </div>
+
+      {/* 配置抽屉：齿轮打开，不离开会话列表 */}
+      {configProject && (
+        <div className="prj-modal-mask" style={{ zIndex: 80 }} onClick={(e) => { if (e.target === e.currentTarget) setConfigProject('') }}>
+          <div className="prj-drawer">
+            <ProjectConfigPanel
+              project={configProject}
+              onToast={onToast}
+              onSaved={loadProjects}
+              onClose={() => setConfigProject('')}
+              onDeleted={() => { setConfigProject(''); loadProjects(); loadLibrary() }}
+            />
+          </div>
+        </div>
+      )}
     </div>
   )
 }

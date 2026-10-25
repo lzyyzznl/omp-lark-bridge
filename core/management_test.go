@@ -3545,3 +3545,38 @@ func TestMgmt_Transcripts_RegenTitle(t *testing.T) {
 		t.Errorf("inserted title = %q, want 一键生成标题", v)
 	}
 }
+
+func TestMgmt_CronPatchProject(t *testing.T) {
+	mgmt, ts, _ := testManagementServer(t, "")
+	store, err := NewCronStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := NewCronScheduler(store)
+	mgmt.SetCronScheduler(cs)
+	mgmt.SetListConfigProjects(func() ([]string, error) {
+		return []string{"test-project", "other-project"}, nil
+	})
+	if err := store.Add(&CronJob{
+		ID: "job1", Project: "test-project", SessionKey: "feishu:chat:1",
+		CronExpr: "0 9 * * *", Prompt: "p", Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	status, got := doReq(t, http.MethodPatch, ts.URL+"/api/v1/cron/job1", map[string]any{"project": "other-project"})
+	if status != http.StatusOK {
+		t.Fatalf("patch project status = %d (%v), want 200", status, got)
+	}
+	if p := store.Get("job1").Project; p != "other-project" {
+		t.Errorf("job project = %q, want other-project", p)
+	}
+
+	status, _ = doReq(t, http.MethodPatch, ts.URL+"/api/v1/cron/job1", map[string]any{"project": "missing-project"})
+	if status != http.StatusBadRequest {
+		t.Errorf("unknown project status = %d, want 400", status)
+	}
+	if p := store.Get("job1").Project; p != "other-project" {
+		t.Errorf("job project changed on invalid update: %q", p)
+	}
+}

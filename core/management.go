@@ -1159,6 +1159,27 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 	mgmtError(w, http.StatusMethodNotAllowed, "GET, PATCH or DELETE only")
 }
 
+// projectExists reports whether name is a known project: running (engine) or
+// merely configured (not yet started).
+func (m *ManagementServer) projectExists(name string) bool {
+	m.mu.RLock()
+	_, running := m.engines[name]
+	m.mu.RUnlock()
+	if running {
+		return true
+	}
+	if m.listConfigProjects != nil {
+		if names, err := m.listConfigProjects(); err == nil {
+			for _, n := range names {
+				if n == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
 // detachEngine drops a project's running engine from the management map and
 // scheduler registrations, stopping it asynchronously. Used when a project key
 // disappears (delete) or changes (rename), so the UI never lists a stale key
@@ -1954,6 +1975,14 @@ func (m *ManagementServer) handleCronByID(w http.ResponseWriter, r *http.Request
 			return
 		}
 		for field, value := range updates {
+			if field == "project" {
+				p, _ := value.(string)
+				p = strings.TrimSpace(p)
+				if p == "" || !m.projectExists(p) {
+					mgmtError(w, http.StatusBadRequest, fmt.Sprintf("unknown project %q", p))
+					return
+				}
+			}
 			if err := m.cronScheduler.UpdateJob(id, field, value); err != nil {
 				mgmtError(w, http.StatusBadRequest, fmt.Sprintf("update %s: %s", field, err.Error()))
 				return

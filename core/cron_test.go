@@ -1186,3 +1186,40 @@ func TestUpdateJobField_GoalMode(t *testing.T) {
 		t.Error("job.GoalModeEnabled() = true, want false after PATCH false")
 	}
 }
+
+// 定时任务可以改绑项目：立即生效（执行时按 job.Project 查引擎），并清空旧项目的执行记录。
+func TestCronScheduler_UpdateJob_ProjectRebind(t *testing.T) {
+	store, err := NewCronStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := NewCronScheduler(store)
+	job := &CronJob{
+		ID:            "job1",
+		Project:       "alpha",
+		SessionKey:    "feishu:chat:1",
+		CronExpr:      "0 9 * * *",
+		Prompt:        "p",
+		Enabled:       true,
+		LastSessionID: "old-tx",
+		SessionIDs:    []string{"old-tx-1", "old-tx-2"},
+	}
+	if err := cs.AddJob(job); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := cs.UpdateJob("job1", "project", "beta"); err != nil {
+		t.Fatalf("UpdateJob(project): %v", err)
+	}
+	got := store.Get("job1")
+	if got.Project != "beta" {
+		t.Errorf("project = %q, want beta", got.Project)
+	}
+	if got.LastSessionID != "" || len(got.SessionIDs) != 0 {
+		t.Errorf("stale execution records kept after rebind: last=%q ids=%v", got.LastSessionID, got.SessionIDs)
+	}
+
+	if err := cs.UpdateJob("job1", "project", "   "); err == nil {
+		t.Error("empty project should be rejected")
+	}
+}

@@ -401,7 +401,25 @@ func (s *CronStore) Update(id string, field string, value any) bool {
 	return false
 }
 
-// updateJobField sets a field on a CronJob by reflection. Returns error for unknown fields.
+// ResetSessionHistory clears a job's transcript bookkeeping. Used when the
+// job is rebound to another project: transcript ids only make sense inside the
+// project whose session store produced them.
+func (s *CronStore) ResetSessionHistory(id string) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, j := range s.jobs {
+		if j.ID == id {
+			j.LastSessionID = ""
+			j.SessionIDs = nil
+			if err := s.save(); err != nil {
+				slog.Warn("cron: failed to save after session history reset", "error", err)
+			}
+			return true
+		}
+	}
+	return false
+}
+
 func updateJobField(job *CronJob, field string, value any) error {
 	switch field {
 	case "project":
@@ -663,6 +681,15 @@ func (cs *CronScheduler) UpdateJob(id string, field string, value any) error {
 		}
 	}
 
+	// Validate project binding if updating project.
+	if field == "project" {
+		v, ok := value.(string)
+		if !ok || strings.TrimSpace(v) == "" {
+			return fmt.Errorf("project must be a non-empty string")
+		}
+		value = strings.TrimSpace(v)
+	}
+
 	// Validate mode if updating mode field
 	if field == "mode" {
 		if v, ok := value.(string); ok && v != "" {
@@ -711,6 +738,11 @@ func (cs *CronScheduler) UpdateJob(id string, field string, value any) error {
 	// Update the field
 	if !cs.store.Update(id, field, value) {
 		return fmt.Errorf("failed to update field %q (may be read-only or invalid type)", field)
+	}
+
+	if field == "project" {
+		// 换项目后旧项目的执行记录不再适用：transcript id 属于旧项目的会话目录。
+		cs.store.ResetSessionHistory(id)
 	}
 
 	// Reschedule if needed

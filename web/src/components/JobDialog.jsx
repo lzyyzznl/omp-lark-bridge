@@ -28,6 +28,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
   const [agentOptions, setAgentOptions] = useState([])
   const [sessionOptions, setSessionOptions] = useState([])
   const [project, setProject] = useState('')
+  const [projects, setProjects] = useState([]) // [{name, display_name}]；显示名，绑定 ID
   const [touched, setTouched] = useState(false)
   // Esc 分层关闭：先收展开的提示词弹窗，再关整个对话框。
   useEsc(open && !expanded, onClose)
@@ -61,9 +62,12 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
     ;(async () => {
       try {
         const projs = await api.listProjects()
-        const proj = projs?.projects?.[0]?.name
-        if (!alive || !proj) return
-        if (!job?.project) setProject(proj) // 新建任务 → 显示默认项目
+        const list = (projs?.projects || []).filter((p) => p.name)
+        if (!alive) return
+        setProjects(list)
+        const proj = job?.project || list[0]?.name
+        if (!proj) return
+        setProject(proj)
         const [m, s, ag] = await Promise.all([api.getModels(proj), api.getSessions(proj), api.listAgents().catch(() => null)])
         if (!alive) return
         setModelOptions(m?.models || [])
@@ -105,6 +109,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
       clean.exec = exec.trim()
       clean.work_dir = workDir.trim() || undefined
     }
+    clean.project = project
     if (mode === 'new') clean.session_key = sessionKey.trim()
     onSubmit(clean)
   }
@@ -128,11 +133,14 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
           </div>
 
           <div className="field">
-            <label>所属项目（会话启动文件夹）</label>
-            <div className="input" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-              <span className="mono">{project || '…'}</span>
-              <span className="help" style={{ margin: 0 }}>任务始终挂靠项目；运行时在项目工作目录下启会话</span>
-            </div>
+            <label htmlFor="jd-project">所属项目</label>
+            <select id="jd-project" className="input" value={project} onChange={(e) => setProject(e.target.value)}>
+              {projects.length === 0 && <option value={project}>{project || '…'}</option>}
+              {projects.map((p) => (
+                <option key={p.name} value={p.name}>{p.display_name || p.name}</option>
+              ))}
+            </select>
+            <div className="help">运行时在所选项目的工作目录下启会话。换项目会清空旧项目下的执行记录（会话列表）。</div>
           </div>
 
           <div className="field">

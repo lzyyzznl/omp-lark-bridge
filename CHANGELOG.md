@@ -68,6 +68,34 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `%TEMP%\omp-lark-bridge-restart.log`。仅在计划任务守护模式下生效
   （`CC_LOG_FILE` 存在），前台运行仍明确报错，避免误停任务。
 
+### Fixed（审计修复·调度/飞书/并发/竞态）
+- timer fire 时**同步标记并落盘** `Fired`（结果后置 `SetResult` 记录）：修复重启 /
+  重扫过后已触发的一次性任务被启动扫描重复执行；解锁 CUJ-E4（原 flaky 被 `t.Skip`）。
+- cron 调度链套 `SkipIfStillRunning` + `Recover`，且 `runJob`/`RunJobNow` 增加 per-job
+  执行互斥（`running sync.Map`）：杜绝同一任务并发重入、panic 不再杀死调度 goroutine，
+  手动触发与定时触发同时到达时只跑一次。
+- 定时任务（cron/timer）按挂钟超时**真正中止 turn**：超时经
+  `AgentSessionCanceller.CancelTurn`/关闭会话打断 agent 轮次，并等待 10s grace 让写入
+  落定后返回 `job timed out`，后台不再持续产出后续回复。
+- 飞书非幂等写 API（reply / create / upload / Patch / Delete）遇到网络层 transient
+  错误**不再盲重试**（`withTransientRetryNoRepeat`）：首请求可能已送达，重试会造成
+  重复投递；token 刷新（服务端可安全重试）仍保留。
+- 同会话消息按 `sessionKey` **串行派发**（每会话一个 FIFO goroutine）：修复文本消息
+  抢跑图片批次的 old-create_time 判定，导致先被引擎 watermark 丢弃、图片批次晚到
+  被当成过期数据。
+- 共享 WebSocket 组引入 primary：primary 退出后晋升剩余平台并重建连接
+  （`promoteSharedWSPrimary`），组不再失去事件源；webhook 模式不再注册共享组，
+  第二个同 app 平台不再被误判 secondary 而静默丢事件。
+- operator RPC `waitResponse` 增加 30s per-call 超时（哨兵 `ErrCommandTimeout`）：
+  omp 进程存活但不响应时不再永久搁浅；响应帧改非阻塞投递，防止 readLoop 泄漏。
+- `SessionManager.Save` 改"锁内快照 + 锁外序列化"（`saveMu` 串行原子写）：慢盘写
+  不再阻塞消息热路径上的并发会话变更。
+- 清理三处进程级泄漏：omp ask/select 对话框 1h TTL 回收（turn 边界清扫、会话关闭
+  `closeAsks`）、飞书 `activeThreadSessions` 24h TTL sweep、`cardActionMsgIDs`
+  1h TTL 淘汰（只 patch 仍属近期的卡片）。
+- 竞态：`CronStore`/`TimerStore` 读方法返回深拷贝（`clone`），消除记录方与读方共享
+  指针的数据竞争；测试桩 `sentPrompts` 加锁读取，`go test -race` 全量干净。
+
 ### Added
 - cron 任务新增 `goal_mode`（默认开启）：以 omp goal 模式执行 —— 全新会话、
   按目标自主推进，不依赖会话恢复。Web JobDialog 勾选；API `POST/GET/PATCH`

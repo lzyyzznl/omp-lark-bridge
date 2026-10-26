@@ -522,11 +522,12 @@ func TestCronScheduler_RunJobNow_UsesSnapshot(t *testing.T) {
 			if sent[0] != "⏰ Original description" {
 				t.Fatalf("sent[0] = %q, want original description", sent[0])
 			}
-			if len(agentSession.sentPrompts) != 1 || !strings.Contains(agentSession.sentPrompts[0], "original prompt") {
-				t.Fatalf("agent prompts = %#v, want original prompt", agentSession.sentPrompts)
+			sp := agentSession.getSentPrompts()
+			if len(sp) != 1 || !strings.Contains(sp[0], "original prompt") {
+				t.Fatalf("agent prompts = %#v, want original prompt", sp)
 			}
-			if strings.Contains(agentSession.sentPrompts[0], "mutated prompt") {
-				t.Fatalf("agent prompt used mutated value: %#v", agentSession.sentPrompts)
+			if strings.Contains(sp[0], "mutated prompt") {
+				t.Fatalf("agent prompt used mutated value: %#v", sp)
 			}
 			found, lastRunSet, _ := cronJobRunStatus(store, "snapshot1")
 			if !found {
@@ -552,7 +553,9 @@ type transcriptAgentSession struct {
 }
 
 func (s *transcriptAgentSession) Send(prompt string, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	s.mu.Lock()
 	s.sentPrompts = append(s.sentPrompts, prompt)
+	s.mu.Unlock()
 	s.sendOnce.Do(func() {
 		if s.transcript != "" {
 			s.events <- Event{Type: EventText, Content: "", SessionID: s.transcript}

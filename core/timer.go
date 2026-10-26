@@ -36,6 +36,25 @@ type TimerJob struct {
 	FailStreak int `json:"fail_streak,omitempty"`
 }
 
+// clone returns a deep copy of the job. Store read methods hand out clones so
+// callers never share mutable state with the store, whose writable fields are
+// updated under the store mutex by background scheduler goroutines.
+func (j *TimerJob) clone() *TimerJob {
+	if j == nil {
+		return nil
+	}
+	c := *j
+	if j.Silent != nil {
+		v := *j.Silent
+		c.Silent = &v
+	}
+	if j.TimeoutMins != nil {
+		v := *j.TimeoutMins
+		c.TimeoutMins = &v
+	}
+	return &c
+}
+
 // IsShellJob returns true if the job runs a shell command directly.
 func (j *TimerJob) IsShellJob() bool {
 	return j.Exec != ""
@@ -162,13 +181,35 @@ func (s *TimerStore) SetMute(id string, mute bool) bool {
 	return false
 }
 
-func (s *TimerStore) MarkFired(id string, err error) {
+// MarkFired marks a one-shot timer as fired (Fired + FiredAt) and persists it
+// immediately. It is called synchronously when the timer fires, before the
+// turn runs, so a restart or rescan between fire and turn completion cannot
+// re-dispatch the job. The turn's outcome is recorded separately by SetResult.
+// Returns false when no job with the id exists.
+func (s *TimerStore) MarkFired(id string) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, j := range s.jobs {
 		if j.ID == id {
 			j.Fired = true
 			j.FiredAt = time.Now()
+			if saveErr := s.save(); saveErr != nil {
+				slog.Warn("timer: failed to save after fire", "error", saveErr)
+			}
+			return true
+		}
+	}
+	return false
+}
+
+// SetResult records a fired timer's outcome (error and fail streak) after its
+// turn completes. It never touches Fired/FiredAt: those were set by MarkFired
+// at fire time.
+func (s *TimerStore) SetResult(id string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, j := range s.jobs {
+		if j.ID == id {
 			if err != nil {
 				j.LastError = err.Error()
 				j.FailStreak++
@@ -177,18 +218,28 @@ func (s *TimerStore) MarkFired(id string, err error) {
 				j.FailStreak = 0
 			}
 			if saveErr := s.save(); saveErr != nil {
-				slog.Warn("timer: failed to save after mark fired", "error", saveErr)
+				slog.Warn("timer: failed to save after result", "error", saveErr)
 			}
 			return
 		}
 	}
 }
 
+// MarkFiredWithResult fires a job and records its outcome in one operation.
+// Used for jobs that fail before their turn ever runs (stale, missing project).
+func (s *TimerStore) MarkFiredWithResult(id string, err error) {
+	if s.MarkFired(id) {
+		s.SetResult(id, err)
+	}
+}
+
 func (s *TimerStore) List() []*TimerJob {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*TimerJob, len(s.jobs))
-	copy(out, s.jobs)
+	out := make([]*TimerJob, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		out = append(out, j.clone())
+	}
 	return out
 }
 
@@ -198,7 +249,7 @@ func (s *TimerStore) ListByProject(project string) []*TimerJob {
 	var out []*TimerJob
 	for _, j := range s.jobs {
 		if j.Project == project {
-			out = append(out, j)
+			out = append(out, j.clone())
 		}
 	}
 	return out
@@ -210,7 +261,7 @@ func (s *TimerStore) ListBySessionKey(sessionKey string) []*TimerJob {
 	var out []*TimerJob
 	for _, j := range s.jobs {
 		if j.SessionKey == sessionKey {
-			out = append(out, j)
+			out = append(out, j.clone())
 		}
 	}
 	return out
@@ -221,7 +272,7 @@ func (s *TimerStore) Get(id string) *TimerJob {
 	defer s.mu.Unlock()
 	for _, j := range s.jobs {
 		if j.ID == id {
-			return j
+			return j.clone()
 		}
 	}
 	return nil
@@ -234,7 +285,7 @@ func (s *TimerStore) ListPending() []*TimerJob {
 	var out []*TimerJob
 	for _, j := range s.jobs {
 		if !j.Fired {
-			out = append(out, j)
+			out = append(out, j.clone())
 		}
 	}
 	return out
@@ -319,7 +370,7 @@ func (ts *TimerScheduler) Start() error {
 				missed++
 			} else {
 				slog.Warn("timer: skipping stale job", "id", job.ID, "scheduled_at", job.ScheduledAt, "overdue", -delay)
-				ts.store.MarkFired(job.ID, fmt.Errorf("missed by %v (stale)", -delay))
+				ts.store.MarkFiredWithResult(job.ID, fmt.Errorf("missed by %v (stale)", -delay))
 				skipped++
 			}
 		} else {
@@ -411,11 +462,16 @@ func (ts *TimerScheduler) executeJob(jobID string) {
 
 	if !ok {
 		slog.Error("timer: project not found", "job", jobID, "project", job.Project)
-		ts.store.MarkFired(jobID, fmt.Errorf("project %q not found", job.Project))
+		ts.store.MarkFiredWithResult(jobID, fmt.Errorf("project %q not found", job.Project))
 		return
 	}
 
 	slog.Info("timer: executing job", "id", jobID, "project", job.Project, "prompt", truncateStr(job.Prompt, 60))
+
+	// Mark the job Fired synchronously BEFORE starting the turn so a restart
+	// or rescan between fire and turn completion cannot re-dispatch it. The
+	// turn's outcome (error / fail streak) is recorded below via SetResult.
+	ts.store.MarkFired(jobID)
 
 	done := make(chan error, 1)
 	go func() {
@@ -434,7 +490,7 @@ func (ts *TimerScheduler) executeJob(jobID string) {
 		err = <-done
 	}
 
-	ts.store.MarkFired(jobID, err)
+	ts.store.SetResult(jobID, err)
 
 	if err != nil {
 		slog.Error("timer: job failed", "id", jobID, "error", err)

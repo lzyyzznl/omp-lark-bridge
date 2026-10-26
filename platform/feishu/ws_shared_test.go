@@ -108,3 +108,56 @@ func TestSharedWSGroup_DifferentAppIDs(t *testing.T) {
 	unregisterSharedWS(p1)
 	unregisterSharedWS(p2)
 }
+
+// TestSharedWSGroup_PrimaryFailover verifies that when the primary exits the
+// first remaining platform takes over as primary (so a fresh WebSocket can be
+// started), and that platforms registered afterwards are still secondary.
+func TestSharedWSGroup_PrimaryFailover(t *testing.T) {
+	cleanup := func() {
+		sharedWSMu.Lock()
+		defer sharedWSMu.Unlock()
+		for k := range sharedWSGroups {
+			delete(sharedWSGroups, k)
+		}
+	}
+	cleanup()
+	defer cleanup()
+
+	p1 := &Platform{appID: "cli_failover", domain: "feishu.cn"}
+	p2 := &Platform{appID: "cli_failover", domain: "feishu.cn"}
+	p3 := &Platform{appID: "cli_failover", domain: "feishu.cn"}
+
+	g, isPrimary1 := registerSharedWS(p1)
+	if !isPrimary1 {
+		t.Fatal("first platform should be primary")
+	}
+	if _, isPrimary2 := registerSharedWS(p2); isPrimary2 {
+		t.Fatal("second platform should not be primary")
+	}
+	if _, isPrimary3 := registerSharedWS(p3); isPrimary3 {
+		t.Fatal("third platform should not be primary")
+	}
+
+	// Primary exits with members remaining -> first remaining platform is the
+	// new primary, ready for promoteSharedWSPrimary to start its connection.
+	if remaining := unregisterSharedWS(p1); remaining != 2 {
+		t.Fatalf("remaining = %d, want 2", remaining)
+	}
+	g.mu.RLock()
+	np := g.primary
+	g.mu.RUnlock()
+	if np != p2 {
+		t.Fatalf("new primary = %v, want p2", np)
+	}
+
+	// A platform registering after failover must be secondary, not primary
+	// (the previous deadlock where the group silently lost its event source).
+	late := &Platform{appID: "cli_failover", domain: "feishu.cn"}
+	if _, isPrimaryLate := registerSharedWS(late); isPrimaryLate {
+		t.Fatal("late-registering platform should not become primary")
+	}
+
+	unregisterSharedWS(p2)
+	unregisterSharedWS(p3)
+	unregisterSharedWS(late)
+}

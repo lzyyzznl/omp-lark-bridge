@@ -54,6 +54,33 @@ type CronJob struct {
 	FailStreak int `json:"fail_streak,omitempty"`
 }
 
+// clone returns a deep copy of the job. Store read methods hand out clones so
+// callers never share mutable state with the store, whose writable fields are
+// updated under the store mutex by background scheduler goroutines
+// (recordCronLastSession mutates its caller's copy in engine.go).
+func (j *CronJob) clone() *CronJob {
+	if j == nil {
+		return nil
+	}
+	c := *j
+	if j.SessionIDs != nil {
+		c.SessionIDs = append([]string(nil), j.SessionIDs...)
+	}
+	if j.Silent != nil {
+		v := *j.Silent
+		c.Silent = &v
+	}
+	if j.GoalMode != nil {
+		v := *j.GoalMode
+		c.GoalMode = &v
+	}
+	if j.TimeoutMins != nil {
+		v := *j.TimeoutMins
+		c.TimeoutMins = &v
+	}
+	return &c
+}
+
 // IsShellJob returns true if the job runs a shell command directly.
 func (j *CronJob) IsShellJob() bool {
 	return j.Exec != ""
@@ -337,18 +364,19 @@ func (s *CronStore) MarkRun(id string, err error) {
 func (s *CronStore) List() []*CronJob {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	out := make([]*CronJob, len(s.jobs))
-	copy(out, s.jobs)
+	out := make([]*CronJob, 0, len(s.jobs))
+	for _, j := range s.jobs {
+		out = append(out, j.clone())
+	}
 	return out
 }
-
 func (s *CronStore) ListByProject(project string) []*CronJob {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var out []*CronJob
 	for _, j := range s.jobs {
 		if j.Project == project {
-			out = append(out, j)
+			out = append(out, j.clone())
 		}
 	}
 	return out
@@ -360,7 +388,7 @@ func (s *CronStore) ListBySessionKey(sessionKey string) []*CronJob {
 	var out []*CronJob
 	for _, j := range s.jobs {
 		if j.SessionKey == sessionKey {
-			out = append(out, j)
+			out = append(out, j.clone())
 		}
 	}
 	return out
@@ -371,7 +399,7 @@ func (s *CronStore) Get(id string) *CronJob {
 	defer s.mu.Unlock()
 	for _, j := range s.jobs {
 		if j.ID == id {
-			return j
+			return j.clone()
 		}
 	}
 	return nil
@@ -544,14 +572,19 @@ type CronScheduler struct {
 	engines            map[string]*Engine // project name → engine
 	mu                 sync.RWMutex
 	entries            map[string]cron.EntryID // job ID → cron entry
+	running            sync.Map                // job ID → struct{}: jobs with a run in progress
 	defaultSilent      bool                    // global default for suppressing cron start notifications
 	defaultSessionMode string                  // global default session mode; "" = reuse, "new_per_run" = fresh session each run
 }
-
 func NewCronScheduler(store *CronStore) *CronScheduler {
 	return &CronScheduler{
-		store:   store,
-		cron:    cron.New(),
+		store: store,
+		// SkipIfStillRunning prevents the same entry from starting a second
+		// goroutine while its previous run is still going; Recover converts a
+		// panicking run into a logged error instead of killing the scheduler
+		// goroutine. RunJobNow (manual trigger) bypasses the chain, so runJob
+		// carries its own per-job guard.
+		cron:    cron.New(cron.WithChain(cron.SkipIfStillRunning(cronLogAdapter{}), cron.Recover(cronLogAdapter{}))),
 		engines: make(map[string]*Engine),
 		entries: make(map[string]cron.EntryID),
 	}
@@ -845,6 +878,15 @@ func (cs *CronScheduler) runJob(job *CronJob, manual bool) {
 	if !manual && !job.Enabled {
 		return
 	}
+	// Per-job re-entry guard. robfig's SkipIfStillRunning chain only covers
+	// scheduled fires of the same entry; a manual RunJobNow bypasses the chain
+	// entirely, so a manual and a scheduled trigger (or two manual triggers)
+	// could otherwise inject the same prompt concurrently. Skip the second.
+	if _, loaded := cs.running.LoadOrStore(job.ID, struct{}{}); loaded {
+		slog.Warn("cron: skipping run, previous run still in progress", "id", job.ID, "manual", manual)
+		return
+	}
+	defer cs.running.Delete(job.ID)
 
 	cs.mu.RLock()
 	engine, ok := cs.engines[job.Project]
@@ -926,6 +968,19 @@ type mutePlatform struct {
 
 func (m *mutePlatform) Reply(_ context.Context, _ any, _ string) error { return nil }
 func (m *mutePlatform) Send(_ context.Context, _ any, _ string) error  { return nil }
+
+// cronLogAdapter routes robfig/cron's chain logging (skip/recover messages)
+// through the project's slog logger.
+type cronLogAdapter struct{}
+
+func (cronLogAdapter) Info(msg string, keysAndValues ...any) {
+	slog.Info("cron: "+msg, keysAndValues...)
+}
+
+func (cronLogAdapter) Error(err error, msg string, keysAndValues ...any) {
+	keysAndValues = append(keysAndValues, "error", err)
+	slog.Error("cron: "+msg, keysAndValues...)
+}
 
 func GenerateCronID() string {
 	b := make([]byte, 4)

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/lzyyzznl/omp-lark-bridge/core"
 	lark "github.com/larksuite/oapi-sdk-go/v3"
@@ -56,10 +57,18 @@ func (p *interactivePlatform) SendCard(ctx context.Context, rctx any, card *core
 // It looks up the messageID stored from the most recent card action callback
 // for the given session key and patches that message with the new card content.
 func (p *interactivePlatform) RefreshCard(ctx context.Context, sessionKey string, card *core.Card) error {
+	now := time.Now()
 	p.cardActionMsgMu.Lock()
-	msgID := p.cardActionMsgIDs[sessionKey]
+	e := p.cardActionMsgIDs[sessionKey]
 	p.cardActionMsgMu.Unlock()
 
+	// Only patch messages whose action is still recent — the map keeps just the
+	// latest action per session, and stale entries are ignored rather than
+	// patching a long-gone message.
+	msgID := ""
+	if e.messageID != "" && now.Sub(e.lastAction) < cardActionMsgTTL {
+		msgID = e.messageID
+	}
 	if msgID == "" {
 		return fmt.Errorf("%s: no tracked card messageID for session %q", p.tag(), sessionKey)
 	}

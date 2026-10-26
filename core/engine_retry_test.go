@@ -69,16 +69,16 @@ func TestHandleMessage_RetryReplaysLastUserPrompt(t *testing.T) {
 	for len(p.getSent()) == 0 {
 		select {
 		case <-deadline:
-			t.Fatalf("timed out waiting for the retried turn; sent=%#v prompts=%#v", p.getSent(), agentSession.sentPrompts)
+			t.Fatalf("timed out waiting for the retried turn; sent=%#v prompts=%v", p.getSent(), agentSession.getSentPrompts())
 		default:
 			time.Sleep(10 * time.Millisecond)
 		}
 	}
 
-	if len(agentSession.sentPrompts) != 1 {
-		t.Fatalf("prompts = %#v, want exactly one retried prompt", agentSession.sentPrompts)
+	if got := agentSession.getSentPrompts(); len(got) != 1 {
+		t.Fatalf("prompts = %#v, want exactly one retried prompt", got)
 	}
-	got := agentSession.sentPrompts[0]
+	got := agentSession.getSentPrompts()[0]
 	if !strings.Contains(got, "帮我看看这个方案") {
 		t.Fatalf("retried prompt = %q, want the previous user message", got)
 	}
@@ -106,7 +106,7 @@ func TestHandleMessage_RetryWithoutHistoryRepliesNothingToRetry(t *testing.T) {
 	if len(sent) != 1 || !strings.Contains(sent[0], "Nothing to retry") {
 		t.Fatalf("sent = %#v, want a single 'nothing to retry' reply", sent)
 	}
-	if len(agentSession.sentPrompts) != 0 {
-		t.Fatalf("prompts = %#v, want none (no history to replay)", agentSession.sentPrompts)
+	if len(agentSession.getSentPrompts()) != 0 {
+		t.Fatalf("prompts = %#v, want none (no history to replay)", agentSession.getSentPrompts())
 	}
 }

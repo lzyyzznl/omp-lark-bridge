@@ -171,6 +171,7 @@ func (a *sessionEnvRecordingAgent) EnvValue(key string) string {
 }
 
 type resultAgentSession struct {
+	mu          sync.Mutex
 	events      chan Event
 	result      string
 	sendOnce    sync.Once
@@ -185,11 +186,21 @@ func newResultAgentSession(result string) *resultAgentSession {
 }
 
 func (s *resultAgentSession) Send(prompt string, _ string, _ []ImageAttachment, _ []FileAttachment) error {
+	s.mu.Lock()
 	s.sentPrompts = append(s.sentPrompts, prompt)
+	s.mu.Unlock()
 	s.sendOnce.Do(func() {
 		s.events <- Event{Type: EventResult, Content: s.result, Done: true}
 	})
 	return nil
+}
+
+// getSentPrompts returns a copy of the prompts sent so far (Send runs on a
+// background turn goroutine, readers poll from the test goroutine).
+func (s *resultAgentSession) getSentPrompts() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.sentPrompts...)
 }
 
 func (s *resultAgentSession) RespondPermission(_ string, _ PermissionResult) error { return nil }
@@ -10491,8 +10502,9 @@ func TestHandleMessageBusyRecalledCurrentStopsAndProcessesNewMessage(t *testing.
 	if len(checked) == 0 || checked[0] != "old-reply-ctx" {
 		t.Fatalf("checked reply contexts = %v, want old-reply-ctx first", checked)
 	}
-	if len(newAgentSession.sentPrompts) != 1 || !strings.Contains(newAgentSession.sentPrompts[0], "please handle this") {
-		t.Fatalf("new session prompts = %#v, want new message prompt", newAgentSession.sentPrompts)
+	got := newAgentSession.getSentPrompts()
+	if len(got) != 1 || !strings.Contains(got[0], "please handle this") {
+		t.Fatalf("new session prompts = %#v, want new message prompt", got)
 	}
 }
 
@@ -13374,8 +13386,9 @@ func TestExecuteCronJob_ResolvesCronReplyTarget(t *testing.T) {
 		t.Fatalf("stored sessionKey = %#v, want unchanged base session key", stored)
 	}
 
-	if len(agentSession.sentPrompts) != 1 || !strings.Contains(agentSession.sentPrompts[0], "summarize activity") {
-		t.Fatalf("agent prompts = %#v, want prompt containing summarize activity", agentSession.sentPrompts)
+	got := agentSession.getSentPrompts()
+	if len(got) != 1 || !strings.Contains(got[0], "summarize activity") {
+		t.Fatalf("agent prompts = %#v, want prompt containing summarize activity", got)
 	}
 }
 

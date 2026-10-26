@@ -303,6 +303,10 @@ type SessionManager struct {
 	counter       int64
 	storePath     string // empty = no persistence
 
+	// saveMu serializes snapshot writes so concurrent Save() calls rename
+	// last-writer-wins instead of interleaving.
+	saveMu sync.Mutex
+
 	// legacyData is true when sessions were loaded from a snapshot that
 	// predates PastAgentSessionIDs tracking. In this state, many sessions
 	// may have lost their AgentSessionID through /new or provider switches.
@@ -629,18 +633,31 @@ func (sm *SessionManager) deleteByIDLocked(id string) {
 	}
 }
 
-// Save persists current state to disk. Safe to call from outside (e.g. after message processing).
+// Save persists current state to disk. Safe to call from outside (e.g. after
+// message processing). A consistent snapshot is captured under a read lock;
+// the marshal + atomic write run lock-free, so a slow disk write never blocks
+// concurrent session mutations queued behind the RWMutex.
 func (sm *SessionManager) Save() {
+	if sm.storePath == "" {
+		return
+	}
 	sm.mu.RLock()
-	defer sm.mu.RUnlock()
-	sm.saveLocked()
+	snap := sm.buildSnapshotLocked()
+	sm.mu.RUnlock()
+	sm.persistSnapshot(snap)
 }
 
+// saveLocked persists current state. Callers are expected to hold sm.mu.
 func (sm *SessionManager) saveLocked() {
 	if sm.storePath == "" {
 		return
 	}
+	sm.persistSnapshot(sm.buildSnapshotLocked())
+}
 
+// buildSnapshotLocked captures the full session state as an independent copy
+// safe to serialize with no lock held. Callers must hold sm.mu (read or write).
+func (sm *SessionManager) buildSnapshotLocked() sessionSnapshot {
 	// Build a deep-copy snapshot to avoid racing with concurrent Session mutations.
 	snapSessions := make(map[string]*Session, len(sm.sessions))
 	for id, s := range sm.sessions {
@@ -678,17 +695,44 @@ func (sm *SessionManager) saveLocked() {
 		}
 	}
 
-	snap := sessionSnapshot{
+	// Copy the remaining manager maps too: persistSnapshot serializes them
+	// without sm.mu held, so it must never read shared state another
+	// goroutine can still mutate.
+	activeSession := make(map[string]string, len(sm.activeSession))
+	for k, v := range sm.activeSession {
+		activeSession[k] = v
+	}
+	userSessions := make(map[string][]string, len(sm.userSessions))
+	for k, ids := range sm.userSessions {
+		userSessions[k] = append([]string(nil), ids...)
+	}
+	names := make(map[string]string, len(sm.sessionNames))
+	for k, v := range sm.sessionNames {
+		names[k] = v
+	}
+	meta := make(map[string]*UserMeta, len(sm.userMeta))
+	for k, m := range sm.userMeta {
+		meta[k] = &UserMeta{UserName: m.UserName, ChatName: m.ChatName}
+	}
+
+	return sessionSnapshot{
 		Sessions:       snapSessions,
-		ActiveSession:  sm.activeSession,
-		UserSessions:   sm.userSessions,
+		ActiveSession:  activeSession,
+		UserSessions:   userSessions,
 		Counter:        sm.counter,
-		SessionNames:   sm.sessionNames,
-		UserMeta:       sm.userMeta,
+		SessionNames:   names,
+		UserMeta:       meta,
 		PastIDTracking: true,
 		LegacyData:     sm.legacyData,
 		Version:        snapshotVersion,
 	}
+}
+
+// persistSnapshot marshals and atomically writes a snapshot. Runs with no
+// SessionManager lock held; saveMu serializes concurrent writes.
+func (sm *SessionManager) persistSnapshot(snap sessionSnapshot) {
+	sm.saveMu.Lock()
+	defer sm.saveMu.Unlock()
 	data, err := json.MarshalIndent(snap, "", "  ")
 	if err != nil {
 		slog.Error("session: failed to marshal", "error", err)

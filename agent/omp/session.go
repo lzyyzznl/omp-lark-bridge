@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -24,6 +25,17 @@ const (
 	defaultSessionName = "default"
 	readyTimeout       = 15 * time.Second
 	maxFrameBytes      = 1 << 20 // omp v1 stdout frame limit (1 MiB)
+
+	// awaitResponseTimeout is the per-command RPC response budget. These
+	// commands (set_model/get_state/set_ask_dialog/get_available_models/enter)
+	// are control-plane ops answered in ms by an alive process, so 30s only
+	// trips on a wedged process — the same budget model discovery already uses
+	// (omp.go sets a 30s context for discoverModels).
+	awaitResponseTimeout = 30 * time.Second
+
+	// askTTL bounds how long an unanswered ask/select dialog stays answerable.
+	// Cards answered across turns survive; ones the user abandoned are reclaimed.
+	askTTL = time.Hour
 )
 
 // ompSession is a long-lived `omp --mode rpc-ui` subprocess bound to one chat
@@ -288,7 +300,12 @@ func (s *ompSession) recordState() {
 }
 
 // waitResponse registers a pending command id and blocks for omp's `response`
-// frame carrying the same id (rpc.md:306-309).
+// frame carrying the same id (rpc.md:306-309). A per-call timeout bounds the
+// wait so a live-but-unresponsive omp process cannot strand command callers
+// forever; callers distinguish that timeout from session teardown via
+// errors.Is(err, ErrCommandTimeout).
+var ErrCommandTimeout = errors.New("omp: command response timed out")
+
 func (s *ompSession) waitResponse(id string) (map[string]any, error) {
 	ch := make(chan map[string]any, 1)
 	s.pMu.Lock()
@@ -300,6 +317,8 @@ func (s *ompSession) waitResponse(id string) (map[string]any, error) {
 		s.pMu.Unlock()
 	}()
 
+	timer := time.NewTimer(awaitResponseTimeout)
+	defer timer.Stop()
 	select {
 	case resp := <-ch:
 		if ok, _ := resp["success"].(bool); !ok {
@@ -312,6 +331,12 @@ func (s *ompSession) waitResponse(id string) (map[string]any, error) {
 		return resp, nil
 	case <-s.ctx.Done():
 		return nil, fmt.Errorf("omp: interrupted waiting for response: %w", s.ctx.Err())
+	case <-timer.C:
+		// No goroutine is leaked: the pending entry is dropped above, so a
+		// late `response` frame finds no waiter and is discarded (readLoop
+		// sends non-blocking).
+		slog.Warn("omp: command response timed out", "id", id, "timeout", awaitResponseTimeout)
+		return nil, fmt.Errorf("%w (id=%s)", ErrCommandTimeout, id)
 	}
 }
 
@@ -483,6 +508,7 @@ func (s *ompSession) Alive() bool { return s.alive.Load() }
 func (s *ompSession) Close() error {
 	// Closing stdin tells omp to drain, dispose and exit 0. It will also reject
 	// any pending UI/host-tool requests.
+	s.closeAsks()
 	if s.alive.Load() {
 		_ = s.stdin.Close()
 	}
@@ -534,7 +560,13 @@ func (s *ompSession) readLoop(stdout io.Reader) {
 				ch, ok := s.pending[rid]
 				s.pMu.Unlock()
 				if ok {
-					ch <- frame
+					// Non-blocking send: the waiter may already have given up
+					// (per-call timeout or interrupt) and dropped this id. A
+					// blocking send here would strand the read loop forever.
+					select {
+					case ch <- frame:
+					default:
+					}
 					break
 				}
 			}
@@ -864,6 +896,12 @@ func (s *ompSession) handlePromptResult(frame map[string]any) {
 	// reset for the next turn.
 	s.flushThinking(true)
 	s.resetThinking()
+	// A turn boundary is a natural expiry sweep for abandoned ask/select
+	// dialogs. Fresh ones survive (a user may still answer a card in a later
+	// turn); only askTTL-old entries are reclaimed (see purgeExpiredAsksLocked).
+	s.askMu.Lock()
+	s.purgeExpiredAsksLocked()
+	s.askMu.Unlock()
 	status, _ := frame["status"].(string)
 	switch status {
 	case "completed":
@@ -1052,8 +1090,12 @@ func (s *ompSession) storeAsk(id string, pending *ompPendingAsk) {
 	if id == "" {
 		return
 	}
+	if pending.created.IsZero() {
+		pending.created = time.Now()
+	}
 	s.askMu.Lock()
 	defer s.askMu.Unlock()
+	s.purgeExpiredAsksLocked()
 	if s.asks == nil {
 		s.asks = make(map[string]*ompPendingAsk)
 	}
@@ -1065,6 +1107,9 @@ func (s *ompSession) takeAsk(id string) *ompPendingAsk {
 	defer s.askMu.Unlock()
 	pending := s.asks[id]
 	delete(s.asks, id)
+	if pending != nil && time.Since(pending.created) > askTTL {
+		return nil // stale: the dialog outlived its answer window
+	}
 	return pending
 }
 
@@ -1072,6 +1117,24 @@ func (s *ompSession) forgetAsk(id string) {
 	s.askMu.Lock()
 	defer s.askMu.Unlock()
 	delete(s.asks, id)
+}
+
+// purgeExpiredAsksLocked drops ask entries older than askTTL. Called at turn
+// end so cards the user may still answer across turns survive while ones they
+// abandoned are reclaimed. Callers must hold askMu.
+func (s *ompSession) purgeExpiredAsksLocked() {
+	for id, pending := range s.asks {
+		if time.Since(pending.created) > askTTL {
+			delete(s.asks, id)
+		}
+	}
+}
+
+// closeAsks drops every open ask; no card answer can outlive the session.
+func (s *ompSession) closeAsks() {
+	s.askMu.Lock()
+	s.asks = nil
+	s.askMu.Unlock()
 }
 
 // askAnswerText pulls one question's answer out of the engine's UpdatedInput
@@ -1157,8 +1220,9 @@ type ompAskQuestion struct {
 
 // ompPendingAsk is an open extension UI dialog awaiting the user's card answer.
 type ompPendingAsk struct {
-	kind      string // "ask" (answers payload) or "select" (value payload)
+	kind      string     // "ask" (answers payload) or "select" (value payload)
 	questions []ompAskQuestion
+	created   time.Time  // when the dialog opened; drives askTTL expiry
 }
 
 func emitSafe(ch chan core.Event, ev core.Event) {

@@ -239,10 +239,16 @@ type HookConfig struct {
 	Async   *bool  `toml:"async,omitempty"`   // nil = true (async by default)
 }
 
+// DefaultManagementPort is the management API (dashboard + REST) port used when
+// [management].port is unset. Deliberately obscure: the API can execute shell
+// commands, so it should not sit on a port that port scanners probe by habit.
+const DefaultManagementPort = 31990
+
 // ManagementConfig controls the HTTP Management API for external tools.
 type ManagementConfig struct {
 	Enabled     *bool    `toml:"enabled"`                // default false
-	Port        int      `toml:"port,omitempty"`         // listen port; default 9820
+	Host        string   `toml:"host,omitempty"`         // bind address; empty = all interfaces, e.g. "127.0.0.1" for loopback only
+	Port        int      `toml:"port,omitempty"`         // listen port; default DefaultManagementPort (31990)
 	Token       string   `toml:"token,omitempty"`        // shared secret for authentication; required
 	CORSOrigins []string `toml:"cors_origins,omitempty"` // allowed CORS origins; empty = no CORS
 }
@@ -710,6 +716,13 @@ func load(path string) (*Config, error) {
 	}
 	cfg.ResolveProviderRefs()
 	return cfg, nil
+}
+
+// LoadRaw parses the config file without semantic validation. Tooling such as
+// `config get/set` must work on files that are not yet runnable (missing
+// platforms, headers still being filled in).
+func LoadRaw(path string) (*Config, error) {
+	return load(path)
 }
 
 // LoadPermissive loads the config file and performs all validation except the
@@ -4155,7 +4168,7 @@ func EnableWebAdmin(mgmtToken, bridgeToken string) (*WebSetupResult, error) {
 
 	if mgmtEnabled && bridgeEnabled {
 		return &WebSetupResult{
-			ManagementPort:  orDefault(cfg.Management.Port, 9820),
+			ManagementPort:  orDefault(cfg.Management.Port, DefaultManagementPort),
 			ManagementToken: cfg.Management.Token,
 			BridgePort:      orDefault(cfg.Bridge.Port, 9810),
 			BridgeToken:     cfg.Bridge.Token,
@@ -4168,7 +4181,7 @@ func EnableWebAdmin(mgmtToken, bridgeToken string) (*WebSetupResult, error) {
 	if !mgmtEnabled {
 		cfg.Management.Enabled = &t
 		if cfg.Management.Port == 0 {
-			cfg.Management.Port = 9820
+			cfg.Management.Port = DefaultManagementPort
 		}
 		if cfg.Management.Token == "" {
 			cfg.Management.Token = mgmtToken
@@ -4199,7 +4212,7 @@ func EnableWebAdmin(mgmtToken, bridgeToken string) (*WebSetupResult, error) {
 	}
 
 	return &WebSetupResult{
-		ManagementPort:  orDefault(cfg.Management.Port, 9820),
+		ManagementPort:  orDefault(cfg.Management.Port, DefaultManagementPort),
 		ManagementToken: cfg.Management.Token,
 		BridgePort:      orDefault(cfg.Bridge.Port, 9810),
 		BridgeToken:     cfg.Bridge.Token,

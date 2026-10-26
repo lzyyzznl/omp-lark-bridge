@@ -44,10 +44,12 @@ func TestRotatingWriter(t *testing.T) {
 }
 
 func TestMetaSaveLoad(t *testing.T) {
-	origHome := os.Getenv("HOME")
+	// os.UserHomeDir() reads USERPROFILE on Windows and HOME elsewhere; both must
+	// point at the temp dir, otherwise this test overwrites the real
+	// ~/.omp-lark-bridge/daemon.json of an installed instance.
 	dir := t.TempDir()
-	os.Setenv("HOME", dir)
-	defer os.Setenv("HOME", origHome)
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 
 	m := &Meta{
 		LogFile:       "/tmp/test.log",

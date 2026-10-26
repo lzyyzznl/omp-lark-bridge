@@ -191,6 +191,6 @@ app_secret = "your-feishu-app-secret"
 # 内置看板在 http://127.0.0.1:<port>/，提供 /api/v1/* REST 接口；进入看板需填 token。
 [management]
 enabled = true
-port = 31990            # 默认 9820 / default 9820
+port = 31990            # 默认 31990 / default 31990
 token = "1"             # 初始默认 1，可改成任意串；改后需重启 / default "1", change & restart
 # cors_origins = ["http://localhost:5173"]  # 仅 Vite dev 模式需要；嵌入二进制同源无需 CORS

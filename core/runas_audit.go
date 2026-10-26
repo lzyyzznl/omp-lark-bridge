@@ -317,15 +317,6 @@ func splitTag(line string) (string, string) {
 	return line[:sp], line[sp+1:]
 }
 
-// shellQuote wraps s in POSIX single quotes, escaping embedded quotes.
-// Used instead of fmt %q because the probe runs under /bin/sh.
-func shellQuote(s string) string {
-	if s == "" {
-		return "''"
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 func filterOtherUsers(others []string, self string) []string {
 	out := make([]string, 0, len(others))
 	for _, o := range others {

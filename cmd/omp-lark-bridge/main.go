@@ -973,7 +973,7 @@ func main() {
 			}
 			port := cfg.Management.Port
 			if port == 0 {
-				port = 9820
+				port = config.DefaultManagementPort
 			}
 			return fmt.Sprintf("http://localhost:%d", port)
 		})
@@ -1114,7 +1114,7 @@ func main() {
 	if cfg.Management.Enabled != nil && *cfg.Management.Enabled {
 		port := cfg.Management.Port
 		if port <= 0 {
-			port = 9820
+			port = config.DefaultManagementPort
 		}
 		// Default web token "1" when unset, so the dashboard gates on something
 		// non-empty out of the box; operators can override via [management].token.
@@ -1123,6 +1123,7 @@ func main() {
 			token = "1"
 		}
 		mgmtSrv = core.NewManagementServer(port, token, cfg.Management.CORSOrigins)
+		mgmtSrv.SetHost(strings.TrimSpace(cfg.Management.Host))
 		for i, e := range engines {
 			mgmtSrv.RegisterEngine(cfg.Projects[i].Name, e)
 		}
@@ -1814,6 +1815,8 @@ Commands:
     example          Print a complete annotated config.toml example
     format           Format the config file (alias: fmt)
     path             Print the resolved config file path
+    get              Print one scalar setting (e.g. management.token)
+    set              Write one scalar setting, keeping comments/formatting
 
   update             Check for updates and upgrade the binary (--pre for beta)
   check-update       Check if a newer version is available

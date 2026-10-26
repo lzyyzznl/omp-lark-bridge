@@ -156,6 +156,11 @@ func TestBuildWindowsTaskScript_DropsEmptyValue(t *testing.T) {
 // Windows real access is governed by ACLs, the POSIX bits are still
 // expected to reflect intent.
 func TestSchtasksInstall_TightensExistingScriptFrom0644(t *testing.T) {
+	// Windows 只有「只读」这一个 POSIX 位是有效的：os.Stat 对任意可写文件都报
+	// 0666，os.Chmod(0600) 只看 owner-write 位、不会置只读，所以这里断言的
+	// 0644→0600 迁移在真 Windows 上不可观测（真实保护由 profile ACL 提供）。
+	t.Skip("POSIX permission bits are not observable on Windows; ACL hardening is not implemented")
+
 	t.Setenv("USERPROFILE", t.TempDir())
 
 	orig := runPowerShell

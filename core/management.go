@@ -12,6 +12,7 @@ import (
 	"io"
 	"io/fs"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -53,6 +54,7 @@ type ArchiveSettings struct {
 // (web dashboards, TUI clients, GUI desktop apps, Mac tray apps, etc.).
 type ManagementServer struct {
 	port        int
+	host        string // bind address; empty listens on all interfaces
 	token       string
 	corsOrigins []string
 	server      *http.Server
@@ -135,6 +137,7 @@ func (m *ManagementServer) SetCronScheduler(cs *CronScheduler)           { m.cro
 func (m *ManagementServer) SetTimerScheduler(ts *TimerScheduler)         { m.timerScheduler = ts }
 func (m *ManagementServer) SetHeartbeatScheduler(hs *HeartbeatScheduler) { m.heartbeatScheduler = hs }
 func (m *ManagementServer) SetBridgeServer(bs *BridgeServer)             { m.bridgeServer = bs }
+func (m *ManagementServer) SetHost(host string)                          { m.host = host }
 func (m *ManagementServer) SetSetupFeishuSave(fn func(FeishuSetupSaveRequest) error) {
 	m.setupFeishuSave = fn
 }
@@ -283,7 +286,11 @@ func (m *ManagementServer) Start() {
 	handler := m.buildHandler(mux)
 
 	m.server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", m.port),
+		// JoinHostPort with an empty host yields ":port" (all interfaces), which
+		// keeps the historical default; [management].host narrows it (e.g. to
+		// 127.0.0.1). The API can execute shell commands via /cron/{id}/exec, so
+		// exposing it beyond loopback should be a deliberate choice.
+		Addr:    net.JoinHostPort(m.host, strconv.Itoa(m.port)),
 		Handler: handler,
 	}
 	go func() {
@@ -2674,7 +2681,7 @@ func resumeCommand(dir, name, cwd string) string {
 	if cwd == "" {
 		return cmd
 	}
-	return "cd " + shellQuote(cwd) + " && " + cmd
+	return "cd " + shellQuote(cwd) + shellChain + cmd
 }
 
 // 会话状态：由 transcript 尾部推断，不需要访问运行中的进程。

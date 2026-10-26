@@ -202,6 +202,20 @@ function rangeCutoff(range) {
   return 0
 }
 
+// 会话状态（后端推断）：进行中 / 提问待处理 / 已完成 / 静默
+const STATUS_LABEL = {
+  running: '进行中',
+  asking: '提问待处理',
+  done: '已完成',
+  idle: '静默',
+}
+const STATUS_HINT = {
+  running: '最近 5 分钟内有活动且本轮未收尾',
+  asking: '有 ask 提问在等回答',
+  done: '本轮已正常结束',
+  idle: '没有收尾记录且超过 5 分钟无活动（进程可能被中断）',
+}
+
 export default function SessionsPage({ initialTx, onToast }) {
   const [library, setLibrary] = useState(null)      // 全局会话（含 cwd/job_id/archived）
   const [projects, setProjects] = useState([])
@@ -214,7 +228,11 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [range, setRange] = useState('today')       // 1h | today | 7d | 30d | 90d | all（默认今天）
   const [checked, setChecked] = useState([])
   const [error, setError] = useState('')
-  const [selectedTx, setSelectedTx] = useState('')
+  // 刷新后保持选中的会话：#/sessions?tx=<id>
+  const [selectedTx, setSelectedTx] = useState(() => {
+    const qs = window.location.hash.split('?')[1] || ''
+    return new URLSearchParams(qs).get('tx') || ''
+  })
   const [txDetail, setTxDetail] = useState(null)
   const [txLoading, setTxLoading] = useState(false)
   const [titleBusy, setTitleBusy] = useState('')
@@ -231,12 +249,14 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [stickBottom, setStickBottom] = useState(true)
   const [configProject, setConfigProject] = useState('')  // 非空 → 打开配置弹窗
   const [newOpen, setNewOpen] = useState(false)
+  // 会话状态（后端从 transcript 尾部推断）：running/asking/done/idle
   useEsc(!!configProject, () => setConfigProject(''))
 
   const loadLibrary = useCallback(async () => {
     try {
       const d = await api.library(view === 'archived' ? 'archived' : '', q)
-      setLibrary(d.transcripts || [])
+      const items = d.transcripts || []
+      setLibrary(items)
       setArchivedCount(d.archived_count || 0)
       setError('')
     } catch (e) {
@@ -252,6 +272,35 @@ export default function SessionsPage({ initialTx, onToast }) {
 
   useEffect(() => { loadProjects() }, [loadProjects])
   useEffect(() => { loadLibrary() }, [loadLibrary])
+
+  // 列表实时刷新：只要在会话页，就每 3s 重拉一次（正在写入的会话会显示「实时」）。
+  useEffect(() => {
+    const t = setInterval(() => { loadLibrary() }, 3000)
+    return () => clearInterval(t)
+  }, [loadLibrary])
+
+  // 同页内 hash 变化（例如从任务执行记录跳转）也要打开对应会话。
+  useEffect(() => {
+    const onHash = () => {
+      const tx = new URLSearchParams(window.location.hash.split('?')[1] || '').get('tx') || ''
+      setSelectedTx((prev) => (prev === tx ? prev : tx))
+    }
+    window.addEventListener('hashchange', onHash)
+    return () => window.removeEventListener('hashchange', onHash)
+  }, [])
+
+  // 直链/站内跳转进来时，hashchange 不一定触发（页面刚加载），库到手后按 URL 再对一次。
+  useEffect(() => {
+    if (library === null) return
+    const tx = new URLSearchParams(window.location.hash.split('?')[1] || '').get('tx') || ''
+    if (tx) setSelectedTx((prev) => (prev === tx ? prev : tx))
+  }, [library])
+
+  // 选中会话写进 URL，刷新后自动回到同一会话并继续实时刷新。
+  useEffect(() => {
+    const h = selectedTx ? `#/sessions?tx=${encodeURIComponent(selectedTx)}` : '#/sessions'
+    if (window.location.hash !== h) window.history.replaceState(null, '', h)
+  }, [selectedTx])
 
   // 文件夹分组：项目配置 + 会话 cwd 的并集。有会话的按最近更新排序，
   // 只有配置的排在后面，未归类固定最后。
@@ -322,25 +371,34 @@ export default function SessionsPage({ initialTx, onToast }) {
     setStickBottom(el.scrollHeight - el.scrollTop - el.clientHeight < 140)
   }, [])
 
-  // 会话详情：选中后拉取，3s 轮询刷新（发送期间由 SSE 接管）。
+  // 会话详情：选中后拉取，2s 轮询（会话可能正被网页/终端/飞书写入）。
+  // 走全局端点，不依赖项目列表，刷新后直接链接也能打开。
   useEffect(() => {
     if (!selectedTx) { setTxDetail(null); return }
     if (sending) return
-    if (!activeProject) return
     let alive = true
     const fetchOne = async () => {
       try {
-        const d = await api.getTranscript(activeProject, selectedTx)
-        if (alive) { setTxDetail(d.transcript); setLive([]); setTxLoading(false) }
+        const d = await api.libraryTranscript(selectedTx)
+        if (!alive) return
+        const arr = d.transcript || []
+        // 没变化就不重建整棵消息树（大文件每 2s 全量重渲染会卡）。
+        setTxDetail((prev) => {
+          if (prev && prev.length === arr.length
+            && JSON.stringify(prev[prev.length - 1]) === JSON.stringify(arr[arr.length - 1])) return prev
+          return arr
+        })
+        setLive([])
+        setTxLoading(false)
       } catch (e) {
         if (alive) { setError(e.message); setTxLoading(false) }
       }
     }
     setTxLoading(true)
     fetchOne()
-    const timer = setInterval(fetchOne, 3000)
+    const timer = setInterval(fetchOne, 2000)
     return () => { alive = false; clearInterval(timer) }
-  }, [selectedTx, activeProject, sending])
+  }, [selectedTx, sending])
 
   const copyTx = useCallback(() => {
     if (!txDetail) return
@@ -361,6 +419,17 @@ export default function SessionsPage({ initialTx, onToast }) {
       setTimeout(() => setCopied({ ...copied, tx: false }), 1500)
     }).catch(() => {})
   }, [txDetail, copied])
+
+  // 复制终端续接命令：cd 到会话的工作目录后用 omp --resume 续上同一份 transcript。
+  // 桥进程正在对话时不要并发使用（两边会同时写一个会话文件）。
+  const copyResume = useCallback((it) => {
+    if (!it?.resume_cmd) return
+    navigator.clipboard?.writeText(it.resume_cmd).then(() => {
+      setCopied((p) => ({ ...p, [it.id]: true }))
+      setTimeout(() => setCopied((p) => ({ ...p, [it.id]: false })), 1500)
+      onToast?.('ok', '已复制：粘贴到终端即可继续该会话')
+    }).catch(() => onToast?.('err', '复制失败，请手动选择命令'))
+  }, [onToast])
 
   const genTitle = async (id) => {
     if (titleBusy) return
@@ -734,6 +803,11 @@ export default function SessionsPage({ initialTx, onToast }) {
                     ? <span className="badge badge-cron" title={`定时任务：${t.job_title || t.job_id}`}>定时任务</span>
                     : <span className="badge badge-chat">对话</span>}
                   <span className="lib-tx-title" title={t.title || t.id}>{t.title || t.id}</span>
+                  {STATUS_LABEL[t.status] && (
+                    <span className={`lib-status st-${t.status}`} title={STATUS_HINT[t.status] || ''}>
+                      {STATUS_LABEL[t.status]}
+                    </span>
+                  )}
                 </div>
                 <div className="sess-tx-sub">
                   <span className="lib-tx-meta">
@@ -756,6 +830,14 @@ export default function SessionsPage({ initialTx, onToast }) {
                     >
                       {view === 'archived' ? '恢复' : '归档'}
                     </button>
+                    <button
+                      className="btn btn-sm btn-ghost"
+                      disabled={!t.resume_cmd}
+                      title="复制终端命令：在终端里继续这个会话"
+                      onClick={(e) => { e.stopPropagation(); copyResume(t) }}
+                    >
+                      {copied[t.id] ? '已复制' : '终端'}
+                    </button>
                   </span>
                 </div>
               </div>
@@ -774,6 +856,14 @@ export default function SessionsPage({ initialTx, onToast }) {
             <div className="sess-detail-head">
               <button className="btn btn-sm btn-ghost" onClick={() => { setSelectedTx(''); setTxDetail(null) }}>← 返回列表</button>
               <button className="btn btn-sm btn-ghost sess-copy" onClick={copyTx}>{copied.tx ? '已复制' : '复制文本'}</button>
+              <button
+                className="btn btn-sm btn-ghost sess-copy"
+                disabled={!currentTx?.resume_cmd}
+                title="复制命令：在终端里继续这个会话（cd 到工作目录后 omp --resume）"
+                onClick={() => copyResume(currentTx)}
+              >
+                {copied[selectedTx] ? '已复制' : '复制终端命令'}
+              </button>
               <div className="sess-detail-title">{txDetail ? (currentTx?.title || selectedTx) : selectedTx}</div>
               <div className="sess-detail-sub">
                 {currentTx?.job_id
@@ -782,6 +872,11 @@ export default function SessionsPage({ initialTx, onToast }) {
                 {currentTx?.cwd ? ` · ${currentTx.cwd}` : ''}
                 {` · ${selectedTx}`}
               </div>
+              {STATUS_LABEL[currentTx?.status] && (
+                <div className={`lib-status-row st-${currentTx.status}`}>
+                  ● {STATUS_LABEL[currentTx.status]} · 每 2 秒自动刷新
+                </div>
+              )}
             </div>
             <div className="t-flow">
               {txLoading && !txDetail && <div className="sess-empty">加载中…</div>}

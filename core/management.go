@@ -2602,6 +2602,112 @@ func transcriptCwd(path string) string {
 	return ""
 }
 
+// resumeCommand builds the terminal one-liner that reopens this transcript in
+// an interactive omp session: cd to the recorded work_dir, then resume the
+// exact session file inside the same session store the bridge writes to.
+func resumeCommand(dir, name, cwd string) string {
+	cmd := "omp --resume " + shellQuote(filepath.Join(dir, name)) + " --session-dir " + shellQuote(dir)
+	if cwd == "" {
+		return cmd
+	}
+	return "cd " + shellQuote(cwd) + " && " + cmd
+}
+
+// 会话状态：由 transcript 尾部推断，不需要访问运行中的进程。
+const (
+	sessionRunning = "running" // 有活动未收尾（模型/工具在跑）
+	sessionAsking  = "asking"  // 有未回应的 ask 工具调用，等人回答
+	sessionDone    = "done"    // 正常收尾（session_exit 或助手答完）
+	sessionIdle    = "idle"    // 没有收尾记录且长期无活动（进程被杀/会话遗弃）
+)
+
+// statusStr reads a string field from a decoded JSON object.
+func statusStr(obj map[string]any, key string) string {
+	v, _ := obj[key].(string)
+	return v
+}
+
+// transcriptStatus infers the conversation state from the tail of the transcript.
+// Signals omp writes: custom/session_exit on normal teardown, message/toolResult
+// after each tool call, and a trailing assistant message when a turn finishes.
+func transcriptStatus(path string, mod, now time.Time) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return sessionIdle
+	}
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return sessionIdle
+	}
+	const tailBytes = 128 << 10 // 只看尾部，避免每次轮询重读整份 transcript
+	start := st.Size() - tailBytes
+	if start < 0 {
+		start = 0
+	}
+	if _, err := f.Seek(start, io.SeekStart); err != nil {
+		return sessionIdle
+	}
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
+	partial := start > 0 // 首行多半被截断
+	var evs []map[string]any
+	for sc.Scan() {
+		if partial {
+			partial = false
+			continue
+		}
+		line := bytes.TrimSpace(sc.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var ev map[string]any
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		evs = append(evs, ev)
+	}
+
+	active := func() string {
+		if now.Sub(mod) < 5*time.Minute {
+			return sessionRunning
+		}
+		return sessionIdle
+	}
+	for i := len(evs) - 1; i >= 0; i-- {
+		ev := evs[i]
+		switch statusStr(ev, "type") {
+		case "custom":
+			switch statusStr(ev, "customType") {
+			case "session_exit":
+				return sessionDone
+			case "tool_execution_start":
+				return active()
+			}
+		case "message":
+			msg, _ := ev["message"].(map[string]any)
+			switch statusStr(msg, "role") {
+			case "user", "toolResult":
+				return active()
+			case "assistant":
+				blocks, _ := msg["content"].([]any)
+				for _, b := range blocks {
+					bm, _ := b.(map[string]any)
+					if statusStr(bm, "type") != "toolCall" {
+						continue
+					}
+					if statusStr(bm, "name") == "ask" {
+						return sessionAsking
+					}
+					return active()
+				}
+				return sessionDone
+			}
+		}
+	}
+	return active()
+}
+
 // transcriptItems builds the session library rows shared by both the
 // per-project endpoint and the global one. query filters on title or on any
 // line of the transcript body (bounded to keep a cold search cheap).
@@ -2631,10 +2737,13 @@ func (m *ManagementServer) transcriptItems(dir string, query string) []map[strin
 			"size":       info.Size(),
 			"updated_at": info.ModTime(),
 			"archived":   m.archiveStore.IsArchived(id),
+			"status":     transcriptStatus(path, info.ModTime(), time.Now()),
 		}
-		if cwd := transcriptCwd(path); cwd != "" {
+		cwd := transcriptCwd(path)
+		if cwd != "" {
 			item["cwd"] = cwd
 		}
+		item["resume_cmd"] = resumeCommand(dir, ent.Name(), cwd)
 		if ref, ok := jobs[id]; ok {
 			item["job_id"] = ref.ID
 			item["job_title"] = ref.Title
@@ -2800,7 +2909,17 @@ func (m *ManagementServer) handleTranscriptLibrary(w http.ResponseWriter, r *htt
 		}
 		mgmtJSON(w, http.StatusOK, map[string]any{"archived": n})
 	default:
-		mgmtError(w, http.StatusNotFound, "unknown transcripts sub-route")
+		// 单条会话详情：刷新页面/直接链接时不需要项目上下文。
+		if r.Method != http.MethodGet {
+			mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+			return
+		}
+		dir := m.transcriptDir()
+		if dir == "" {
+			mgmtError(w, http.StatusNotFound, "no session directory available yet")
+			return
+		}
+		m.readTranscript(w, dir, sub)
 	}
 }
 
@@ -3143,7 +3262,11 @@ func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Req
 	m.chatMu.Lock()
 	defer m.chatMu.Unlock()
 
-	sess, err := e.agent.StartSession(r.Context(), sessionFile)
+	// 关闭页面不等于停对话：请求上下文断开后仍要把这一轮跑完并写进 transcript，
+	// 重开页面从 transcript 看到完整结果。// ponytail: 30 分钟兜底防进程泄漏。
+	runCtx, cancelRun := context.WithTimeout(context.WithoutCancel(r.Context()), 30*time.Minute)
+	defer cancelRun()
+	sess, err := e.agent.StartSession(runCtx, sessionFile)
 	if err != nil {
 		mgmtError(w, http.StatusInternalServerError, "start session: "+err.Error())
 		return
@@ -3169,29 +3292,31 @@ func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Req
 		fl.Flush()
 		return true
 	}
-
+	// 页面关掉后 SSE 写失败，只停止推送，继续消费事件直到本轮结束。
+	streamOpen := true
+	emit := func(payload any) {
+		if streamOpen && !sse(payload) {
+			streamOpen = false
+		}
+	}
 	if err := sess.Send(msg, "web"+id, images, files); err != nil {
-		sse(map[string]any{"type": "error", "error": err.Error()})
+		emit(map[string]any{"type": "error", "error": err.Error()})
 		return
 	}
 	for ev := range sess.Events() {
 		switch ev.Type {
 		case EventText:
-			if ev.Content != "" && !sse(map[string]any{"type": "text", "content": ev.Content}) {
-				return
+			if ev.Content != "" {
+				emit(map[string]any{"type": "text", "content": ev.Content})
 			}
 		case EventThinking:
-			if ev.Content != "" && !sse(map[string]any{"type": "thinking", "content": ev.Content}) {
-				return
+			if ev.Content != "" {
+				emit(map[string]any{"type": "thinking", "content": ev.Content})
 			}
 		case EventToolUse:
-			if !sse(map[string]any{"type": "tool_use", "tool": ev.ToolName, "intent": ev.ToolInput}) {
-				return
-			}
+			emit(map[string]any{"type": "tool_use", "tool": ev.ToolName, "intent": ev.ToolInput})
 		case EventToolResult:
-			if !sse(map[string]any{"type": "tool_result", "tool": ev.ToolName, "status": ev.ToolStatus, "result": ev.ToolResult}) {
-				return
-			}
+			emit(map[string]any{"type": "tool_result", "tool": ev.ToolName, "status": ev.ToolStatus, "result": ev.ToolResult})
 		case EventError:
 			errMsg := "session error"
 			if ev.Error != nil {

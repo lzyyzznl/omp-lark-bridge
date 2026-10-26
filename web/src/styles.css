@@ -907,3 +907,16 @@ textarea.input { resize: vertical; min-height: 72px; }
 .lib-tx-meta { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .lib-tx-ops { display: inline-flex; gap: 4px; flex-shrink: 0; }
 .lib-txs .sess-tx-sub { flex-wrap: wrap; }
+
+/* 会话状态徽标：进行中 / 提问待处理 / 已完成 / 静默 */
+.lib-status {
+  font-size: 10px; line-height: 15px; padding: 0 5px; border-radius: 3px;
+  border: 1px solid; white-space: nowrap; flex-shrink: 0;
+}
+.lib-status.st-running { color: #1f9d55; border-color: #1f9d55; background: rgba(31, 157, 85, .10); }
+.lib-status.st-asking { color: #b45309; border-color: #b45309; background: rgba(180, 83, 9, .10); }
+.lib-status.st-done { color: #6b7280; border-color: #9ca3af; }
+.lib-status.st-idle { color: #9ca3af; border-color: #d1d5db; border-style: dashed; }
+.lib-status-row { font-size: 11px; margin-top: 3px; color: #6b7280; }
+.lib-status-row.st-running { color: #1f9d55; }
+.lib-status-row.st-asking { color: #b45309; }

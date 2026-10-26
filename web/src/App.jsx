@@ -23,7 +23,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const TAB_IDS = ['cron', 'sessions', 'agents']
   const tabFromHash = () => {
-    const h = window.location.hash.replace(/^#\/?/, '')
+    const h = window.location.hash.replace(/^#\/?/, '').split('?')[0]
     // 项目管理页已并入会话库；旧书签落到会话库。
     if (h === 'projects') return 'sessions'
     return TAB_IDS.includes(h) ? h : 'cron'

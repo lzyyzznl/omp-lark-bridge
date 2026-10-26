@@ -88,6 +88,9 @@ export const api = {
   listTranscripts: (project) => request(`/projects/${encodeURIComponent(project)}/transcripts`),
   getTranscript: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}`),
 
+  // GET /api/v1/transcripts/{id} → 单条会话事件流（不依赖项目，刷新/直链可用）
+  libraryTranscript: (id) => request(`/transcripts/${encodeURIComponent(id)}`),
+
   // POST /projects/{name}/transcripts/{id}/chat → SSE 流式继续对话。
   // 返回原始 Response（前端读 response.body 流），不是解析后的 JSON。
   chatTranscript: (project, id, payload) => {

@@ -3251,13 +3251,23 @@ func (s *chatStubSession) snap() (string, []ImageAttachment, []FileAttachment, s
 // 让测试能注入事件流观察 SSE 序列化。
 type chatTranscriptAgent struct {
 	stubTranscriptAgent
-	mu      sync.Mutex
-	session *chatStubSession
+	mu       sync.Mutex
+	session  *chatStubSession
+	startCtx context.Context
 }
 
-func (a *chatTranscriptAgent) StartSession(_ context.Context, id string) (AgentSession, error) {
+// runCtx returns the context handed to StartSession (used to prove that a
+// client disconnect does not cancel the running turn).
+func (a *chatTranscriptAgent) runCtx() context.Context {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	return a.startCtx
+}
+
+func (a *chatTranscriptAgent) StartSession(ctx context.Context, id string) (AgentSession, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.startCtx = ctx
 	if a.session == nil {
 		a.session = newChatStubSession()
 	}
@@ -3639,5 +3649,185 @@ func TestMgmt_CreateProject_RequiresName(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", resp.StatusCode)
+	}
+}
+
+func TestResumeCommand_QuotesPathsAndCdsToWorkDir(t *testing.T) {
+	// 带空格的 work_dir 必须整体加引号，否则粘贴到终端会拆成多个参数。
+	got := resumeCommand("/tmp/store", "a.jsonl", "/srv/my dir")
+	want := `cd '/srv/my dir' && omp --resume '/tmp/store/a.jsonl' --session-dir '/tmp/store'`
+	if got != want {
+		t.Fatalf("resumeCommand = %q, want %q", got, want)
+	}
+	// 没有 cwd 的会话不拼 cd。
+	if got := resumeCommand("/tmp/store", "a.jsonl", ""); strings.Contains(got, "cd ") {
+		t.Errorf("no-cwd command should not cd: %q", got)
+	}
+	// 路径里的单引号要转义，否则命令会被截断。
+	if got := resumeCommand("/t/it's", "a.jsonl", ""); !strings.Contains(got, `'/t/it'\''s/a.jsonl'`) {
+		t.Errorf("single quote not escaped: %q", got)
+	}
+}
+
+// 全局会话接口：列表带终端续接命令，单条详情不依赖项目上下文（刷新/直链要用）。
+func TestMgmt_TranscriptLibrary_ResumeCmdAndRead(t *testing.T) {
+	dir := t.TempDir()
+	cwd := "/srv/my dir"
+	body := "{\"type\":\"session\",\"cwd\":\"" + cwd + "\"}\n" +
+		"{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"
+	if err := os.WriteFile(filepath.Join(dir, "2026-01-01_a.jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	agent := &stubTranscriptAgent{dir: dir}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mgmt.SetArchiveStore(NewArchiveStore(filepath.Join(t.TempDir(), "archive.json")))
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/transcripts", mgmt.wrap(mgmt.handleTranscriptLibrary))
+	mux.HandleFunc("/api/v1/transcripts/", mgmt.wrap(mgmt.handleTranscriptLibrary))
+	do := func(path string) (int, []byte) {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, path, nil))
+		return rr.Code, rr.Body.Bytes()
+	}
+
+	code, raw := do("/api/v1/transcripts")
+	if code != http.StatusOK {
+		t.Fatalf("list: status = %d (body=%s)", code, raw)
+	}
+	var lst struct {
+		Data struct {
+			Transcripts []struct {
+				ID        string `json:"id"`
+				Cwd       string `json:"cwd"`
+				ResumeCmd string `json:"resume_cmd"`
+			} `json:"transcripts"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &lst); err != nil {
+		t.Fatal(err)
+	}
+	if len(lst.Data.Transcripts) != 1 {
+		t.Fatalf("got %d transcripts, want 1", len(lst.Data.Transcripts))
+	}
+	it := lst.Data.Transcripts[0]
+	if it.Cwd != cwd || !strings.Contains(it.ResumeCmd, "cd '"+cwd+"'") || !strings.Contains(it.ResumeCmd, "--resume") {
+		t.Errorf("cwd=%q resume_cmd=%q", it.Cwd, it.ResumeCmd)
+	}
+
+	code, raw = do("/api/v1/transcripts/2026-01-01_a")
+	if code != http.StatusOK {
+		t.Fatalf("read: status = %d (body=%s)", code, raw)
+	}
+	if !strings.Contains(string(raw), `"cwd":"`+cwd+`"`) {
+		t.Errorf("read body missing session event: %s", raw)
+	}
+	if code, _ := do("/api/v1/transcripts/nope"); code != http.StatusNotFound {
+		t.Errorf("missing id: status = %d, want 404", code)
+	}
+}
+
+// 会话状态推断：进行中 / 提问待处理 / 已完成 / 静默（全部由 transcript 尾部决定）。
+func TestTranscriptStatus_FromTail(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	fresh := now.Add(-time.Minute)
+	stale := now.Add(-2 * time.Hour)
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	assistantText := `{"type":"message","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}`
+	cases := []struct {
+		name string
+		body string
+		mod  time.Time
+		want string
+	}{
+		{"session exit closes the turn", assistantText + "\n" + `{"type":"custom","customType":"session_exit","data":{}}`, fresh, sessionDone},
+		{"assistant text ends the turn", assistantText, fresh, sessionDone},
+		{"user awaiting model", `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}`, fresh, sessionRunning},
+		{"user long ago", `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"hi"}]}}`, stale, sessionIdle},
+		{"tool result awaiting model", `{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"ok"}]}}`, fresh, sessionRunning},
+		{"tool running", `{"type":"custom","customType":"tool_execution_start","data":{"toolName":"bash"}}`, fresh, sessionRunning},
+		{"ask waiting for answer", `{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"ask","arguments":{}}]}}`, fresh, sessionAsking},
+		{"bash call running", `{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{}}]}}`, fresh, sessionRunning},
+		{"bash call abandoned", `{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"bash","arguments":{}}]}}`, stale, sessionIdle},
+	}
+	for i, c := range cases {
+		p := write(fmt.Sprintf("t%d.jsonl", i), c.body+"\n")
+		if got := transcriptStatus(p, c.mod, now); got != c.want {
+			t.Errorf("%s: got %q, want %q", c.name, got, c.want)
+		}
+	}
+	// ask 之后有 toolResult（已答）就不再是 asking，而是看是否还在活动。
+	p := write("answered_ask.jsonl", `{"type":"message","message":{"role":"assistant","content":[{"type":"toolCall","name":"ask"}]}}`+"\n"+
+		`{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"yes"}]}}`+"\n")
+	if got := transcriptStatus(p, fresh, now); got != sessionRunning {
+		t.Errorf("answered ask: got %q, want %q", got, sessionRunning)
+	}
+}
+
+// 关掉页面（SSE 断开）后后端必须把这一轮跑完，不能中断会话。
+func TestMgmt_Transcripts_Chat_KeepsRunningAfterClientDisconnect(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "2026-01-01_a.jsonl"),
+		[]byte("{\"type\":\"message\",\"message\":{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	agent := &chatTranscriptAgent{stubTranscriptAgent: stubTranscriptAgent{dir: dir}}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	respCh := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/api/v1/projects/test-project/transcripts/2026-01-01_a/chat",
+			"application/json", bytes.NewReader([]byte(`{"message":"hello"}`)))
+		if err == nil {
+			respCh <- resp
+		}
+	}()
+	sess := waitChatSession(t, agent)
+	// 先发一个事件把响应头刷出来，客户端才拿得到 resp。
+	sess.events <- Event{Type: EventText, Content: "first"}
+
+	var resp *http.Response
+	select {
+	case resp = <-respCh:
+	case <-time.After(5 * time.Second):
+		t.Fatal("chat response never arrived")
+	}
+	resp.Body.Close() // 关页面
+
+	// 断开之后仍要继续消费，直到这一轮结束。
+	sess.events <- Event{Type: EventText, Content: "still running"}
+	// 请求上下文被断开（r.Context 取消）但传给会话的 ctx 不能跟着取消，
+	// 否则 omp 进程会在 turn 中途被杀。handler 返回时才会 cancelRun，
+	// 所以此刻 ctx 仍必须是活的。
+	time.Sleep(100 * time.Millisecond)
+	if ctx := agent.runCtx(); ctx != nil && ctx.Err() != nil {
+		t.Fatalf("session context cancelled while turn still running: %v", ctx.Err())
+	}
+	sess.events <- Event{Type: EventResult, Done: true}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && len(sess.events) > 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if left := len(sess.events); left != 0 {
+		t.Fatalf("handler stopped consuming after disconnect: %d events left", left)
 	}
 }

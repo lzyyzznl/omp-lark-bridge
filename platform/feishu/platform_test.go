@@ -60,61 +60,32 @@ func TestNew_DisabledInteractiveCardsDoesNotStartPreviewCard(t *testing.T) {
 	}
 }
 
-func TestNew_ProgressStyleDefaultLegacy(t *testing.T) {
-	p, err := New(map[string]any{"app_id": "cli_xxx", "app_secret": "secret"})
-	if err != nil {
-		t.Fatalf("New() error = %v", err)
+// 本地定制：progress_style 已写死为 card，配置项被忽略（含非法值）。
+func TestNew_ProgressStyleHardcodedCard(t *testing.T) {
+	cases := []map[string]any{
+		{"app_id": "cli_xxx", "app_secret": "secret"},
+		{"app_id": "cli_xxx", "app_secret": "secret", "progress_style": "legacy"},
+		{"app_id": "cli_xxx", "app_secret": "secret", "progress_style": "invalid-style"},
 	}
-	sp, ok := p.(core.ProgressStyleProvider)
-	if !ok {
-		t.Fatalf("platform type %T does not implement ProgressStyleProvider", p)
-	}
-	if got := sp.ProgressStyle(); got != "legacy" {
-		t.Fatalf("ProgressStyle() = %q, want legacy", got)
-	}
-}
-
-func TestNew_ProgressStyleSupportsCompactAndCard(t *testing.T) {
-	tests := []string{"compact", "card"}
-	for _, style := range tests {
-		t.Run(style, func(t *testing.T) {
-			p, err := New(map[string]any{
-				"app_id":         "cli_xxx",
-				"app_secret":     "secret",
-				"progress_style": style,
-			})
-			if err != nil {
-				t.Fatalf("New() error = %v", err)
-			}
-			sp, ok := p.(core.ProgressStyleProvider)
-			if !ok {
-				t.Fatalf("platform type %T does not implement ProgressStyleProvider", p)
-			}
-			if got := sp.ProgressStyle(); got != style {
-				t.Fatalf("ProgressStyle() = %q, want %q", got, style)
-			}
-			payloadCap, ok := p.(core.ProgressCardPayloadSupport)
-			if !ok {
-				t.Fatalf("platform type %T does not implement ProgressCardPayloadSupport", p)
-			}
-			if !payloadCap.SupportsProgressCardPayload() {
-				t.Fatal("SupportsProgressCardPayload() = false, want true")
-			}
-		})
-	}
-}
-
-func TestNew_ProgressStyleRejectsInvalidValue(t *testing.T) {
-	_, err := New(map[string]any{
-		"app_id":         "cli_xxx",
-		"app_secret":     "secret",
-		"progress_style": "invalid-style",
-	})
-	if err == nil {
-		t.Fatal("expected error for invalid progress_style")
-	}
-	if !strings.Contains(err.Error(), "invalid progress_style") {
-		t.Fatalf("error = %q, want invalid progress_style", err.Error())
+	for _, opts := range cases {
+		p, err := New(opts)
+		if err != nil {
+			t.Fatalf("New(%v) error = %v", opts, err)
+		}
+		sp, ok := p.(core.ProgressStyleProvider)
+		if !ok {
+			t.Fatalf("platform type %T does not implement ProgressStyleProvider", p)
+		}
+		if got := sp.ProgressStyle(); got != "card" {
+			t.Fatalf("ProgressStyle() = %q, want card", got)
+		}
+		payloadCap, ok := p.(core.ProgressCardPayloadSupport)
+		if !ok {
+			t.Fatalf("platform type %T does not implement ProgressCardPayloadSupport", p)
+		}
+		if !payloadCap.SupportsProgressCardPayload() {
+			t.Fatal("SupportsProgressCardPayload() = false, want true")
+		}
 	}
 }
 

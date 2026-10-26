@@ -345,17 +345,9 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 		}
 	}
 
-	progressStyle := "legacy"
-	if v, ok := opts["progress_style"].(string); ok {
-		switch strings.ToLower(strings.TrimSpace(v)) {
-		case "", "legacy":
-			progressStyle = "legacy"
-		case "compact", "card":
-			progressStyle = strings.ToLower(strings.TrimSpace(v))
-		default:
-			return nil, fmt.Errorf("%s: invalid progress_style %q (want legacy, compact, or card)", name, v)
-		}
-	}
+	// 本地定制：飞书进度固定使用 card 模式，所有中间过程收进同一张卡片原地更新。
+	// 不再读取 progress_style 配置项（上游默认 legacy 会导致每条过程单独发一张卡片）。
+	const progressStyle = "card"
 	useInteractiveCard := true
 	if v, ok := opts["enable_feishu_card"].(bool); ok {
 		useInteractiveCard = v

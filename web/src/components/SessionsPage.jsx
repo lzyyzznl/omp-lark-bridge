@@ -252,8 +252,23 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [stickBottom, setStickBottom] = useState(true)
   const [configProject, setConfigProject] = useState('')  // 非空 → 打开配置弹窗
   const [newOpen, setNewOpen] = useState(false)
+  // 左侧项目行的 ⋯ 菜单：设置 / 重命名（就地编辑）/ 删除（二次确认）
+  const [projMenu, setProjMenu] = useState('')
+  const [renaming, setRenaming] = useState('')
+  const [renameVal, setRenameVal] = useState('')
+  const [delProj, setDelProj] = useState('')
+  const [projBusy, setProjBusy] = useState(false)
+  const renameBusyRef = useRef(false)
   // 会话状态（后端从 transcript 尾部推断）：running/asking/done/idle
   useEsc(!!configProject, () => setConfigProject(''))
+
+  // 点空白处收起 ⋯ 菜单
+  useEffect(() => {
+    if (!projMenu) return
+    const close = () => setProjMenu('')
+    document.addEventListener('click', close)
+    return () => document.removeEventListener('click', close)
+  }, [projMenu])
 
   const loadLibrary = useCallback(async () => {
     try {
@@ -725,6 +740,42 @@ export default function SessionsPage({ initialTx, onToast }) {
     return parts.join(' · ')
   }
 
+  // 就地重命名：Enter/失焦保存，Esc 取消。空值或未改动不发请求。
+  const commitRename = async (p) => {
+    if (renameBusyRef.current) return
+    const val = renameVal.trim()
+    setRenaming('')
+    if (!val || val === (p.display_name || p.name)) return
+    renameBusyRef.current = true
+    try {
+      await api.patchProject(p.name, { display_name: val })
+      onToast?.('ok', `项目已重命名为「${val}」`)
+      await loadProjects()
+    } catch (e) {
+      onToast?.('err', e.message)
+    } finally {
+      renameBusyRef.current = false
+    }
+  }
+
+  // 弹窗与提示优先用显示名，显示名只是别名，删除请求仍按项目 ID
+  const projLabel = (name) => projects.find((p) => p.name === name)?.display_name || name
+  const doDeleteProj = async () => {
+    if (!delProj) return
+    setProjBusy(true)
+    try {
+      await api.delProject(delProj)
+      onToast?.('ok', `项目「${projLabel(delProj)}」已删除`)
+      setDelProj('')
+      await loadProjects()
+      await loadLibrary()
+    } catch (e) {
+      onToast?.('err', e.message)
+    } finally {
+      setProjBusy(false)
+    }
+  }
+
   return (
     <div className="sess-page lib-page">
       {/* 左栏：文件夹（含其下项目）；齿轮打开配置抽屉 */}
@@ -755,28 +806,56 @@ export default function SessionsPage({ initialTx, onToast }) {
               onClick={() => setFolder(f.cwd)}
               title={f.cwd || '没有记录 cwd 的会话'}
             >
-              <div className="sess-item-name">
-                {f.cwd ? `📁 ${f.label.split('/').filter(Boolean).pop() || f.label}` : '未归类'}
-                {!f.cwd && <span className="bot-tag">无 cwd</span>}
+              <div className="sess-item-head">
+                <div className="sess-item-name">
+                  {f.cwd ? `📁 ${f.label.split('/').filter(Boolean).pop() || f.label}` : '未归类'}
+                  {!f.cwd && <span className="bot-tag">无 cwd</span>}
+                </div>
+                {f.projects.length > 0 && (
+                  <div className="lib-projects">
+                    {f.projects.map((p) => (
+                      <div key={p.name} className="lib-project-row">
+                        {renaming === p.name ? (
+                          <input
+                            className="input lib-rename-input"
+                            value={renameVal}
+                            autoFocus
+                            onChange={(e) => setRenameVal(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') commitRename(p)
+                              if (e.key === 'Escape') setRenaming('')
+                            }}
+                            onBlur={() => commitRename(p)}
+                          />
+                        ) : (
+                          <span
+                            className={`lib-project-name ${p.running === false ? 'lib-project-off' : ''}`}
+                            title={p.display_name ? `${p.display_name}（${p.name}）` : p.name}
+                          >
+                            {p.display_name || p.name}
+                          </span>
+                        )}
+                        <div className="lib-proj-menu-wrap">
+                          <button
+                            className="lib-dots"
+                            title="项目操作"
+                            onClick={(e) => { e.stopPropagation(); setProjMenu(projMenu === p.name ? '' : p.name) }}
+                          >⋯</button>
+                          {projMenu === p.name && (
+                            <div className="lib-proj-menu" onClick={(e) => e.stopPropagation()}>
+                              <button onClick={() => { setProjMenu(''); setConfigProject(p.name) }}>设置</button>
+                              <button onClick={() => { setProjMenu(''); setRenaming(p.name); setRenameVal(p.display_name || p.name) }}>重命名</button>
+                              <button className="danger" onClick={() => { setProjMenu(''); setDelProj(p.name) }}>删除</button>
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="sess-item-sub" title={f.cwd || ''}>{folderStats(f)}</div>
             </div>
-            {f.projects.length > 0 && (
-              <div className="lib-badges">
-                {f.projects.map((p) => (
-                  <button
-                    key={p.name}
-                    type="button"
-                    className={`lib-badge ${p.running === false ? 'lib-badge-off' : ''}`}
-                    title="项目配置（点击打开）"
-                    onClick={() => setConfigProject(p.name)}
-                  >
-                    <span>{p.display_name || p.name}</span>
-                    <span className="lib-badge-icon" aria-hidden>⚙</span>
-                  </button>
-                ))}
-              </div>
-            )}
           </div>
         ))}
         <div className="lib-foot">
@@ -1053,6 +1132,26 @@ export default function SessionsPage({ initialTx, onToast }) {
           onToast={onToast}
           onCreated={() => { loadProjects(); loadLibrary() }}
         />
+      )}
+
+      {delProj && (
+        <div className="prj-modal-mask" style={{ zIndex: 90 }} onClick={(e) => { if (e.target === e.currentTarget) setDelProj('') }}>
+          <div className="prj-modal prj-confirm">
+            <div className="sess-list-head">
+              <span>删除项目</span>
+              <button className="btn btn-sm" onClick={() => setDelProj('')}>×</button>
+            </div>
+            <div className="help">
+              确定删除「{projLabel(delProj)}」？该项目的平台连接与配置会被移除，服务重启后生效；会话文件不会被删除。
+            </div>
+            <div className="prj-form-actions">
+              <button className="btn btn-sm btn-red" onClick={doDeleteProj} disabled={projBusy}>
+                {projBusy ? '删除中…' : '确认删除'}
+              </button>
+              <button className="btn btn-sm" onClick={() => setDelProj('')}>取消</button>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   )

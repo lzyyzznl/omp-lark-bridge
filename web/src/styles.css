@@ -506,7 +506,9 @@ textarea.input { resize: vertical; min-height: 72px; }
   padding: 10px 12px;
   border-bottom: 1px solid color-mix(in srgb, var(--ink) 15%, transparent);
   cursor: pointer;
+  position: relative;
 }
+.sess-item:has(.lib-proj-menu) { z-index: 40; } /* 菜单展开时该行浮到相邻行之上 */
 .sess-item:last-child { border-bottom: none; }
 .sess-item:hover { background: var(--cream); }
 .sess-item-on { background: var(--ink); color: var(--cream); }
@@ -860,18 +862,34 @@ textarea.input { resize: vertical; min-height: 72px; }
 .lib-filter-row { display: flex; gap: 6px; }
 .lib-filter-row .input { flex: 1; min-width: 0; }
 .lib-query { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-dim); }
-.lib-badges { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px 26px; }
-.lib-badge {
-  display: inline-flex; align-items: center; gap: 4px;
-  font-family: inherit; font-size: 11px; line-height: 1.6;
-  border: 1px solid var(--border); border-radius: 10px;
-  padding: 1px 7px; color: var(--ink-dim); background: transparent;
-  cursor: pointer; transition: border-color .12s, color .12s, background .12s;
+/* 文件夹行：名称在左，项目名 + ⋯ 在同一行最右侧 */
+.sess-item-head { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sess-item-head .sess-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lib-projects { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 62%; }
+.lib-project-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.lib-project-name {
+  flex: 1; min-width: 0; font-size: 11px; color: var(--ink-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.lib-badge:hover { border-color: var(--ink); color: var(--ink); background: color-mix(in srgb, var(--ink) 7%, transparent); }
-.lib-badge-off { opacity: .55; }
-.lib-badge-icon { font-size: 10px; opacity: .45; }
-.lib-badge:hover .lib-badge-icon { opacity: 1; }
+.lib-project-off { opacity: .55; }
+.lib-rename-input { flex: 1; min-width: 0; font-size: 11px; padding: 1px 4px; }
+.lib-proj-menu-wrap { position: relative; flex: 0 0 auto; }
+.lib-dots {
+  background: none; border: none; cursor: pointer; font-family: inherit;
+  color: var(--ink-dim); font-size: 14px; line-height: 1; padding: 0 4px; border-radius: 4px;
+}
+.lib-dots:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink); }
+.lib-proj-menu {
+  position: absolute; right: 0; top: 18px; z-index: 50; min-width: 92px;
+  background: var(--surface); border: 1.5px solid var(--ink); border-radius: 6px;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, .2); display: flex; flex-direction: column; overflow: hidden;
+}
+.lib-proj-menu button {
+  background: none; border: none; text-align: left; padding: 6px 12px;
+  font: 12px inherit; font-size: 12px; color: var(--ink); cursor: pointer;
+}
+.lib-proj-menu button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+.lib-proj-menu button.danger { color: var(--red); }
 .lib-foot { padding: 10px; border-top: 1.5px solid var(--ink); margin-top: auto; }
 .lib-txs .sess-tx-item { display: flex; align-items: flex-start; }
 .lib-check { margin: 2px 8px 0 0; }
@@ -918,6 +936,7 @@ textarea.input { resize: vertical; min-height: 72px; }
 
 /* 项目配置弹窗：表单较长，弹窗内滚动 */
 .prj-modal-tall { width: min(720px, 94vw); max-height: 88vh; overflow-y: auto; }
+.prj-confirm { width: min(420px, 92vw); }
 
 /* 会话列表项操作区：时间与按钮分开，窄栏不挤压 */
 .lib-tx-meta { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }

@@ -705,7 +705,8 @@ textarea.input { resize: vertical; min-height: 72px; }
   cursor: pointer;
 }
 .sess-tx-item:hover { background: var(--cream); }
-.sess-tx-name { font: 600 12px var(--font-mono); word-break: break-all; }
+.sess-tx-name { font: 600 12px var(--font-mono); display: flex; align-items: center; gap: 6px; min-width: 0; }
+.sess-tx-name .lib-tx-title { flex: 1; min-width: 0; }
 .sess-tx-sub { font-size: 11px; color: var(--ink-dim); margin-top: 2px; display: flex; justify-content: space-between; align-items: center; gap: 8px; }
 .t-flow .btn-ghost { margin-bottom: 8px; }
 .sess-copy { margin-left: 8px; }
@@ -908,15 +909,16 @@ textarea.input { resize: vertical; min-height: 72px; }
 .lib-tx-ops { display: inline-flex; gap: 4px; flex-shrink: 0; }
 .lib-txs .sess-tx-sub { flex-wrap: wrap; }
 
-/* 会话状态徽标：进行中 / 提问待处理 / 已完成 / 静默 */
+/* 会话状态：小圆点 + 文字，放在元信息行，不挤标题 */
 .lib-status {
-  font-size: 10px; line-height: 15px; padding: 0 5px; border-radius: 3px;
-  border: 1px solid; white-space: nowrap; flex-shrink: 0;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 10px; white-space: nowrap; flex-shrink: 0;
 }
-.lib-status.st-running { color: #1f9d55; border-color: #1f9d55; background: rgba(31, 157, 85, .10); }
-.lib-status.st-asking { color: #b45309; border-color: #b45309; background: rgba(180, 83, 9, .10); }
-.lib-status.st-done { color: #6b7280; border-color: #9ca3af; }
-.lib-status.st-idle { color: #9ca3af; border-color: #d1d5db; border-style: dashed; }
+.lib-status::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+.lib-status.st-running { color: #1f9d55; }
+.lib-status.st-asking { color: #b45309; }
+.lib-status.st-done { color: #9ca3af; }
+.lib-status.st-idle { color: #b0b7c3; }
 .lib-status-row { font-size: 11px; margin-top: 3px; color: #6b7280; }
 .lib-status-row.st-running { color: #1f9d55; }
 .lib-status-row.st-asking { color: #b45309; }

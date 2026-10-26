@@ -803,15 +803,15 @@ export default function SessionsPage({ initialTx, onToast }) {
                     ? <span className="badge badge-cron" title={`定时任务：${t.job_title || t.job_id}`}>定时任务</span>
                     : <span className="badge badge-chat">对话</span>}
                   <span className="lib-tx-title" title={t.title || t.id}>{t.title || t.id}</span>
-                  {STATUS_LABEL[t.status] && (
-                    <span className={`lib-status st-${t.status}`} title={STATUS_HINT[t.status] || ''}>
-                      {STATUS_LABEL[t.status]}
-                    </span>
-                  )}
                 </div>
                 <div className="sess-tx-sub">
                   <span className="lib-tx-meta">
-                    {formatTime(t.updated_at)} · {formatBytes(t.size)}
+                    {STATUS_LABEL[t.status] && (
+                      <span className={`lib-status st-${t.status}`} title={STATUS_HINT[t.status] || ''}>
+                        {STATUS_LABEL[t.status]}
+                      </span>
+                    )}
+                    <span>{formatTime(t.updated_at)} · {formatBytes(t.size)}</span>
                     {t.cwd && folder === ALL && <span className="lib-cwd" title={t.cwd}>{t.cwd.split('/').filter(Boolean).pop()}</span>}
                   </span>
                   <span className="lib-tx-ops">
@@ -874,7 +874,7 @@ export default function SessionsPage({ initialTx, onToast }) {
               </div>
               {STATUS_LABEL[currentTx?.status] && (
                 <div className={`lib-status-row st-${currentTx.status}`}>
-                  ● {STATUS_LABEL[currentTx.status]} · 每 2 秒自动刷新
+                  ● {STATUS_LABEL[currentTx.status]} · 自动刷新中
                 </div>
               )}
             </div>

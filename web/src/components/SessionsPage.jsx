@@ -374,6 +374,10 @@ export default function SessionsPage({ initialTx, onToast }) {
   const currentTx = useMemo(() => (library || []).find((x) => x.id === selectedTx), [library, selectedTx])
   const activeProject = useMemo(() => projectFor(currentTx), [currentTx, projectFor])
 
+  // 进入页面/刷新后本地没有 SSE，sending 只代表"本页发起的这一轮"；会话是否
+  // 仍在跑必须以后端推断的状态为准，否则进行中的会话永远看不到停止按钮。
+  const turnRunning = !!(currentTx && (currentTx.status === 'running' || currentTx.status === 'asking'))
+
   // 发送旁的下拉：按当前项目引擎读取可切换的模型 / 思考强度与当前值；
   // agent 不支持（接口报错）时静默隐藏对应控件。
   useEffect(() => {
@@ -665,12 +669,16 @@ export default function SessionsPage({ initialTx, onToast }) {
     setStopping(true)
     try {
       await api.stopChat(activeProject, selectedTx)
+      // 页面可能是重新进入的（没有本地 SSE 来收 done），先把状态乐观落下去，
+      // 再拉一次列表拿后端权威值。
+      setLibrary((prev) => (prev || []).map((x) => (x.id === selectedTx ? { ...x, status: 'done' } : x)))
+      loadLibrary()
     } catch (e) {
       onToast?.('err', e.message || '停止失败')
     } finally {
       setStopping(false)
     }
-  }, [activeProject, selectedTx, onToast])
+  }, [activeProject, selectedTx, loadLibrary, onToast])
   const histToolResults = useMemo(() => indexToolResults(txDetail || []), [txDetail])
   const histRendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, histToolResults, false)), [txDetail, histToolResults])
   const liveToolResults = useMemo(() => indexToolResults(live), [live])
@@ -1082,7 +1090,7 @@ export default function SessionsPage({ initialTx, onToast }) {
                     {reasonCtrl.efforts.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
                 )}
-                {sending && (
+                {(sending || turnRunning) && (
                   <button className="btn btn-sm btn-red" onClick={stopTurn} disabled={stopping}>
                     {stopping ? '停止中…' : '停止 ⏹'}
                   </button>

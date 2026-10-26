@@ -34,6 +34,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
     折叠，避免长 turn 把正文挤下去；单次结果最多 6 行，其余提示"还有 N 行"。
 
 ### Fixed
+- 会话页停止按钮不再只认"本页发起的那一轮"：进入页面或刷新后按会话状态
+  （`running` / `asking`）显示，停止成功后立即刷新该行状态。后端停止接口也能
+  停掉页面没发起过的 turn——omp resume 会 fork 新会话文件（页面持有的是旧 id）
+  时按当前文件匹配；飞书 / 终端 / cron 发起的 turn 由引擎按会话文件查到 live
+  session 并 `CancelTurn`，不再一律 409。
 - Windows 上管理后台改配置不再需要手动重启：`daemon.RestartServiceAsync` 原先
   直接返回 `async restart unsupported on windows`，导致网页保存/扫码绑定/新建项目
   后 `restart_required` 永不生效（前端仍提示"正在自动重启生效…"），表现为新建或

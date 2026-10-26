@@ -10377,6 +10377,44 @@ normalCleanup:
 	return true
 }
 
+// CancelTurnForSessionFile aborts the running turn whose agent session writes
+// to sessionFile, whichever platform started it. The web UI's stop button uses
+// this so a turn started from Feishu (or one whose omp session forked to a new
+// file after a resume) can still be stopped. Returns false when no live session
+// matches; the caller maps that to 409.
+func (e *Engine) CancelTurnForSessionFile(sessionFile string) (bool, error) {
+	base := filepath.Base(sessionFile)
+	e.interactiveMu.Lock()
+	states := make([]*interactiveState, 0, len(e.interactiveStates))
+	for _, st := range e.interactiveStates {
+		states = append(states, st)
+	}
+	e.interactiveMu.Unlock()
+
+	for _, st := range states {
+		if st == nil {
+			continue
+		}
+		st.mu.Lock()
+		sess := st.agentSession
+		st.mu.Unlock()
+		if sess == nil {
+			continue
+		}
+		cur := sess.CurrentSessionID()
+		if cur == "" || filepath.Base(cur) != base {
+			continue
+		}
+		canceller, ok := sess.(AgentSessionCanceller)
+		if !ok {
+			// Matched a live turn whose agent cannot cancel a single turn.
+			return true, nil
+		}
+		return true, canceller.CancelTurn()
+	}
+	return false, nil
+}
+
 func (e *Engine) cmdCompress(p Platform, msg *Message) {
 	agent, sessions, _, err := e.commandContext(p, msg)
 	if err != nil {

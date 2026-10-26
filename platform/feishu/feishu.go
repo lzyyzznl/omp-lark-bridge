@@ -7154,9 +7154,10 @@ type feishuSlashCommand struct {
 
 // RegisterCommands implements core.CommandRegistrar: it syncs the engine's
 // command list into Feishu's "/" panel. Feishu has no bulk upsert, so the list
-// is fetched first and only missing commands are created and changed
-// descriptions patched; commands that exist remotely but not locally are left
-// alone (they may belong to the console or another deploy).
+// is fetched first, missing commands are created and changed descriptions are
+// patched. Commands that exist remotely but not locally are deleted: the panel
+// is API-owned by this bot, so anything left over is stale (e.g. a command a
+// capability filter stopped advertising).
 func (p *Platform) RegisterCommands(commands []core.BotCommandInfo) error {
 	if !p.slashCommands || p.appID == "" || p.appSecret == "" {
 		return nil

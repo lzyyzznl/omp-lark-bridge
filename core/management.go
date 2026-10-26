@@ -2576,7 +2576,7 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 		return
 	}
 	if hasAction && action == "stop" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
-		m.stopTranscriptChat(w, id)
+		m.stopTranscriptChat(w, e, dir, id)
 		return
 	}
 	m.readTranscript(w, dir, rest)
@@ -3328,22 +3328,55 @@ func (m *ManagementServer) unregisterRunningChat(id string) {
 	delete(m.chatStops, id)
 }
 
+// sessionFileOf returns the .jsonl path an agent session is currently writing,
+// or "" when the session does not expose one.
+func sessionFileOf(c AgentSessionCanceller) string {
+	sess, ok := c.(AgentSession)
+	if !ok {
+		return ""
+	}
+	return sess.CurrentSessionID()
+}
+
 // stopTranscriptChat aborts the turn running for a transcript without tearing
-// down its agent process (AgentSessionCanceller.CancelTurn). The SSE stream of
-// that turn then ends with a normal "done" event.
-func (m *ManagementServer) stopTranscriptChat(w http.ResponseWriter, id string) {
+// down its agent process (AgentSessionCanceller.CancelTurn). Two lookups because
+// a turn can outlive the page that started it:
+//  1. chatStops: a turn this process started from the web UI. omp forks a new
+//     session file on resume, so a reloaded page may hold the new transcript id;
+//     match that id through the live session's current file as well.
+//  2. the engine's interactive sessions: a turn started from Feishu, the
+//     terminal, or cron never registers here, but the engine can still cancel
+//     the one writing this transcript.
+func (m *ManagementServer) stopTranscriptChat(w http.ResponseWriter, e *Engine, dir, id string) {
 	m.chatStopMu.Lock()
-	canceller := m.chatStops[id]
+	cancellers := make(map[string]AgentSessionCanceller, len(m.chatStops))
+	for k, v := range m.chatStops {
+		cancellers[k] = v
+	}
 	m.chatStopMu.Unlock()
-	if canceller == nil {
-		mgmtError(w, http.StatusConflict, "no running turn for this transcript")
+	for key, canceller := range cancellers {
+		if key != id && filepath.Base(sessionFileOf(canceller)) != id+".jsonl" {
+			continue
+		}
+		if err := canceller.CancelTurn(); err != nil {
+			mgmtError(w, http.StatusInternalServerError, "cancel turn: "+err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"message": "turn cancelled"})
 		return
 	}
-	if err := canceller.CancelTurn(); err != nil {
-		mgmtError(w, http.StatusInternalServerError, "cancel turn: "+err.Error())
-		return
+	if e != nil {
+		found, err := e.CancelTurnForSessionFile(filepath.Join(dir, id+".jsonl"))
+		if err != nil {
+			mgmtError(w, http.StatusInternalServerError, "cancel turn: "+err.Error())
+			return
+		}
+		if found {
+			mgmtJSON(w, http.StatusOK, map[string]any{"message": "turn cancelled"})
+			return
+		}
 	}
-	mgmtJSON(w, http.StatusOK, map[string]any{"message": "turn cancelled"})
+	mgmtError(w, http.StatusConflict, "no running turn for this transcript")
 }
 
 // chatWithTranscript resumes the transcript's agent session with the user's

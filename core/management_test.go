@@ -3393,9 +3393,10 @@ func waitChatSession(t *testing.T, a *chatTranscriptAgent) *chatStubSession {
 // verified without running a real agent turn.
 type cancelRecordingSession struct {
 	stubAgentSession
-	mu     sync.Mutex
-	called int
-	err    error
+	mu        sync.Mutex
+	called    int
+	err       error
+	sessionID string
 }
 
 func (s *cancelRecordingSession) CancelTurn() error {
@@ -3404,6 +3405,8 @@ func (s *cancelRecordingSession) CancelTurn() error {
 	s.called++
 	return s.err
 }
+
+func (s *cancelRecordingSession) CurrentSessionID() string { return s.sessionID }
 
 func (s *cancelRecordingSession) calls() int {
 	s.mu.Lock()
@@ -3446,6 +3449,55 @@ func TestMgmt_Transcripts_StopTurn(t *testing.T) {
 	r = mgmtPost(t, stopURL, "tok", nil)
 	if r.OK || !strings.Contains(r.Error, "abort failed") {
 		t.Fatalf("cancel failure: ok=%v err=%q", r.OK, r.Error)
+	}
+}
+
+// TestMgmt_Transcripts_StopTurn_CrossPlatform pins stopping a turn the page did
+// not start: omp forks a new session file on resume (the transcript id the
+// reloaded page holds changed), and Feishu/terminal turns never register in
+// chatStops. Both must still cancel through the stop endpoint.
+func TestMgmt_Transcripts_StopTurn_CrossPlatform(t *testing.T) {
+	dir := t.TempDir()
+	agent := &stubTranscriptAgent{dir: dir}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+
+	mgmt := NewManagementServer(0, "tok", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// 1) Web turn registered under the pre-resume id; the page reloaded onto the
+	// forked id. Stopping by the forked id must still cancel that turn.
+	forked := &cancelRecordingSession{sessionID: filepath.Join(dir, "t2.jsonl")}
+	mgmt.registerRunningChat("t1", forked)
+	r := mgmtPost(t, ts.URL+"/api/v1/projects/test-project/transcripts/t2/stop", "tok", nil)
+	if !r.OK {
+		t.Fatalf("stop forked id: %s", r.Error)
+	}
+	if got := forked.calls(); got != 1 {
+		t.Fatalf("CancelTurn calls = %d, want 1", got)
+	}
+	mgmt.unregisterRunningChat("t1")
+
+	// 2) Feishu/terminal turn: only the engine knows about it.
+	live := &cancelRecordingSession{sessionID: filepath.Join(dir, "t3.jsonl")}
+	e.interactiveMu.Lock()
+	e.interactiveStates = map[string]*interactiveState{"feishu:t3": {agentSession: live}}
+	e.interactiveMu.Unlock()
+	r = mgmtPost(t, ts.URL+"/api/v1/projects/test-project/transcripts/t3/stop", "tok", nil)
+	if !r.OK {
+		t.Fatalf("stop engine turn: %s", r.Error)
+	}
+	if got := live.calls(); got != 1 {
+		t.Fatalf("engine CancelTurn calls = %d, want 1", got)
+	}
+
+	// 3) Nothing running anywhere: 409.
+	r = mgmtPost(t, ts.URL+"/api/v1/projects/test-project/transcripts/t9/stop", "tok", nil)
+	if r.OK || !strings.Contains(r.Error, "no running turn") {
+		t.Fatalf("stop unknown transcript: ok=%v err=%q", r.OK, r.Error)
 	}
 }
 

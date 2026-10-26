@@ -5,6 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Changed
+- 每轮对话固定输出**一张**卡片（Card 2.0 rich），思考、工具调用、工具结果与正文都在同一张卡里原地更新：
+  - 写死 `card_mode = "rich"`：`config.EffectiveCardMode` 恒返回 "rich"，引擎默认 `DisplayCfg.CardMode`
+    同为 rich，`[display] card_mode` 仅保留解析（值被忽略），不再有 legacy 分片路径。
+  - 删掉最终回答的 MarkdownTableSplitter 溢出发送与错误文本的二次发送：卡片已带 Error 状态，
+    不再重复发一条消息。
+  - 超长识别 `core.RichCardBodyBudgeter`（feishu 实现为 8000 rune）：正文超预算时首卡按换行截断
+    并以 `…` 收尾，剩余内容**新开一张卡**续写，循环直到发完，不丢内容也不混发纯文本。
+  - 工具结果硬截断：引擎侧每行最多 `richCardToolResultMaxRunes = 300` 字符、最多保留最近
+    `richCardMaxSteps = 24` 行；飞书侧每行文本截到 `maxRichCardStepTextRunes = 200`，
+    每个面板只留最近 `maxRichCardStepsPerLane = 10` 行并显示"隐藏 N 步"提示。
+  - 卡片体积硬保证：`buildRichCard` 在压缩面板后仍超 `maxRichCardJSONBytes = 29500` 时，
+    对正文做二分截断并加 `…（内容过长，已截断）` 标记，避免飞书拒收整条消息导致回复丢失。
+
 ### Fixed
 - Windows 上管理后台改配置不再需要手动重启：`daemon.RestartServiceAsync` 原先
   直接返回 `async restart unsupported on windows`，导致网页保存/扫码绑定/新建项目

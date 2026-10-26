@@ -6595,7 +6595,7 @@ func richStepRowContent(step core.ToolStep) string {
 func richStepElement(step core.ToolStep) map[string]any {
 	text := map[string]any{
 		"tag":       "plain_text",
-		"content":   richStepRowContent(step),
+		"content":   truncateRunes(richStepRowContent(step), maxRichCardStepTextRunes),
 		"text_size": "notation",
 	}
 	elem := map[string]any{
@@ -6627,11 +6627,10 @@ func richPanelElements(steps []core.ToolStep, labels richCardLabels) []map[strin
 	if len(steps) == 0 {
 		return []map[string]any{richPlaceholderElement(labels.thinkingEmpty)}
 	}
-	const maxPanelSteps = 10
 	visible := steps
 	hidden := 0
-	if len(steps) > maxPanelSteps {
-		hidden = len(steps) - maxPanelSteps
+	if len(steps) > maxRichCardStepsPerLane {
+		hidden = len(steps) - maxRichCardStepsPerLane
 		visible = steps[hidden:]
 	}
 	elements := make([]map[string]any, 0, len(visible)+1)
@@ -6664,6 +6663,15 @@ func buildRichPanel(title string, expanded bool, elements []map[string]any) map[
 const (
 	maxRichCardJSONBytes = 29500
 	cardSummaryMaxRunes  = 60
+	// richCardBodyBudgetRunes bounds the answer body carried by one card: CJK is
+	// 3 bytes per rune in JSON, so 8000 runes (~24KB) leaves room for the
+	// reasoning/tool panels, footer and envelope. The engine sends the rest as
+	// follow-up messages instead of letting Feishu reject the card.
+	richCardBodyBudgetRunes = 8000
+	// Per-lane row caps for the collapsible panels: at most this many thinking
+	// rows and tool rows, each truncated to maxRichCardStepTextRunes.
+	maxRichCardStepsPerLane  = 10
+	maxRichCardStepTextRunes = 200
 )
 
 // buildRichCard renders a Card 2.0 "single-card" turn with collapsible
@@ -6710,8 +6718,59 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 	if strings.TrimSpace(fallbackMarkdown) == "" {
 		fallbackMarkdown = compactRichFallbackMarkdown(steps)
 	}
+	// Body too large for one card. Feishu rejects payloads above ~30KB outright,
+	// which would drop the whole reply, so cut the body on a rune boundary with a
+	// marker. The engine keeps the card body within RichCardBodyBudget() and sends
+	// the remainder as follow-up messages, so this only triggers on pathological
+	// single-chunk bodies.
+	compactSteps := compactRichStepsForCardSize(steps, 3, 60)
+	if fitted, ok := truncateRichBodyToFit(status, compactSteps, fallbackMarkdown, streaming, statusFooter, lang); ok {
+		slog.Debug("feishu: rich card body truncated to fit payload limit", "size", len(b))
+		return fitted
+	}
 	slog.Debug("feishu: rich card exceeds size limit, fallback to compact markdown card", "size", len(b))
-	return buildCardJSONWithStatus(fallbackMarkdown, status)
+	return buildCardJSONWithStatus(truncateRunes(fallbackMarkdown, richCardBodyBudgetRunes), status)
+}
+
+// truncateRichBodyToFit binary-searches the longest body prefix whose rendered
+// card still fits maxRichCardJSONBytes, and appends a truncation marker.
+func truncateRichBodyToFit(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string, lang core.Language) (string, bool) {
+	runes := []rune(markdown)
+	if len(runes) == 0 {
+		return "", false
+	}
+	best := ""
+	lo, hi := 0, len(runes)
+	for lo <= hi {
+		mid := (lo + hi) / 2
+		candidate := string(runes[:mid]) + richCardTruncationMarker(lang)
+		b, err := buildRichCardJSONBytes(status, steps, candidate, streaming, statusFooter, lang)
+		if err == nil && len(b) <= maxRichCardJSONBytes {
+			best = string(b)
+			lo = mid + 1
+			continue
+		}
+		hi = mid - 1
+	}
+	return best, best != ""
+}
+
+func richCardTruncationMarker(lang core.Language) string {
+	if isZhLikeProgressLang(string(lang)) {
+		return "\n\n…（内容过长，已截断）"
+	}
+	return "\n\n… (truncated)"
+}
+
+func truncateRunes(s string, max int) string {
+	if max <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= max {
+		return s
+	}
+	return string(runes[:max])
 }
 
 func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string, lang core.Language) ([]byte, error) {
@@ -6921,6 +6980,12 @@ func splitMarkdownByTables(md string, maxTables int) []string {
 // splits it back into one dim notation block per line.
 func (p *Platform) BuildRichCard(status core.CardStatus, title string, steps []core.ToolStep, markdown string, streaming bool, statusFooter string) string {
 	return buildRichCard(status, title, steps, markdown, streaming, statusFooter, p.lang)
+}
+
+// RichCardBodyBudget implements core.RichCardBodyBudgeter: the engine keeps the
+// card body within this many runes and delivers the remainder separately.
+func (p *Platform) RichCardBodyBudget() int {
+	return richCardBodyBudgetRunes
 }
 
 // ---------------------------------------------------------------------------

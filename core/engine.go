@@ -62,6 +62,12 @@ const (
 	defaultThinkingMaxLen = 300
 	defaultToolMaxLen     = 500
 	defaultHistoryMaxLen  = 1000
+
+	// Caps for what a single card carries. Long tool output would otherwise push
+	// the card past Feishu's ~30KB payload limit, which drops the whole message.
+	// Beyond richCardMaxSteps the oldest rows are dropped from the card.
+	richCardToolResultMaxRunes = 300
+	richCardMaxSteps           = 24
 )
 
 // Slow-operation thresholds. Operations exceeding these durations produce a
@@ -748,7 +754,7 @@ func NewEngine(name string, ag Agent, platforms []Platform, sessionStorePath str
 		cancel:                cancel,
 		i18n:                  NewI18n(lang),
 		attachmentSendEnabled: true,
-		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: "legacy"},
+		display:               DisplayCfg{Mode: "full", ThinkingMessages: true, ThinkingMaxLen: defaultThinkingMaxLen, ToolMaxLen: defaultToolMaxLen, ToolMessages: true, CardMode: cardModeRich},
 		commands:              NewCommandRegistry(),
 		aliases:               make(map[string]string),
 		interactiveStates:     make(map[string]*interactiveState),
@@ -5160,11 +5166,8 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 		// sessionQuiet which we drop. e.display.ThinkingMessages /
 		// ToolMessages handle user-level quiet in the fallback branches.
 		richCardSupporter, hasRichCard := p.(RichCardSupporter)
-		// Card 2.0 rich-card path is opt-in via [display] mode = "rich".
-		// Default "legacy" keeps upstream behavior for all platforms.
-		if e.display.CardMode != "rich" {
-			hasRichCard = false
-		}
+		// Card 2.0 rich-card path is the only mode: everything a turn produces is
+		// rendered into one card and updated in place.
 		richMarkdownResolver, hasRichMarkdownResolver := p.(RichCardMarkdownResolver)
 		resolveRichCardMarkdown := func(markdown string, final bool) string {
 			if !hasRichMarkdownResolver || markdown == "" {
@@ -5405,7 +5408,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				if result != "" || event.ToolStatus != "" || event.ToolExitCode != nil || event.ToolSuccess != nil {
 					if hasRichCard {
-						toolSteps = mergeRichToolResult(toolSteps, event, result, e.display.ToolMaxLen)
+						// The card only ever shows a short tail of the output; the full
+						// result stays in the session log.
+						cardResult := truncateIf(result, richCardResultCap(e.display.ToolMaxLen))
+						toolSteps = mergeRichToolResult(toolSteps, event, cardResult, e.display.ToolMaxLen)
+						toolSteps = trimRichSteps(toolSteps, richCardMaxSteps)
 						if cardMessageID == nil {
 							card := buildResolvedRichCard(CardStatusWorking, "", toolSteps, partialText, true, e.composeRichStatusFooter(true, turnStart, e.agent, state.agentSession, state.workspaceDir))
 							if starter, ok := p.(PreviewStarter); ok {
@@ -5921,15 +5928,23 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				slog.Info("silent reply suppressed", "session", session.ID)
 			} else if hasRichCard {
-				parts := []string{fullResponse}
-				if splitter, ok := p.(MarkdownTableSplitter); ok {
-					parts = splitter.SplitMarkdownByTables(fullResponse, 5)
-				}
+				// Single-card contract: the entire answer goes into the same card that
+				// already holds the thinking/tool history, so the table splitter's
+				// overflow cards are gone by design.
 				richStatusFooter := e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir)
 				if legacyStatusFooter != "" {
 					richStatusFooter = formatElapsed(time.Since(turnStart), false, e.i18n.currentLang()) + "\n" + legacyStatusFooter
 				}
-				finalBody := resolveRichCardMarkdown(parts[0], true)
+				finalBody := resolveRichCardMarkdown(fullResponse, true)
+				// Keep the card within the platform's body budget and deliver the rest
+				// as follow-up messages: Feishu rejects cards above ~30KB, and losing a
+				// long answer silently is worse than a continuation message.
+				overflow := ""
+				if budgeter, ok := p.(RichCardBodyBudgeter); ok {
+					if budget := budgeter.RichCardBodyBudget(); budget > 0 {
+						finalBody, overflow = splitRichCardBody(finalBody, budget)
+					}
+				}
 				finalCard := richCardSupporter.BuildRichCard(CardStatusDone, "", toolSteps, finalBody, false, richStatusFooter)
 				if cardMessageID != nil {
 					// Forced final flush via cardkit-v1 streaming text update before
@@ -5958,12 +5973,21 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						return
 					}
 				}
-				for _, overflow := range parts[1:] {
-					overflowBody := resolveRichCardMarkdown(overflow, true)
-					overflowCard := richCardSupporter.BuildRichCard(CardStatusDone, "", nil, overflowBody, false, richStatusFooter)
-					if err := p.Send(e.ctx, replyCtx, overflowCard); err != nil {
-						slog.Error("failed to send overflow rich card", "error", err)
-						return
+				// Overflow continues in a new card: the previous card is already
+				// truncated with a marker, so nothing is lost and no plain text
+				// messages are interleaved.
+				for strings.TrimSpace(overflow) != "" {
+					nextBody := overflow
+					overflow = ""
+					if budgeter, ok := p.(RichCardBodyBudgeter); ok {
+						if budget := budgeter.RichCardBodyBudget(); budget > 0 {
+							nextBody, overflow = splitRichCardBody(nextBody, budget)
+						}
+					}
+					contCard := richCardSupporter.BuildRichCard(CardStatusDone, "", nil, nextBody, false, richStatusFooter)
+					if err := p.Send(e.ctx, replyCtx, contCard); err != nil {
+						slog.Error("failed to send continuation rich card", "error", err)
+						break
 					}
 				}
 			} else if toolCount > 0 && segmentStart > 0 {
@@ -6234,7 +6258,11 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 						break
 					}
 				}
-				e.send(p, replyCtx, userMsg)
+				// Single-card contract: the failure is already rendered into the card
+				// (status Error + body), so a second chat message would duplicate it.
+				if !(hasRichCard && cardMessageID != nil) {
+					e.send(p, replyCtx, userMsg)
+				}
 			}
 			// Only drop queued messages if the agent session is dead.
 			// Some agents (e.g. Codex) emit EventError for per-turn failures
@@ -7363,6 +7391,46 @@ func (e *Engine) buildReplyFooter(agent Agent, session AgentSession, workspaceDi
 		return ""
 	}
 	return strings.Join(parts, " · ")
+}
+
+// richCardResultCap is how many runes of a tool result the card shows: the
+// configured tool_max_len, further capped so one verbose command cannot blow the
+// card payload limit.
+func richCardResultCap(configured int) int {
+	if configured <= 0 || configured > richCardToolResultMaxRunes {
+		return richCardToolResultMaxRunes
+	}
+	return configured
+}
+
+// trimRichSteps keeps only the newest max rows, so a long tool-heavy turn cannot
+// grow the card without bound.
+func trimRichSteps(steps []ToolStep, max int) []ToolStep {
+	if max <= 0 || len(steps) <= max {
+		return steps
+	}
+	return steps[len(steps)-max:]
+}
+
+// splitRichCardBody cuts an answer at the platform's card-body budget on a
+// natural boundary (the last newline in the head). The head goes into the card
+// with a truncation marker; the remainder continues in a new card so a long
+// answer is never silently lost.
+func splitRichCardBody(body string, budget int) (card, rest string) {
+	if budget <= 0 {
+		return body, ""
+	}
+	runes := []rune(body)
+	if len(runes) <= budget {
+		return body, ""
+	}
+	head := string(runes[:budget])
+	rest = string(runes[budget:])
+	if idx := strings.LastIndex(head, "\n"); idx > 0 {
+		rest = head[idx+1:] + rest
+		head = head[:idx]
+	}
+	return strings.TrimRight(head, "\n") + "\n\n…", strings.TrimLeft(rest, "\n")
 }
 
 // composeRichStatusFooter assembles the multi-line statusFooter passed to

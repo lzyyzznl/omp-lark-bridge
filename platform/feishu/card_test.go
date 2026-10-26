@@ -312,3 +312,61 @@ func TestBuildCardJSONWithStatusFooter_EmptyFooterFallsThrough(t *testing.T) {
 		t.Errorf("whitespace footer should fall through to buildCardJSON")
 	}
 }
+
+// A tool-heavy turn with a very long answer must still produce a card Feishu
+// accepts: anything above ~30KB is rejected, which would drop the whole reply.
+func TestBuildRichCard_StaysUnderFeishuPayloadLimit(t *testing.T) {
+	steps := make([]core.ToolStep, 0, 60)
+	for i := 0; i < 60; i++ {
+		steps = append(steps, core.ToolStep{
+			Kind:    core.ToolStepKindTool,
+			Name:    "Bash",
+			Summary: strings.Repeat("命令参数", 200),
+			Result:  strings.Repeat("输出结果", 200),
+			Status:  "completed",
+		})
+	}
+	body := strings.Repeat("很长的答案内容。\n", 2000)
+
+	card := buildRichCard(core.CardStatusDone, "", steps, body, false, "⏱ 1m · model", core.LangChinese)
+
+	if len(card) > maxRichCardJSONBytes {
+		t.Fatalf("card = %d bytes, want <= %d (Feishu rejects larger cards)", len(card), maxRichCardJSONBytes)
+	}
+	if !json.Valid([]byte(card)) {
+		t.Fatal("card must stay valid JSON after truncation")
+	}
+	if !strings.Contains(card, "已截断") {
+		t.Fatal("oversized card must carry a truncation marker")
+	}
+}
+
+// The truncation must not fire for a normal answer.
+func TestBuildRichCard_KeepsBodyThatFits(t *testing.T) {
+	card := buildRichCard(core.CardStatusDone, "", nil, "短答案", false, "", core.LangChinese)
+	if !strings.Contains(card, "短答案") {
+		t.Fatalf("card should keep a short body, got %q", card)
+	}
+	if strings.Contains(card, "已截断") {
+		t.Fatal("short body must not be marked truncated")
+	}
+}
+
+// Tool rows are capped per lane so a 60-command turn cannot grow the panel
+// without bound.
+func TestBuildRichCard_CapsPanelRows(t *testing.T) {
+	steps := make([]core.ToolStep, 0, 60)
+	for i := 0; i < 60; i++ {
+		steps = append(steps, core.ToolStep{
+			Kind:    core.ToolStepKindTool,
+			Name:    "Bash",
+			Summary: "cmd",
+			Result:  "ok",
+			Status:  "completed",
+		})
+	}
+	card := buildRichCard(core.CardStatusWorking, "", steps, "answer", true, "", core.LangChinese)
+	if got := strings.Count(card, "cmd"); got > maxRichCardStepsPerLane {
+		t.Fatalf("rendered %d tool rows, want at most %d", got, maxRichCardStepsPerLane)
+	}
+}

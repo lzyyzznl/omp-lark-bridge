@@ -1658,7 +1658,7 @@ func TestProcessInteractiveEvents_ToolMessagesDisabledSuppressesToolProgressOnly
 	}
 }
 
-func TestProcessInteractiveEvents_CompactProgressCoalescesThinkingAndToolUse(t *testing.T) {
+func TestProcessInteractiveEvents_SingleCardHoldsThinkingToolAndAnswer(t *testing.T) {
 	p := &stubCompactProgressPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	sessionKey := "feishu:user1"
@@ -1679,28 +1679,31 @@ func TestProcessInteractiveEvents_CompactProgressCoalescesThinkingAndToolUse(t *
 	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m1", time.Now(), nil, nil, state.replyCtx)
 
 	sent := p.getSent()
-	if len(sent) != 1 || sent[0] != "done" {
-		t.Fatalf("sent = %#v, want only final assistant reply", sent)
+	if len(sent) != 0 {
+		t.Fatalf("sent = %#v, want no standalone messages: the whole turn belongs in one card", sent)
 	}
 
 	starts := p.getPreviewStarts()
 	if len(starts) != 1 {
-		t.Fatalf("preview starts = %d, want 1", len(starts))
+		t.Fatalf("preview starts = %d, want exactly 1 card for the whole turn", len(starts))
 	}
-	if !strings.Contains(starts[0], "Thinking") {
-		t.Fatalf("start preview should contain thinking text, got %q", starts[0])
+	if !strings.Contains(starts[0], "Thinking about command") {
+		t.Fatalf("card should carry thinking text, got %q", starts[0])
 	}
 
 	edits := p.getPreviewEdits()
-	if len(edits) != 1 {
-		t.Fatalf("preview edits = %d, want 1", len(edits))
+	if len(edits) == 0 {
+		t.Fatal("expected the same card to be updated at least once")
 	}
-	if !strings.Contains(edits[0], "pwd") {
-		t.Fatalf("updated preview should contain tool input, got %q", edits[0])
+	last := edits[len(edits)-1]
+	for _, want := range []string{"pwd", "done"} {
+		if !strings.Contains(last, want) {
+			t.Fatalf("final card update should contain %q, got %q", want, last)
+		}
 	}
 }
 
-func TestProcessInteractiveEvents_CardProgressUsesCardTemplate(t *testing.T) {
+func TestProcessInteractiveEvents_RichCardStartsOnFirstThinkingAndCarriesToolStep(t *testing.T) {
 	p := &stubCompactProgressPlatform{
 		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 		style:              "card",
@@ -1724,30 +1727,28 @@ func TestProcessInteractiveEvents_CardProgressUsesCardTemplate(t *testing.T) {
 	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m2", time.Now(), nil, nil, state.replyCtx)
 
 	sent := p.getSent()
-	if len(sent) != 1 || sent[0] != "done" {
-		t.Fatalf("sent = %#v, want only final assistant reply", sent)
+	if len(sent) != 0 {
+		t.Fatalf("sent = %#v, want no standalone messages outside the card", sent)
 	}
 
 	starts := p.getPreviewStarts()
 	if len(starts) != 1 {
-		t.Fatalf("preview starts = %d, want 1", len(starts))
+		t.Fatalf("preview starts = %d, want exactly 1 card", len(starts))
 	}
-	if !strings.Contains(starts[0], "**Progress**") {
-		t.Fatalf("start preview should contain fallback progress title, got %q", starts[0])
-	}
-	if !strings.Contains(starts[0], "1.") {
-		t.Fatalf("start preview should contain first item index, got %q", starts[0])
+	if !strings.Contains(starts[0], "Plan first") {
+		t.Fatalf("initial card should already carry the thinking text, got %q", starts[0])
 	}
 
 	edits := p.getPreviewEdits()
-	if len(edits) != 1 {
-		t.Fatalf("preview edits = %d, want 1", len(edits))
+	if len(edits) == 0 {
+		t.Fatal("expected the same card to be updated")
 	}
-	if !strings.Contains(edits[0], "2.") {
-		t.Fatalf("updated preview should contain second item index, got %q", edits[0])
+	last := edits[len(edits)-1]
+	if !strings.Contains(last, "echo hi") {
+		t.Fatalf("final card update should contain the tool call, got %q", last)
 	}
-	if !strings.Contains(edits[0], "echo hi") {
-		t.Fatalf("updated preview should contain tool command, got %q", edits[0])
+	if !strings.Contains(last, "done") {
+		t.Fatalf("final card update should contain the answer, got %q", last)
 	}
 }
 
@@ -1835,7 +1836,7 @@ func TestProcessInteractiveEvents_FinalReplyRemainsRawWhenReferencesDisabled(t *
 	}
 }
 
-func TestProcessInteractiveEvents_CardProgressUsesStructuredPayloadWhenSupported(t *testing.T) {
+func TestProcessInteractiveEvents_RichCardTakesPrecedenceOverProgressPayload(t *testing.T) {
 	p := &stubCompactProgressPlatform{
 		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 		style:              "card",
@@ -1861,54 +1862,29 @@ func TestProcessInteractiveEvents_CardProgressUsesStructuredPayloadWhenSupported
 
 	starts := p.getPreviewStarts()
 	if len(starts) != 1 {
-		t.Fatalf("preview starts = %d, want 1", len(starts))
+		t.Fatalf("preview starts = %d, want exactly 1 card", len(starts))
 	}
-	if !strings.HasPrefix(starts[0], ProgressCardPayloadPrefix) {
-		t.Fatalf("start preview should be structured payload, got %q", starts[0])
+	// Payload support must never win over the rich card: the payload renderer is
+	// the fragmented path this change removes.
+	if strings.HasPrefix(starts[0], ProgressCardPayloadPrefix) {
+		t.Fatalf("rich card must take precedence over structured payload, got %q", starts[0])
 	}
-	startPayload, ok := ParseProgressCardPayload(starts[0])
-	if !ok {
-		t.Fatalf("start preview should parse as structured payload, got %q", starts[0])
+	if !strings.Contains(starts[0], "rich status=") {
+		t.Fatalf("expected a rich card, got %q", starts[0])
 	}
-	if len(startPayload.Items) != 1 {
-		t.Fatalf("start payload items = %d, want 1", len(startPayload.Items))
-	}
-	if startPayload.Items[0].Kind != ProgressEntryThinking {
-		t.Fatalf("start payload kind = %q, want %q", startPayload.Items[0].Kind, ProgressEntryThinking)
-	}
-	if startPayload.State != ProgressCardStateRunning {
-		t.Fatalf("start payload state = %q, want %q", startPayload.State, ProgressCardStateRunning)
-	}
-
 	edits := p.getPreviewEdits()
-	if len(edits) != 2 {
-		t.Fatalf("preview edits = %d, want 2", len(edits))
+	if len(edits) == 0 {
+		t.Fatal("expected the rich card to be updated")
 	}
-	updatePayload, ok := ParseProgressCardPayload(edits[0])
-	if !ok {
-		t.Fatalf("update preview should parse as structured payload, got %q", edits[0])
-	}
-	if len(updatePayload.Items) != 2 {
-		t.Fatalf("update payload items = %d, want 2", len(updatePayload.Items))
-	}
-	if !strings.Contains(updatePayload.Items[1].Text, "echo hi") {
-		t.Fatalf("second payload item should contain tool command, got %q", updatePayload.Items[1].Text)
-	}
-
-	finalPayload, ok := ParseProgressCardPayload(edits[1])
-	if !ok {
-		t.Fatalf("final preview should parse as structured payload, got %q", edits[1])
-	}
-	if finalPayload.State != ProgressCardStateCompleted {
-		t.Fatalf("final payload state = %q, want %q", finalPayload.State, ProgressCardStateCompleted)
+	if strings.HasPrefix(edits[len(edits)-1], ProgressCardPayloadPrefix) {
+		t.Fatalf("edits must stay on the rich card, got %q", edits[len(edits)-1])
 	}
 }
 
-// TestProcessInteractiveEvents_CardProgressTruncatesToolInputByToolMaxLen verifies
-// that when progress_style=card is used (e.g. Feishu), a long tool input is
-// truncated to display.ToolMaxLen in the structured card payload. The original
-// event.ToolInput must remain unmutated.
-func TestProcessInteractiveEvents_CardProgressTruncatesToolInputByToolMaxLen(t *testing.T) {
+// TestProcessInteractiveEvents_RichCardTruncatesToolInputByToolMaxLen verifies
+// that a long tool input is truncated to display.ToolMaxLen inside the rich
+// card step, while the original event.ToolInput stays unmutated.
+func TestProcessInteractiveEvents_RichCardTruncatesToolInputByToolMaxLen(t *testing.T) {
 	p := &stubCompactProgressPlatform{
 		stubPlatformEngine: stubPlatformEngine{n: "feishu"},
 		style:              "card",
@@ -1945,30 +1921,17 @@ func TestProcessInteractiveEvents_CardProgressTruncatesToolInputByToolMaxLen(t *
 		t.Fatalf("event.ToolInput was mutated: got len=%d, want len=%d", len(toolEvt.ToolInput), len(longInput))
 	}
 
-	edits := p.getPreviewEdits()
-	var toolUseText string
-	for _, edit := range edits {
-		payload, ok := ParseProgressCardPayload(edit)
-		if !ok {
-			continue
-		}
-		for _, item := range payload.Items {
-			if item.Kind == ProgressEntryToolUse {
-				toolUseText = item.Text
-			}
+	snapshots := append(p.getPreviewStarts(), p.getPreviewEdits()...)
+	if len(snapshots) == 0 {
+		t.Fatal("expected the rich card to be created")
+	}
+	for _, snap := range snapshots {
+		if strings.Contains(snap, longInput) {
+			t.Fatalf("untruncated tool input leaked into the card: %q", snap)
 		}
 	}
-	if toolUseText == "" {
-		t.Fatalf("no ProgressEntryToolUse found in any card edit; edits=%v", edits)
-	}
-	if utf8.RuneCountInString(toolUseText) > 50+len("...") {
-		t.Fatalf("card tool input not truncated: runeCount=%d, content=%q", utf8.RuneCountInString(toolUseText), toolUseText)
-	}
-	if !strings.HasSuffix(toolUseText, "...") {
-		t.Fatalf("expected truncated tool input to end with '...', got %q", toolUseText)
-	}
-	if !strings.HasPrefix(toolUseText, "abcdefghij") {
-		t.Fatalf("expected truncated tool input to start with original prefix, got %q", toolUseText)
+	if !strings.Contains(snapshots[len(snapshots)-1], "abcdefghij...") {
+		t.Fatalf("card step should show the truncated tool input, got %q", snapshots[len(snapshots)-1])
 	}
 }
 
@@ -15967,5 +15930,61 @@ func TestProcessInteractiveEvents_RichCardThinkingSnapshotReplacesRow(t *testing
 	}
 	if !strings.Contains(final, "Summary:用户想知道现在时间") {
 		t.Fatalf("reasoning row must hold the latest snapshot, got:\n%s", final)
+	}
+}
+
+// stubBudgetRichPlatform is a rich-card platform that declares a card-body
+// budget, so long answers must continue in a new card instead of being lost.
+type stubBudgetRichPlatform struct {
+	stubCompactProgressPlatform
+	budget int
+}
+
+func (p *stubBudgetRichPlatform) RichCardBodyBudget() int { return p.budget }
+
+func TestProcessInteractiveEvents_LongAnswerContinuesInNewCard(t *testing.T) {
+	p := &stubBudgetRichPlatform{
+		stubCompactProgressPlatform: stubCompactProgressPlatform{
+			stubPlatformEngine: stubPlatformEngine{n: "feishu"},
+			style:              "card",
+		},
+		budget: 20,
+	}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	sessionKey := "feishu:user-long"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s-long")
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-long",
+	}
+	e.interactiveStates[sessionKey] = state
+
+	long := strings.Repeat("line of the answer\n", 10) // 200 runes, far over the 20-rune budget
+	agentSession.events <- Event{Type: EventThinking, Content: "plan"}
+	agentSession.events <- Event{Type: EventText, Content: long}
+	agentSession.events <- Event{Type: EventResult, Content: long, Done: true}
+
+	e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-long", time.Now(), nil, nil, state.replyCtx)
+
+	starts := p.getPreviewStarts()
+	if len(starts) != 1 {
+		t.Fatalf("preview starts = %d, want 1 first card", len(starts))
+	}
+	edits := p.getPreviewEdits()
+	if len(edits) == 0 {
+		t.Fatal("expected the first card to be updated with the truncated answer")
+	}
+	if !strings.HasSuffix(strings.TrimSpace(edits[len(edits)-1]), "…") {
+		t.Fatalf("first card must end with a truncation marker, got %q", edits[len(edits)-1])
+	}
+	sent := p.getSent()
+	if len(sent) == 0 {
+		t.Fatal("expected the remainder of the answer to be opened as a new card")
+	}
+	// The continuation must carry real content, not just the marker.
+	if !strings.Contains(sent[0], "line of the answer") {
+		t.Fatalf("continuation card should carry the remaining answer, got %q", sent[0])
 	}
 }

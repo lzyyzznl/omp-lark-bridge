@@ -1055,24 +1055,13 @@ func EffectiveShell(cfg *Config, proj *ProjectConfig) (shell, flag, shellProfile
 	}
 }
 
-// EffectiveCardMode returns the card rendering mode for the project: "rich" (Feishu Card 2.0)
-// or "legacy" (default plain messages). Per-project overrides global.
+// EffectiveCardMode always returns "rich": one card per turn, updated in place
+// with thinking, tool calls, results and the final answer. The former
+// card_mode=legacy rendering (one chat message per step) fragmented every turn,
+// so the switch is intentionally gone; the TOML key is still accepted and
+// ignored for backward compatibility.
 func EffectiveCardMode(cfg *Config, proj *ProjectConfig) string {
-	var projDisp *DisplayConfig
-	if proj != nil {
-		projDisp = proj.Display
-	}
-	if projDisp != nil && projDisp.CardMode != nil {
-		if m := strings.ToLower(strings.TrimSpace(*projDisp.CardMode)); m == "rich" || m == "legacy" {
-			return m
-		}
-	}
-	if cfg.Display.CardMode != nil {
-		if m := strings.ToLower(strings.TrimSpace(*cfg.Display.CardMode)); m == "rich" || m == "legacy" {
-			return m
-		}
-	}
-	return "legacy"
+	return "rich"
 }
 
 // validatePermissive is like validate but skips the "at least one platform"

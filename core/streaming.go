@@ -61,6 +61,12 @@ const (
 	ToolStepKindThinking ToolStepKind = "thinking"
 )
 
+// cardModeRich is the only card rendering mode: one card per turn, updated in
+// place with thinking, tool calls, tool results and the final answer. The old
+// "legacy" mode produced one chat message per step, which is never what a user
+// wants, so this is deliberately not configurable.
+const cardModeRich = "rich"
+
 // ToolStep is one summarized progress row shown in rich progress cards.
 type ToolStep struct {
 	Kind     ToolStepKind // progress row kind; empty means tool for backward compatibility
@@ -98,6 +104,14 @@ type RichCardSupporter interface {
 // while final frames may wait briefly so the completed card can embed images.
 type RichCardMarkdownResolver interface {
 	ResolveRichCardMarkdown(ctx context.Context, markdown string, final bool) string
+}
+
+// RichCardBodyBudgeter reports how many runes of answer markdown the platform's
+// rich card body can hold (Feishu rejects cards above 30KB). The engine keeps
+// the card within that budget and sends the remainder as follow-up messages, so
+// a long answer is never silently truncated.
+type RichCardBodyBudgeter interface {
+	RichCardBodyBudget() int
 }
 
 // MarkdownTableSplitter is an optional interface for platforms that need

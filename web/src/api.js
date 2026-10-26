@@ -111,11 +111,13 @@ export const api = {
   patchProject: (project, fields) => request(`/projects/${encodeURIComponent(project)}`, { method: 'PATCH', body: fields }),
   // DELETE /api/v1/projects/{name} → 移除项目
   delProject: (project) => request(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' }),
-  // GET /api/v1/transcripts?view=&q= → 全局会话库（含 cwd / job_id / archived）
-  library: (view, q) => {
+  // GET /api/v1/transcripts?view=&q=&since= → 全局会话库（含 cwd / job_id / archived）
+  // since 只影响服务端「自动补标题」的入选范围，不减少返回结果。
+  library: (view, q, since) => {
     const qs = new URLSearchParams()
     if (view) qs.set('view', view)
     if (q) qs.set('q', q)
+    if (since) qs.set('since', new Date(since).toISOString())
     const s = qs.toString()
     return request(`/transcripts${s ? `?${s}` : ''}`)
   },

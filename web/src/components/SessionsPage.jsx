@@ -254,7 +254,7 @@ export default function SessionsPage({ initialTx, onToast }) {
 
   const loadLibrary = useCallback(async () => {
     try {
-      const d = await api.library(view === 'archived' ? 'archived' : '', q)
+      const d = await api.library(view === 'archived' ? 'archived' : '', q, rangeCutoff(range))
       const items = d.transcripts || []
       setLibrary(items)
       setArchivedCount(d.archived_count || 0)
@@ -262,7 +262,7 @@ export default function SessionsPage({ initialTx, onToast }) {
     } catch (e) {
       setError(e.message)
     }
-  }, [view, q])
+  }, [view, q, range])
 
   const loadProjects = useCallback(async () => {
     try {

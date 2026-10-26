@@ -3831,3 +3831,68 @@ func TestMgmt_Transcripts_Chat_KeepsRunningAfterClientDisconnect(t *testing.T) {
 		t.Fatalf("handler stopped consuming after disconnect: %d events left", left)
 	}
 }
+
+// 自动补标题：只给「已完成且没有模型标题」的会话生成，且同版本内容只生成一次。
+func TestTitleBackfill_OnlyDoneSessionsWithoutTitle(t *testing.T) {
+	old := titleFillGap
+	titleFillGap = 5 * time.Millisecond
+	defer func() { titleFillGap = old }()
+
+	dir := t.TempDir()
+	const (
+		user  = `{"type":"message","message":{"role":"user","content":[{"type":"text","text":"帮我看看台账"}]}}`
+		exit  = `{"type":"custom","customType":"session_exit","data":{}}`
+		title = `{"type":"title","title":"旧标题"}`
+	)
+	write := func(name, body string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	untitled := write("done_untitled.jsonl", user+"\n"+exit+"\n")
+	running := write("running.jsonl", user+"\n")
+	titled := write("done_titled.jsonl", title+"\n"+user+"\n"+exit+"\n")
+
+	agent := &titleStubAgent{stubTranscriptAgent: stubTranscriptAgent{dir: dir}, title: "自动生成的标题"}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/transcripts", mgmt.wrap(mgmt.handleTranscriptLibrary))
+	mux.HandleFunc("/api/v1/transcripts/", mgmt.wrap(mgmt.handleTranscriptLibrary))
+
+	list := func() {
+		t.Helper()
+		rr := httptest.NewRecorder()
+		mux.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/api/v1/transcripts", nil))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("list: status = %d (body=%s)", rr.Code, rr.Body.String())
+		}
+	}
+	list()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) && (mgmt.pendingTitleJobs() > 0 || titleValue(t, untitled) == "") {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if got := titleValue(t, untitled); got != "自动生成的标题" {
+		t.Errorf("untitled done session: title = %q, want generated", got)
+	}
+	if got := titleValue(t, running); got != "" {
+		t.Errorf("running session must not get a title, got %q", got)
+	}
+	if got := titleValue(t, titled); got != "旧标题" {
+		t.Errorf("existing title must be kept, got %q", got)
+	}
+
+	// 内容没变时再次轮询不应重新生成（模型换了输出也不该覆盖）。
+	agent.title = "第二个标题"
+	list()
+	time.Sleep(80 * time.Millisecond)
+	if got := titleValue(t, untitled); got != "自动生成的标题" {
+		t.Errorf("regenerated without new content: %q", got)
+	}
+}

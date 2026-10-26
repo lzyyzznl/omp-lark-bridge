@@ -101,6 +101,10 @@ type ManagementServer struct {
 	fetchPresets         func() (*ProviderPresetsResponse, error)
 	// cc-switch migration callback
 	listCCSwitchProviders func() ([]CCSwitchProviderInfo, error)
+
+	// 会话标题自动补全（见 title_backfill.go）：懒启动单 worker。
+	titleOnce sync.Once
+	titleFill *titleBackfill
 }
 
 // NewManagementServer creates a new management API server.
@@ -2730,10 +2734,13 @@ func (m *ManagementServer) transcriptItems(dir string, query string) []map[strin
 		}
 		path := filepath.Join(dir, ent.Name())
 		id := strings.TrimSuffix(ent.Name(), ".jsonl")
+		// 区分「模型标题」与回退用的首条用户消息，自动生成标题据此判断。
+		rawTitle, displayTitle := transcriptTitles(path)
 		item := map[string]any{
 			"name":       ent.Name(),
 			"id":         id,
-			"title":      transcriptHeadTitle(path),
+			"title":      displayTitle,
+			"has_title":  rawTitle != "",
 			"size":       info.Size(),
 			"updated_at": info.ModTime(),
 			"archived":   m.archiveStore.IsArchived(id),
@@ -2809,6 +2816,14 @@ func (m *ManagementServer) handleTranscriptLibrary(w http.ResponseWriter, r *htt
 				}
 			}
 		}
+		// 页面打开/轮询就是自动补标题的触发点：只对这次真正展示的会话入队。
+		since := time.Time{}
+		if v := r.URL.Query().Get("since"); v != "" {
+			if t, err := time.Parse(time.RFC3339, v); err == nil {
+				since = t
+			}
+		}
+		m.scheduleTitleBackfill(out, since)
 		mgmtJSON(w, http.StatusOK, map[string]any{"transcripts": out, "archived_count": archivedCount})
 	case "archive", "unarchive":
 		if r.Method != http.MethodPost {
@@ -2953,14 +2968,14 @@ func (m *ManagementServer) RunAutoArchive(cutoff time.Time, excludeCron bool) (i
 	return len(ids), m.archiveStore.Archive(ids, "auto")
 }
 
-// transcriptHeadTitle extracts the session title from the first
-// {"type":"title","title":...} event by scanning only the head of the file —
-// titles are written near the start, and a full scan per file is too costly
-// for a list endpoint.
-func transcriptHeadTitle(path string) string {
+// transcriptTitles reads the head of a transcript and returns the model-written
+// title (raw, empty when the session has none) plus the display title, which
+// falls back to the session's first user message so the web list never shows a
+// bare filename. One pass serves both: the list endpoint needs both values.
+func transcriptTitles(path string) (raw, display string) {
 	f, err := os.Open(path)
 	if err != nil {
-		return ""
+		return "", ""
 	}
 	defer f.Close()
 	sc := bufio.NewScanner(f)
@@ -2985,7 +3000,7 @@ func transcriptHeadTitle(path string) string {
 		switch ev.Type {
 		case "title":
 			if ev.Title != "" {
-				return ev.Title
+				return ev.Title, ev.Title
 			}
 		case "message":
 			if firstUser == "" && ev.Message != nil && ev.Message.Role == "user" {
@@ -2998,9 +3013,13 @@ func transcriptHeadTitle(path string) string {
 			}
 		}
 	}
-	// No explicit title → surface the session's first user message instead of
-	// a bare filename in the web list.
-	return truncateRune(firstUser, 42)
+	return "", truncateRune(firstUser, 42)
+}
+
+// transcriptHeadTitle returns the display title (model title or first message).
+func transcriptHeadTitle(path string) string {
+	_, display := transcriptTitles(path)
+	return display
 }
 
 // truncateRune trims s to at most n runes, appending an ellipsis when cut.
@@ -3061,6 +3080,31 @@ func readTranscriptEvents(path string) ([]map[string]any, error) {
 // titleMu serializes concurrent title rewrites of transcript files.
 var titleMu sync.Mutex
 
+// generateTranscriptTitle asks the model for a title built from the transcript
+// head and writes it back to the first title event. Shared by the manual
+// endpoint and the automatic backfill worker.
+func (m *ManagementServer) generateTranscriptTitle(ctx context.Context, gen TitleGenerator, dir, id string) (string, error) {
+	path := filepath.Join(dir, id+".jsonl")
+	prompt := buildTitlePrompt(path)
+	if prompt == "" {
+		return "", errors.New("transcript is empty")
+	}
+	title, err := gen.GenerateTitle(ctx, prompt)
+	if err != nil {
+		return "", fmt.Errorf("generate title: %w", err)
+	}
+	if title == "" {
+		return "", errors.New("model returned an empty title")
+	}
+	titleMu.Lock()
+	err = writeTranscriptTitle(path, title)
+	titleMu.Unlock()
+	if err != nil {
+		return "", fmt.Errorf("write title: %w", err)
+	}
+	return title, nil
+}
+
 func (m *ManagementServer) regenerateTranscriptTitle(w http.ResponseWriter, r *http.Request, e *Engine, dir, id string) {
 	if id != filepath.Base(id) {
 		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
@@ -3071,30 +3115,13 @@ func (m *ManagementServer) regenerateTranscriptTitle(w http.ResponseWriter, r *h
 		mgmtError(w, http.StatusNotImplemented, "agent does not support title generation")
 		return
 	}
-	path := filepath.Join(dir, id+".jsonl")
-	prompt := buildTitlePrompt(path)
-	if prompt == "" {
-		mgmtError(w, http.StatusInternalServerError, "transcript is empty")
-		return
-	}
-	title, err := gen.GenerateTitle(r.Context(), prompt)
+	title, err := m.generateTranscriptTitle(r.Context(), gen, dir, id)
 	if err != nil {
-		mgmtError(w, http.StatusInternalServerError, "generate title: "+err.Error())
-		return
-	}
-	if title == "" {
-		mgmtError(w, http.StatusInternalServerError, "model returned an empty title")
-		return
-	}
-	titleMu.Lock()
-	err = writeTranscriptTitle(path, title)
-	titleMu.Unlock()
-	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, fs.ErrNotExist) {
 			mgmtError(w, http.StatusNotFound, "transcript not found")
 			return
 		}
-		mgmtError(w, http.StatusInternalServerError, "write title: "+err.Error())
+		mgmtError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{"title": title})

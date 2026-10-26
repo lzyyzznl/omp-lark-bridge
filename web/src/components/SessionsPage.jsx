@@ -764,16 +764,16 @@ export default function SessionsPage({ initialTx, onToast }) {
             {f.projects.length > 0 && (
               <div className="lib-badges">
                 {f.projects.map((p) => (
-                  <span key={p.name} className={`lib-badge ${p.running === false ? 'lib-badge-off' : ''}`}>
-                    <span onClick={() => setConfigProject(p.name)} title="编辑该项目配置">
-                      {p.display_name || p.name}
-                    </span>
-                    <button
-                      className="lib-gear"
-                      title="项目配置"
-                      onClick={(e) => { e.stopPropagation(); setConfigProject(p.name) }}
-                    >⚙</button>
-                  </span>
+                  <button
+                    key={p.name}
+                    type="button"
+                    className={`lib-badge ${p.running === false ? 'lib-badge-off' : ''}`}
+                    title="项目配置（点击打开）"
+                    onClick={() => setConfigProject(p.name)}
+                  >
+                    <span>{p.display_name || p.name}</span>
+                    <span className="lib-badge-icon" aria-hidden>⚙</span>
+                  </button>
                 ))}
               </div>
             )}

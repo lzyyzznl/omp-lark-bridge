@@ -782,7 +782,7 @@ textarea.input { resize: vertical; min-height: 72px; }
 .prj-page { display: flex; gap: 16px; padding: 0 24px 24px; align-items: flex-start; }
 .prj-list { flex: 0 0 340px; } /* 复用 .sess-list 外观 */
 .prj-detail { flex: 1; min-height: 300px; max-height: none; overflow: visible; } /* 项目详情自适应高度，不套用 sess-detail 的固定高度滚动 */
-.prj-form { padding: 16px; max-width: 560px; }
+.prj-form { padding: 16px; }
 .prj-new { padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; border-top: 1.5px solid var(--ink); }
 .prj-new-actions { display: flex; gap: 8px; }
 .prj-form-actions { display: flex; gap: 8px; margin-top: 4px; }
@@ -862,12 +862,16 @@ textarea.input { resize: vertical; min-height: 72px; }
 .lib-query { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--ink-dim); }
 .lib-badges { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 12px 8px 26px; }
 .lib-badge {
-  display: inline-flex; align-items: center; gap: 2px;
-  font-size: 11px; border: 1px solid var(--border); border-radius: 10px;
-  padding: 1px 4px 1px 8px; color: var(--ink-dim); cursor: pointer;
+  display: inline-flex; align-items: center; gap: 4px;
+  font-family: inherit; font-size: 11px; line-height: 1.6;
+  border: 1px solid var(--border); border-radius: 10px;
+  padding: 1px 7px; color: var(--ink-dim); background: transparent;
+  cursor: pointer; transition: border-color .12s, color .12s, background .12s;
 }
+.lib-badge:hover { border-color: var(--ink); color: var(--ink); background: color-mix(in srgb, var(--ink) 7%, transparent); }
 .lib-badge-off { opacity: .55; }
-.lib-gear { background: none; border: none; cursor: pointer; padding: 0 2px; font-size: 11px; color: inherit; }
+.lib-badge-icon { font-size: 10px; opacity: .45; }
+.lib-badge:hover .lib-badge-icon { opacity: 1; }
 .lib-foot { padding: 10px; border-top: 1.5px solid var(--ink); margin-top: auto; }
 .lib-txs .sess-tx-item { display: flex; align-items: flex-start; }
 .lib-check { margin: 2px 8px 0 0; }
@@ -913,7 +917,7 @@ textarea.input { resize: vertical; min-height: 72px; }
 .lib-tx-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 /* 项目配置弹窗：表单较长，弹窗内滚动 */
-.prj-modal-tall { width: min(680px, 94vw); max-height: 88vh; overflow-y: auto; }
+.prj-modal-tall { width: min(720px, 94vw); max-height: 88vh; overflow-y: auto; }
 
 /* 会话列表项操作区：时间与按钮分开，窄栏不挤压 */
 .lib-tx-meta { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }

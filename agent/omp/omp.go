@@ -66,9 +66,10 @@ type Agent struct {
 
 	// modelsCache caches the get_available_models discovery result so a web
 	// dropdown doesn't spawn an omp process on every page load.
-	modelsMu       sync.Mutex
-	modelsCache    []core.ModelOption
-	modelsCachedAt time.Time
+	modelsMu         sync.Mutex
+	modelsCache      []core.ModelOption
+	modelsCachedAt   time.Time
+	modelsRefreshing bool // single-flight guard for warmModels
 
 	// skillsCache caches `omp skill list --json` so /skills and skill slash-command
 	// resolution don't spawn an omp process on every message.
@@ -77,8 +78,12 @@ type Agent struct {
 	skillsCachedAt time.Time
 }
 
-// modelCacheTTL bounds how long the discovered model list is reused.
-const modelCacheTTL = 60 * time.Second
+// modelCacheTTL bounds how long the discovered model list is reused. A cold
+// discovery spawns an omp process and costs 3–8s, far more than the 3s a
+// Feishu card callback is allowed, so the cache — not the spawn — is what makes
+// /model complete. The provider model list rarely changes; a stale minute
+// bought nothing but empty dropdowns.
+const modelCacheTTL = 10 * time.Minute
 
 func New(opts map[string]any) (core.Agent, error) {
 	workDir, _ := opts["work_dir"].(string)
@@ -238,15 +243,41 @@ func (a *Agent) ApplyCronGoal(objective string) {
 // single model so consumers always get a usable list.
 func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 	a.modelsMu.Lock()
-	if a.modelsCache != nil && time.Since(a.modelsCachedAt) < modelCacheTTL {
-		out := a.modelsCache
-		a.modelsMu.Unlock()
-		return out
-	}
+	fresh := a.modelsCache != nil && time.Since(a.modelsCachedAt) < modelCacheTTL
+	cached := a.modelsCache
 	a.modelsMu.Unlock()
+	if fresh {
+		return cached
+	}
 
+	if models := a.discoverModels(ctx); len(models) > 0 {
+		a.modelsMu.Lock()
+		a.modelsCache = models
+		a.modelsCachedAt = time.Now()
+		a.modelsMu.Unlock()
+		return models
+	}
+
+	// Discovery failed or the caller's deadline cut it short (a card callback
+	// gets 3s, a cold spawn needs up to ~8s). Never cache the fallback — doing
+	// so turned one slow spawn into a minute of single-model dropdowns. Serve
+	// the stale list if we have one and refill in the background.
+	a.warmModels()
+	if cached != nil {
+		return cached
+	}
 	a.mu.RLock()
 	model := a.model
+	a.mu.RUnlock()
+	if model == "" {
+		return nil
+	}
+	return []core.ModelOption{{Name: model}}
+}
+
+// discoverModels runs one get_available_models round-trip, bounded by ctx.
+func (a *Agent) discoverModels(ctx context.Context) []core.ModelOption {
+	a.mu.RLock()
 	cmd := a.cmd
 	extraArgs := append([]string{}, a.cliExtraArgs...)
 	workDir := a.workDir
@@ -254,19 +285,39 @@ func (a *Agent) AvailableModels(ctx context.Context) []core.ModelOption {
 	env := append([]string{}, a.configEnv...)
 	env = append(env, a.sessionEnv...)
 	a.mu.RUnlock()
+	return discoverLoadedModels(ctx, cmd, extraArgs, workDir, ccDataDir, env)
+}
 
-	models := discoverLoadedModels(ctx, cmd, extraArgs, workDir, ccDataDir, env)
-	if len(models) == 0 {
-		if model == "" {
-			return nil
-		}
-		models = []core.ModelOption{{Name: model}}
-	}
+// warmModels refills the model cache out of band so a later /model open is
+// served from cache instead of racing its 3s deadline. Single-flight, and a
+// no-op while the cache is still fresh.
+func (a *Agent) warmModels() {
 	a.modelsMu.Lock()
-	a.modelsCache = models
-	a.modelsCachedAt = time.Now()
+	if a.modelsRefreshing || (a.modelsCache != nil && time.Since(a.modelsCachedAt) < modelCacheTTL) {
+		a.modelsMu.Unlock()
+		return
+	}
+	a.modelsRefreshing = true
 	a.modelsMu.Unlock()
-	return models
+
+	go func() {
+		defer func() {
+			a.modelsMu.Lock()
+			a.modelsRefreshing = false
+			a.modelsMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		models := a.discoverModels(ctx)
+		if len(models) == 0 {
+			slog.Warn("omp: background model discovery returned nothing")
+			return
+		}
+		a.modelsMu.Lock()
+		a.modelsCache = models
+		a.modelsCachedAt = time.Now()
+		a.modelsMu.Unlock()
+	}()
 }
 
 func (a *Agent) SetSessionEnv(env []string) {
@@ -329,8 +380,13 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	a.pendingModel, a.pendingThinking, a.pendingAgent, a.pendingGoal = "", "", "", ""
 	a.overrideMu.Unlock()
 
-	return newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, agent, goal, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
-
+	s, err := newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, agent, goal, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
+	if err == nil {
+		// A live session is the moment a /model open becomes likely; warm the
+		// list now so the card does not have to spawn omp inside its 3s budget.
+		a.warmModels()
+	}
+	return s, err
 }
 
 // ListSessions lists the omp session stores this omp-lark-bridge instance owns.

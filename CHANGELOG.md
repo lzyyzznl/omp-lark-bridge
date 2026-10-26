@@ -34,6 +34,13 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
     折叠，避免长 turn 把正文挤下去；单次结果最多 6 行，其余提示"还有 N 行"。
 
 ### Fixed
+- 自动/手动生成会话标题不再破坏 omp 会话文件：omp 的 session jsonl 首行是**定宽
+  255 字节**的 title slot（带 `pad` 空格填充，总计 256 字节含换行），缺 `pad` 或
+  宽度不符时 omp 判定 "session header is missing or malformed" 并拒绝 `--resume`，
+  整段上下文丢失。`writeTranscriptTitle` 原先写 103 字节的紧凑 title 行，现改为
+  就地覆盖这 255 字节（保留 `source`，标题过长按 rune 截断），并顺带修复已被
+  旧版本写坏的会话；非 omp 转写文件仍走原有整文件重写，Windows 上 rename 被占用
+  时回退为原地重写而不是丢掉标题。
 - 会话页停止按钮不再只认"本页发起的那一轮"：进入页面或刷新后按会话状态
   （`running` / `asking`）显示，停止成功后立即刷新该行状态。后端停止接口也能
   停掉页面没发起过的 turn——omp resume 会 fork 新会话文件（页面持有的是旧 id）

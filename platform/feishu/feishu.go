@@ -382,6 +382,11 @@ func newPlatform(name, domain string, opts map[string]any) (core.Platform, error
 	if domain != lark.FeishuBaseUrl {
 		clientOpts = append(clientOpts, lark.WithOpenBaseUrl(domain))
 	}
+	// The SDK ships an http.Client without a Timeout: one stuck connection
+	// hangs the caller forever. Observed 2026-10-26: a cron turn stopped
+	// producing logs right after a card push and sat for 27 minutes until the
+	// job's 30m deadline. Every Feishu call must be bounded.
+	clientOpts = append(clientOpts, lark.WithHttpClient(newFeishuHTTPClient()))
 
 	base := &Platform{
 		platformName:               name,
@@ -3774,11 +3779,21 @@ func (p *Platform) replayAPIClient() *lark.Client {
 
 func newFeishuReplayClient(appID, appSecret, domain string) *lark.Client {
 	var opts []lark.ClientOptionFunc
-	opts = append(opts, lark.WithEnableTokenCache(false))
+	opts = append(opts, lark.WithEnableTokenCache(false), lark.WithHttpClient(newFeishuHTTPClient()))
 	if domain != "" && domain != lark.FeishuBaseUrl {
 		opts = append(opts, lark.WithOpenBaseUrl(domain))
 	}
 	return lark.NewClient(appID, appSecret, opts...)
+}
+
+// feishuHTTPTimeout bounds one Feishu API round-trip. Card pushes fire several
+// times per second, so a hung connection must fail fast instead of stalling the
+// engine's event loop. A var so tests can shrink it.
+var feishuHTTPTimeout = 20 * time.Second
+
+func newFeishuHTTPClient() *http.Client {
+	// No explicit Transport: reuse http.DefaultTransport's connection pool.
+	return &http.Client{Timeout: feishuHTTPTimeout}
 }
 
 func isTenantAccessTokenInvalid(err error) bool {
@@ -6810,7 +6825,46 @@ const (
 	// rows and tool rows, each truncated to maxRichCardStepTextRunes.
 	maxRichCardStepsPerLane  = 10
 	maxRichCardStepTextRunes = 200
+	// maxRichCardElements caps the total element count (nested containers
+	// included). Feishu rejects such cards with 300305 "element exceeds the
+	// limit" even when the payload is far below maxRichCardJSONBytes — a long
+	// turn with many tool containers hits it every single push.
+	maxRichCardElements = 120
 )
+
+// richCardFits reports whether a rendered card stays inside both Feishu limits
+// (payload bytes and element count).
+func richCardFits(b []byte) bool {
+	return len(b) <= maxRichCardJSONBytes && countCardElements(b) <= maxRichCardElements
+}
+
+// countCardElements counts every {"tag": …} object in a rendered card, nested
+// containers included.
+func countCardElements(b []byte) int {
+	var root any
+	if err := json.Unmarshal(b, &root); err != nil {
+		return 0
+	}
+	count := 0
+	var walk func(any)
+	walk = func(node any) {
+		switch v := node.(type) {
+		case map[string]any:
+			if _, ok := v["tag"]; ok {
+				count++
+			}
+			for _, child := range v {
+				walk(child)
+			}
+		case []any:
+			for _, child := range v {
+				walk(child)
+			}
+		}
+	}
+	walk(root)
+	return count
+}
 
 // buildRichCard renders a Card 2.0 "single-card" turn with collapsible
 // reasoning/tool panels, streaming markdown body, status-colored header, and a
@@ -6821,7 +6875,7 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 		slog.Debug("feishu: build rich card marshal failed, fallback to basic card", "error", err)
 		return buildCardJSONWithStatus(markdown, status)
 	}
-	if len(b) <= maxRichCardJSONBytes {
+	if richCardFits(b) {
 		return string(b)
 	}
 
@@ -6841,7 +6895,7 @@ func buildRichCard(status core.CardStatus, _ string, steps []core.ToolStep, mark
 	} {
 		compactSteps := compactRichStepsForCardSize(steps, limit.perLane, limit.textLen)
 		compact, err := buildRichCardJSONBytes(status, compactSteps, markdown, streaming, statusFooter, lang)
-		if err == nil && len(compact) <= maxRichCardJSONBytes {
+		if err == nil && richCardFits(compact) {
 			slog.Debug("feishu: rich card exceeded size limit, compacted panels",
 				"original_size", len(b),
 				"compacted_size", len(compact),
@@ -6883,7 +6937,7 @@ func truncateRichBodyToFit(status core.CardStatus, steps []core.ToolStep, markdo
 		mid := (lo + hi) / 2
 		candidate := string(runes[:mid]) + richCardTruncationMarker(lang)
 		b, err := buildRichCardJSONBytes(status, steps, candidate, streaming, statusFooter, lang)
-		if err == nil && len(b) <= maxRichCardJSONBytes {
+		if err == nil && richCardFits(b) {
 			best = string(b)
 			lo = mid + 1
 			continue

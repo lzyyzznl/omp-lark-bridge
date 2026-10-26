@@ -34,6 +34,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
     折叠，避免长 turn 把正文挤下去；单次结果最多 6 行，其余提示"还有 N 行"。
 
 ### Fixed
+- 飞书 SDK 客户端补 HTTP 超时（20s）：SDK 默认 `http.Client` 没有 `Timeout`，一次
+  连接挂起就让调用方永久阻塞。2026-10-26 23:52 的 cron 日报任务正是在一次卡片推送后
+  静默 27 分钟（agent 2.5 分钟就跑完，`goal-completed` 已落盘），直到 30 分钟作业
+  超时才被判失败。`lark.NewClient` 与 replay client 均挂
+  `WithHttpClient(&http.Client{Timeout: 20s})`。
+- 富卡片补元素数上限（120）：`maxRichCardJSONBytes` 只按**字节**压缩，而飞书对
+  **元素数量**另有上限。长 turn（40 步工具）实测 17KB、221 个元素，被
+  `code=300305 element exceeds the limit` 拒收，每次推送都失败并回退内联卡（当晚 80 次）。
+  现按字节 + 元素数一并判定，超限走既有压缩档（实测压到 72 个元素）。
 - 自动/手动生成会话标题不再破坏 omp 会话文件：omp 的 session jsonl 首行是**定宽
   255 字节**的 title slot（带 `pad` 空格填充，总计 256 字节含换行），缺 `pad` 或
   宽度不符时 omp 判定 "session header is missing or malformed" 并拒绝 `--resume`，

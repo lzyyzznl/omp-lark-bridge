@@ -1,10 +1,16 @@
 package feishu
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	lark "github.com/larksuite/oapi-sdk-go/v3"
+	larkcore "github.com/larksuite/oapi-sdk-go/v3/core"
 	"github.com/lzyyzznl/omp-lark-bridge/core"
 )
 
@@ -368,5 +374,81 @@ func TestBuildRichCard_CapsPanelRows(t *testing.T) {
 	card := buildRichCard(core.CardStatusWorking, "", steps, "answer", true, "", core.LangChinese)
 	if got := strings.Count(card, "cmd"); got > maxRichCardStepsPerLane {
 		t.Fatalf("rendered %d tool rows, want at most %d", got, maxRichCardStepsPerLane)
+	}
+}
+
+// Feishu answers 300305 "element exceeds the limit" for cards that stay under
+// the byte budget but carry too many elements — a long turn with dozens of
+// tool containers renders 200+ elements in ~17KB. Both limits must hold.
+func TestBuildRichCard_StaysUnderFeishuElementLimit(t *testing.T) {
+	steps := make([]core.ToolStep, 0, 41)
+	for i := 0; i < 40; i++ {
+		steps = append(steps, core.ToolStep{
+			Kind:    core.ToolStepKindTool,
+			Name:    "Bash",
+			Summary: "go test ./...",
+			Result:  strings.Repeat("ok\n", 9),
+			Status:  "completed",
+			Done:    true,
+		})
+	}
+	steps = append(steps, core.ToolStep{Kind: core.ToolStepKindThinking, Summary: strings.Repeat("分析", 200)})
+	body := strings.Repeat("正文", 500)
+
+	raw, err := buildRichCardJSONBytes(core.CardStatusDone, steps, body, false, "elapsed · 1m", core.LangChinese)
+	if err != nil {
+		t.Fatalf("render failed: %v", err)
+	}
+	if got := countCardElements(raw); got <= maxRichCardElements {
+		t.Fatalf("test premise: uncompacted card has %d elements, want > %d", got, maxRichCardElements)
+	}
+
+	card := buildRichCard(core.CardStatusDone, "", steps, body, false, "elapsed · 1m", core.LangChinese)
+	if got := countCardElements([]byte(card)); got > maxRichCardElements {
+		t.Fatalf("compacted card has %d elements, want at most %d", got, maxRichCardElements)
+	}
+	if len(card) > maxRichCardJSONBytes {
+		t.Fatalf("compacted card is %d bytes, want at most %d", len(card), maxRichCardJSONBytes)
+	}
+	if !strings.Contains(card, "正文") {
+		t.Fatalf("compacted card dropped the body")
+	}
+}
+
+// countCardElements must count nested containers, not just top-level elements.
+func TestCountCardElements_CountsNested(t *testing.T) {
+	card := []byte(`{"schema":"2.0","body":{"elements":[{"tag":"collapsible_panel","elements":[{"tag":"markdown"},{"tag":"markdown"}]},{"tag":"markdown"},{"tag":"hr"}]}}`)
+	if got := countCardElements(card); got != 5 {
+		t.Fatalf("countCardElements = %d, want 5", got)
+	}
+}
+
+// A hung Feishu connection must not stall the caller forever: before this fix
+// the SDK's http.Client had no Timeout and a cron turn sat blocked until the
+// job's 30m deadline.
+func TestFeishuHTTPClient_BoundsHungRequest(t *testing.T) {
+	prev := feishuHTTPTimeout
+	feishuHTTPTimeout = 50 * time.Millisecond
+	defer func() { feishuHTTPTimeout = prev }()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(2 * time.Second)
+	}))
+	defer srv.Close()
+
+	client := lark.NewClient("app", "secret",
+		lark.WithOpenBaseUrl(srv.URL),
+		lark.WithHttpClient(newFeishuHTTPClient()),
+	)
+	start := time.Now()
+	_, err := client.GetTenantAccessTokenBySelfBuiltApp(context.Background(), &larkcore.SelfBuiltTenantAccessTokenReq{
+		AppID:     "app",
+		AppSecret: "secret",
+	})
+	if err == nil {
+		t.Fatal("expected the request to fail, got nil error")
+	}
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("request took %v, want it bounded by the client timeout", elapsed)
 	}
 }

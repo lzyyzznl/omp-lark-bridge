@@ -776,6 +776,47 @@ export default function SessionsPage({ initialTx, onToast }) {
     }
   }
 
+  // 项目子节点：名称 + ⋯ 菜单。同一 cwd 只有一个项目时内联到文件夹行，
+  // 多个项目时按树形逐行列出（文件夹 = 根，项目 = 子节点）。
+  const projectRow = (p) => (
+    <div key={p.name} className="lib-project-row">
+      {renaming === p.name ? (
+        <input
+          className="input lib-rename-input"
+          value={renameVal}
+          autoFocus
+          onChange={(e) => setRenameVal(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') commitRename(p)
+            if (e.key === 'Escape') setRenaming('')
+          }}
+          onBlur={() => commitRename(p)}
+        />
+      ) : (
+        <span
+          className={`lib-project-name ${p.running === false ? 'lib-project-off' : ''}`}
+          title={p.display_name ? `${p.display_name}（${p.name}）` : p.name}
+        >
+          {p.display_name || p.name}
+        </span>
+      )}
+      <div className="lib-proj-menu-wrap">
+        <button
+          className="lib-dots"
+          title="项目操作"
+          onClick={(e) => { e.stopPropagation(); setProjMenu(projMenu === p.name ? '' : p.name) }}
+        >⋯</button>
+        {projMenu === p.name && (
+          <div className="lib-proj-menu" onClick={(e) => e.stopPropagation()}>
+            <button onClick={() => { setProjMenu(''); setConfigProject(p.name) }}>设置</button>
+            <button onClick={() => { setProjMenu(''); setRenaming(p.name); setRenameVal(p.display_name || p.name) }}>重命名</button>
+            <button className="danger" onClick={() => { setProjMenu(''); setDelProj(p.name) }}>删除</button>
+          </div>
+        )}
+      </div>
+    </div>
+  )
+
   return (
     <div className="sess-page lib-page">
       {/* 左栏：文件夹（含其下项目）；齿轮打开配置抽屉 */}
@@ -811,49 +852,11 @@ export default function SessionsPage({ initialTx, onToast }) {
                   {f.cwd ? `📁 ${f.label.split('/').filter(Boolean).pop() || f.label}` : '未归类'}
                   {!f.cwd && <span className="bot-tag">无 cwd</span>}
                 </div>
-                {f.projects.length > 0 && (
-                  <div className="lib-projects">
-                    {f.projects.map((p) => (
-                      <div key={p.name} className="lib-project-row">
-                        {renaming === p.name ? (
-                          <input
-                            className="input lib-rename-input"
-                            value={renameVal}
-                            autoFocus
-                            onChange={(e) => setRenameVal(e.target.value)}
-                            onKeyDown={(e) => {
-                              if (e.key === 'Enter') commitRename(p)
-                              if (e.key === 'Escape') setRenaming('')
-                            }}
-                            onBlur={() => commitRename(p)}
-                          />
-                        ) : (
-                          <span
-                            className={`lib-project-name ${p.running === false ? 'lib-project-off' : ''}`}
-                            title={p.display_name ? `${p.display_name}（${p.name}）` : p.name}
-                          >
-                            {p.display_name || p.name}
-                          </span>
-                        )}
-                        <div className="lib-proj-menu-wrap">
-                          <button
-                            className="lib-dots"
-                            title="项目操作"
-                            onClick={(e) => { e.stopPropagation(); setProjMenu(projMenu === p.name ? '' : p.name) }}
-                          >⋯</button>
-                          {projMenu === p.name && (
-                            <div className="lib-proj-menu" onClick={(e) => e.stopPropagation()}>
-                              <button onClick={() => { setProjMenu(''); setConfigProject(p.name) }}>设置</button>
-                              <button onClick={() => { setProjMenu(''); setRenaming(p.name); setRenameVal(p.display_name || p.name) }}>重命名</button>
-                              <button className="danger" onClick={() => { setProjMenu(''); setDelProj(p.name) }}>删除</button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                )}
+                {f.projects.length === 1 && <div className="lib-projects">{projectRow(f.projects[0])}</div>}
               </div>
+              {f.projects.length > 1 && (
+                <div className="lib-projects lib-projects-col">{f.projects.map(projectRow)}</div>
+              )}
               <div className="sess-item-sub" title={f.cwd || ''}>{folderStats(f)}</div>
             </div>
           </div>

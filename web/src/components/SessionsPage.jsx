@@ -211,7 +211,7 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [source, setSource] = useState('all')       // all | cron | chat
   const [qInput, setQInput] = useState('')
   const [q, setQ] = useState('')                    // 提交后的关键词（后端搜正文）
-  const [range, setRange] = useState('30d')         // 1h | today | 7d | 30d | 90d | all
+  const [range, setRange] = useState('today')       // 1h | today | 7d | 30d | 90d | all（默认今天）
   const [checked, setChecked] = useState([])
   const [error, setError] = useState('')
   const [selectedTx, setSelectedTx] = useState('')

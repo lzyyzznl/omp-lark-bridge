@@ -1083,8 +1083,8 @@ func TestBuildRichCard_UsesCodexRuntimeToolDescriptors(t *testing.T) {
 	}, "answer", true, "", core.LangEnglish)
 
 	panels := collectCardPanels(t, cardJSON)
-	if len(panels) != 1 {
-		t.Fatalf("panel count = %d, want 1 tools panel: %#v", len(panels), panels)
+	if len(panels) != 9 {
+		t.Fatalf("panel count = %d, want one container per tool call", len(panels))
 	}
 	for _, want := range []string{
 		"Inspect files",
@@ -1105,8 +1105,15 @@ func TestBuildRichCard_UsesCodexRuntimeToolDescriptors(t *testing.T) {
 		"search_outlined",
 		"robot_outlined",
 	} {
-		if !panelContains(t, panels[0], want) {
-			t.Fatalf("tools panel should contain %q: %#v", want, panels[0])
+		found := false
+		for _, panel := range panels {
+			if panelContains(t, panel, want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("no tool container contains %q: %#v", want, panels)
 		}
 	}
 }
@@ -1187,46 +1194,31 @@ func TestBuildRichCard_PanelsShowLatestTenSteps(t *testing.T) {
 	cardJSON := buildRichCard(core.CardStatusWorking, "", steps, "answer", true, "", core.LangEnglish)
 
 	panels := collectCardPanels(t, cardJSON)
-	if len(panels) != 2 {
-		t.Fatalf("panel count = %d, want reasoning and tools panels: %#v", len(panels), panels)
+	// One reasoning panel + one container per visible tool call (latest 10).
+	if len(panels) != 11 {
+		t.Fatalf("panel count = %d, want reasoning panel + 10 tool containers", len(panels))
 	}
-	for _, tt := range []struct {
-		name          string
-		panel         map[string]any
-		oldestHidden  string
-		windowStart   string
-		latestVisible string
-		resultVisible string
-		hiddenSummary string
-	}{
-		{
-			name:          "reasoning",
-			panel:         panels[0],
-			oldestHidden:  "reasoning-index-0",
-			windowStart:   "reasoning-index-5",
-			latestVisible: "reasoning-index-14",
-			hiddenSummary: "5 earlier steps hidden",
-		},
-		{
-			name:          "tools",
-			panel:         panels[1],
-			oldestHidden:  "tool-command-0",
-			windowStart:   "tool-command-5",
-			latestVisible: "tool-command-14",
-			resultVisible: "tool-result-14",
-			hiddenSummary: "5 earlier steps hidden",
-		},
-	} {
-		if panelContains(t, tt.panel, tt.oldestHidden) {
-			t.Fatalf("%s panel should hide oldest step %q: %#v", tt.name, tt.oldestHidden, tt.panel)
+	if panelContains(t, panels[0], "reasoning-index-0") {
+		t.Fatalf("reasoning panel should hide oldest step: %#v", panels[0])
+	}
+	for _, want := range []string{"reasoning-index-5", "reasoning-index-14"} {
+		if !panelContains(t, panels[0], want) {
+			t.Fatalf("reasoning panel should contain %q", want)
 		}
-		for _, want := range []string{tt.windowStart, tt.latestVisible, tt.resultVisible, tt.hiddenSummary} {
-			if want == "" {
-				continue
-			}
-			if !panelContains(t, tt.panel, want) {
-				t.Fatalf("%s panel should contain %q: %#v", tt.name, want, tt.panel)
-			}
+	}
+	if !strings.Contains(cardJSON, "5 earlier steps hidden") {
+		t.Fatal("card should announce hidden steps")
+	}
+	if strings.Contains(cardJSON, "tool-command-0") {
+		t.Fatal("card should drop the oldest tool call")
+	}
+	if !panelContains(t, panels[1], "tool-command-5") {
+		t.Fatalf("first visible tool container should hold tool-command-5: %#v", panels[1])
+	}
+	last := panels[len(panels)-1]
+	for _, want := range []string{"tool-command-14", "tool-result-14"} {
+		if !panelContains(t, last, want) {
+			t.Fatalf("last tool container should contain %q: %#v", want, last)
 		}
 	}
 }
@@ -1244,8 +1236,8 @@ func TestBuildRichCard_SeparatesReasoningAndTools(t *testing.T) {
 	if got := cardPanelTitle(panels[0]); got != "Reasoning (1)" {
 		t.Fatalf("first panel title = %q, want Reasoning (1)", got)
 	}
-	if got := cardPanelTitle(panels[1]); got != "Tools (1)" {
-		t.Fatalf("second panel title = %q, want Tools (1)", got)
+	if got := cardPanelTitle(panels[1]); got != "Inspect files" {
+		t.Fatalf("tool container title = %q, want Inspect files", got)
 	}
 	if panelContains(t, panels[0], "pwd") {
 		t.Fatalf("reasoning panel should not include tool content: %#v", panels[0])
@@ -2327,9 +2319,10 @@ func TestCmdAction_WithAfterClick_SessionKeyRoutes(t *testing.T) {
 	}
 }
 
-// The tools panel must stay folded for the whole turn: it grows while the
-// agent works and an open panel pushes the streamed answer off-screen.
-func TestBuildRichCard_ToolsPanelStaysCollapsed(t *testing.T) {
+// Each tool call renders as its own bordered container nested in the card, with
+// one small row per command, status and output line. The newest call opens;
+// older finished calls fold so a long turn does not bury the answer.
+func TestBuildRichCard_EachToolCallGetsItsOwnContainer(t *testing.T) {
 	steps := []core.ToolStep{
 		{Kind: core.ToolStepKindThinking, Summary: "Inspecting event routing"},
 		{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "pwd", Result: "/workspace", Status: "completed", Done: true},
@@ -2338,18 +2331,50 @@ func TestBuildRichCard_ToolsPanelStaysCollapsed(t *testing.T) {
 		cardJSON := buildRichCard(core.CardStatusWorking, "", steps, "answer", streaming, "", core.LangEnglish)
 		panels := collectCardPanels(t, cardJSON)
 		if len(panels) != 2 {
-			t.Fatalf("panel count = %d, want reasoning and tools panels", len(panels))
+			t.Fatalf("panel count = %d, want reasoning panel + one tool container", len(panels))
 		}
-		if got := cardPanelTitle(panels[1]); got != "Tools (1)" {
-			t.Fatalf("second panel title = %q, want Tools (1)", got)
+		tool := panels[1]
+		if got := cardPanelTitle(tool); got != "Inspect files · completed" {
+			t.Fatalf("tool container title = %q, want %q", got, "Inspect files · completed")
 		}
-		if expanded, _ := panels[1]["expanded"].(bool); expanded {
-			t.Fatalf("tools panel expanded=%v (streaming=%v), want collapsed", expanded, streaming)
+		if expanded, _ := tool["expanded"].(bool); !expanded {
+			t.Fatalf("newest tool container expanded=false (streaming=%v), want open", streaming)
 		}
-		// Reasoning keeps following the turn: open while streaming, folded when done.
+		if bg, _ := tool["background_color"].(string); bg == "" {
+			t.Fatal("tool container needs a background to read as its own block")
+		}
+		rows, _ := tool["elements"].([]any)
+		if len(rows) != 3 {
+			t.Fatalf("row count = %d, want 3 (command/status/result)", len(rows))
+		}
+		for i, want := range []string{"pwd", "status: completed", "/workspace"} {
+			row, _ := rows[i].(map[string]any)
+			text, _ := row["text"].(map[string]any)
+			if got := text["content"]; got != want {
+				t.Fatalf("row %d content = %v, want %q", i, got, want)
+			}
+		}
 		if expanded, _ := panels[0]["expanded"].(bool); expanded != streaming {
 			t.Fatalf("reasoning panel expanded=%v (streaming=%v), want expanded==streaming", expanded, streaming)
 		}
+	}
+}
+
+func TestBuildRichCard_OlderToolContainersFold(t *testing.T) {
+	steps := []core.ToolStep{
+		{Kind: core.ToolStepKindTool, Name: "Bash", Summary: "ls", Status: "completed", Done: true},
+		{Kind: core.ToolStepKindTool, Name: "Read", Summary: "main.go", Status: "completed", Done: true},
+	}
+	cardJSON := buildRichCard(core.CardStatusDone, "", steps, "answer", false, "", core.LangEnglish)
+	panels := collectCardPanels(t, cardJSON)
+	if len(panels) != 2 {
+		t.Fatalf("panel count = %d, want two tool containers", len(panels))
+	}
+	if expanded, _ := panels[0]["expanded"].(bool); expanded {
+		t.Fatal("older finished tool container should fold")
+	}
+	if expanded, _ := panels[1]["expanded"].(bool); !expanded {
+		t.Fatal("newest tool container should stay open")
 	}
 }
 
@@ -2388,8 +2413,8 @@ func TestBuildRichCard_UsesJSON2WidthAndStreamingConfig(t *testing.T) {
 	}
 	freq, _ := printCfg["print_frequency_ms"].(map[string]any)
 	step, _ := printCfg["print_step"].(map[string]any)
-	if freq["default"] != float64(40) || step["default"] != float64(4) {
-		t.Fatalf("streaming_config = %#v, want 40ms / 4 chars per frame", printCfg)
+	if freq["default"] != float64(20) || step["default"] != float64(8) {
+		t.Fatalf("streaming_config = %#v, want 20ms / 8 chars per frame", printCfg)
 	}
 
 	doneCfg := readConfig(buildRichCard(core.CardStatusDone, "", steps, "body", false, "", core.LangEnglish))

@@ -18,6 +18,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
     每个面板只留最近 `maxRichCardStepsPerLane = 10` 行并显示"隐藏 N 步"提示。
   - 卡片体积硬保证：`buildRichCard` 在压缩面板后仍超 `maxRichCardJSONBytes = 29500` 时，
     对正文做二分截断并加 `…（内容过长，已截断）` 标记，避免飞书拒收整条消息导致回复丢失。
+  - cardkit 流式更新文本请求带 `uuid` 幂等键：同一帧（同一 body）在 token 刷新重放/瞬时
+    重试时复用同一个 uuid，飞书按 `200770` 去重而不重复渲染该帧。
+  - 引擎侧流式推送改为**异步单飞合并**（`core.richCardPusher`，latest-value conflation）：
+    `EventText` 只更新最新累计文本、永不阻塞事件循环；后台 goroutine 每 ≥150ms 推送一次
+    最新快照，被取代的中间帧直接丢弃（每帧都是累计全文，不丢内容）。推送滞后恒为一个
+    flush 周期 + 一次请求往返，不再随 chunk 数量串行叠加；最终帧强制 flush 后才切 Done
+    卡，迟到帧不会覆盖终态。仅实现 `core.RichCardTextCapable` 且 handle 带卡片实体的
+    平台启用，其余保持原同步路径。
+  - 飞书打字机提速：`streaming_config` 从 40ms/4 字（约 100 字/秒）改为 20ms/8 字
+    （约 400 字/秒），长回答不再在 agent 完成后继续"打字"十几秒。
+  - 工具执行改为**每次调用一个独立容器**：每个工具调用渲染为带标题（工具名 + 状态，如
+    `Bash · exit 1`）、描边和浅灰底的折叠面板，内部按"命令 / 状态 / 结果行"拆成一条条小容器，
+    不再把所有工具行平铺在同一个面板里。最新或仍在执行的调用默认展开，更早的已完成调用
+    折叠，避免长 turn 把正文挤下去；单次结果最多 6 行，其余提示"还有 N 行"。
 
 ### Fixed
 - Windows 上管理后台改配置不再需要手动重启：`daemon.RestartServiceAsync` 原先

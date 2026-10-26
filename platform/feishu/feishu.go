@@ -3,6 +3,8 @@ package feishu
 import (
 	"bytes"
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -4646,6 +4648,15 @@ func (p *Platform) createCardEntity(ctx context.Context, cardJSON string) (strin
 	return resp.Data.CardID, nil
 }
 
+// SupportsRichCardTextStreaming implements core.RichCardTextCapable. A preview
+// handle created through the cardkit-v1 two-step flow carries a card entity id
+// and can be streamed; the inline-JSON fallback has none and must use full-card
+// updates instead.
+func (p *Platform) SupportsRichCardTextStreaming(previewHandle any) bool {
+	h, ok := previewHandle.(*feishuPreviewHandle)
+	return ok && h.cardID != ""
+}
+
 // StreamRichCardText implements core.RichCardTextStreamer. Pushes the latest
 // fullText to the rich card's main_text element via cardkit-v1 streaming text
 // update API. The Lark client renders the increment between consecutive PUTs
@@ -4686,6 +4697,19 @@ func (p *Platform) StreamRichCardText(ctx context.Context, previewHandle any, fu
 	return fmt.Errorf("%s: %w", p.tag(), apiErr)
 }
 
+// newCardkitUUID returns a randomized idempotency key for one cardkit streaming
+// frame (32 hex chars, within Feishu's 1-64 uuid length limit). The body is
+// built once before the retry/replay closure, so a replayed frame carries the
+// same uuid and Feishu dedupes it (error 200770) instead of applying the frame
+// twice.
+func newCardkitUUID() string {
+	var b [16]byte
+	if _, err := cryptorand.Read(b[:]); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b[:])
+}
+
 // streamCardText pushes one full-text frame to the card's streaming markdown
 // element. The handle mutex is held across the request so the sequence counter
 // stays strictly increasing: Feishu rejects out-of-order sequences across every
@@ -4704,6 +4728,7 @@ func (p *Platform) streamCardText(ctx context.Context, h *feishuPreviewHandle, f
 	body := map[string]any{
 		"content":  fullText,
 		"sequence": h.sequence,
+		"uuid":     newCardkitUUID(),
 	}
 
 	var apiResp *larkcore.ApiResp
@@ -5939,37 +5964,40 @@ func slashCommandsEnabled(opts map[string]any) bool {
 
 // richCardLabels holds every user-visible string of the single-card turn.
 type richCardLabels struct {
-	reasoning      string
-	tools          string
-	done           string
-	failed         string
-	thinkingEmpty  string
-	continueButton string
-	retryButton    string
-	helpfulButton  string
-	poorButton     string
-	feedbackThanks string
-	stepsHiddenFmt string
+	reasoning            string
+	tools                string
+	done                 string
+	failed               string
+	thinkingEmpty        string
+	continueButton       string
+	retryButton          string
+	helpfulButton        string
+	poorButton           string
+	feedbackThanks       string
+	stepsHiddenFmt       string
+	resultLinesHiddenFmt string
 }
 
 func richCardLabelsFor(lang core.Language) richCardLabels {
 	if isCardChinese(lang) {
 		return richCardLabels{
-			reasoning:      "思考",
-			tools:          "工具",
-			done:           "完成",
-			failed:         "出错",
-			thinkingEmpty:  "思考中...",
-			stepsHiddenFmt: "... 已隐藏前 %d 步",
+			reasoning:            "思考",
+			tools:                "工具",
+			done:                 "完成",
+			failed:               "出错",
+			thinkingEmpty:        "思考中...",
+			stepsHiddenFmt:       "... 已隐藏前 %d 步",
+			resultLinesHiddenFmt: "... 还有 %d 行",
 		}
 	}
 	return richCardLabels{
-		reasoning:      "Reasoning",
-		tools:          "Tools",
-		done:           "Done",
-		failed:         "Error",
-		thinkingEmpty:  "Thinking...",
-		stepsHiddenFmt: "... %d earlier steps hidden",
+		reasoning:            "Reasoning",
+		tools:                "Tools",
+		done:                 "Done",
+		failed:               "Error",
+		thinkingEmpty:        "Thinking...",
+		stepsHiddenFmt:       "... %d earlier steps hidden",
+		resultLinesHiddenFmt: "... %d more lines",
 	}
 }
 
@@ -6592,23 +6620,133 @@ func richStepRowContent(step core.ToolStep) string {
 	return name + "\n" + body
 }
 
+// richStepElement renders one reasoning row inside the reasoning panel. Tool
+// calls no longer go through here: each one gets its own container.
 func richStepElement(step core.ToolStep) map[string]any {
+	return map[string]any{
+		"tag": "div",
+		"text": map[string]any{
+			"tag":        "plain_text",
+			"content":    truncateRunes(richStepBody(step), maxRichCardStepTextRunes),
+			"text_size":  "notation",
+			"text_color": "grey",
+		},
+		"icon": map[string]any{"tag": "standard_icon", "token": reasoningToolIcon},
+	}
+}
+
+// maxRichCardResultLines caps how many result rows a single tool container
+// renders; the rest collapse into one "... N more lines" row.
+const maxRichCardResultLines = 6
+
+// richSmallLine renders one row inside a tool container: a small dim line, so
+// the command, its status and every output line read as separate blocks
+// instead of one wall of text.
+func richSmallLine(content, color string) map[string]any {
 	text := map[string]any{
 		"tag":       "plain_text",
-		"content":   truncateRunes(richStepRowContent(step), maxRichCardStepTextRunes),
+		"content":   content,
 		"text_size": "notation",
 	}
-	elem := map[string]any{
-		"tag":  "div",
-		"text": text,
+	if color != "" && color != "default" {
+		text["text_color"] = color
 	}
-	if step.Kind == core.ToolStepKindThinking {
-		text["text_color"] = "grey"
-		elem["icon"] = map[string]any{"tag": "standard_icon", "token": reasoningToolIcon}
-		return elem
+	return map[string]any{"tag": "div", "text": text}
+}
+
+func richToolStatusText(step core.ToolStep) (string, string) {
+	var parts []string
+	color := "grey"
+	if status := strings.TrimSpace(step.Status); status != "" {
+		parts = append(parts, "status: "+status)
+		if strings.EqualFold(status, "failed") || strings.EqualFold(status, "error") {
+			color = "red"
+		}
+	} else if step.Success != nil {
+		if *step.Success {
+			parts = append(parts, "status: ok")
+			color = "green"
+		} else {
+			parts = append(parts, "status: failed")
+			color = "red"
+		}
 	}
-	elem["icon"] = map[string]any{"tag": "standard_icon", "token": buildToolDisplay(step.Name, step.Summary).IconToken}
-	return elem
+	if step.ExitCode != nil {
+		parts = append(parts, fmt.Sprintf("exit: %d", *step.ExitCode))
+		if *step.ExitCode != 0 {
+			color = "red"
+		}
+	}
+	return strings.Join(parts, " | "), color
+}
+
+func richToolHeaderTitle(step core.ToolStep) string {
+	name := richStepDisplayName(step)
+	if status := strings.TrimSpace(step.Status); status != "" {
+		return name + " · " + status
+	}
+	if step.Success != nil && !*step.Success {
+		return name + " · failed"
+	}
+	if step.ExitCode != nil && *step.ExitCode != 0 {
+		return fmt.Sprintf("%s · exit %d", name, *step.ExitCode)
+	}
+	if step.Success != nil && *step.Success {
+		return name + " · ok"
+	}
+	return name
+}
+
+// richToolContainerElement renders one tool call as its own bordered,
+// collapsible container: header = tool name + status, body = one small row per
+// command line, status and output line. The latest or still-running call opens
+// by default; finished ones fold so a long turn stays readable.
+func richToolContainerElement(step core.ToolStep, labels richCardLabels, expanded bool) map[string]any {
+	display := buildToolDisplay(step.Name, step.Summary)
+	elements := make([]map[string]any, 0, 4)
+	if detail := strings.TrimSpace(display.Detail); detail != "" {
+		for _, line := range strings.Split(detail, "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			elements = append(elements, richSmallLine(truncateRunes(line, maxRichCardStepTextRunes), "default"))
+		}
+	}
+	if status, color := richToolStatusText(step); status != "" {
+		elements = append(elements, richSmallLine(status, color))
+	}
+	if result := strings.TrimSpace(step.Result); result != "" {
+		lines := strings.Split(result, "\n")
+		for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+			lines = lines[:len(lines)-1]
+		}
+		hidden := 0
+		if len(lines) > maxRichCardResultLines {
+			hidden = len(lines) - maxRichCardResultLines
+			lines = lines[:maxRichCardResultLines]
+		}
+		for _, line := range lines {
+			elements = append(elements, richSmallLine(truncateRunes(line, maxRichCardStepTextRunes), "grey"))
+		}
+		if hidden > 0 {
+			elements = append(elements, richSmallLine(fmt.Sprintf(labels.resultLinesHiddenFmt, hidden), "grey"))
+		}
+	}
+
+	return map[string]any{
+		"tag":              "collapsible_panel",
+		"expanded":         expanded,
+		"background_color": "grey",
+		"border":           map[string]any{"color": "grey", "corner_radius": "8px"},
+		"padding":          "6px 10px",
+		"vertical_spacing": "4px",
+		"header": map[string]any{
+			"title": map[string]any{"tag": "plain_text", "content": richToolHeaderTitle(step)},
+			"icon":  map[string]any{"tag": "standard_icon", "token": display.IconToken},
+		},
+		"elements": elements,
+	}
 }
 
 func richPlaceholderElement(text string) map[string]any {
@@ -6776,27 +6914,33 @@ func truncateRunes(s string, max int) string {
 func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markdown string, streaming bool, statusFooter string, lang core.Language) ([]byte, error) {
 	labels := richCardLabelsFor(lang)
 	reasoningSteps, toolSteps := splitRichStepsByLane(steps)
-	panelMaps := make([]map[string]any, 0, 2)
+	elements := make([]map[string]any, 0, 4)
 	if len(reasoningSteps) > 0 {
-		panelMaps = append(panelMaps, buildRichPanel(
+		elements = append(elements, buildRichPanel(
 			richLaneTitle(labels.reasoning, len(reasoningSteps)),
 			streaming,
 			richPanelElements(reasoningSteps, labels),
 		))
 	}
 	if len(toolSteps) > 0 {
-		// Tool calls stay folded for the whole turn: the panel keeps growing
-		// while the agent works, and an expanded panel buries the answer text
-		// below it. Reasoning still opens while streaming so the user can see
-		// what the agent is doing.
-		panelMaps = append(panelMaps, buildRichPanel(
-			richLaneTitle(labels.tools, len(toolSteps)),
-			false,
-			richPanelElements(toolSteps, labels),
-		))
+		visible := toolSteps
+		hidden := 0
+		if len(toolSteps) > maxRichCardStepsPerLane {
+			hidden = len(toolSteps) - maxRichCardStepsPerLane
+			visible = toolSteps[hidden:]
+		}
+		if hidden > 0 {
+			elements = append(elements, richPlaceholderElement(fmt.Sprintf(labels.stepsHiddenFmt, hidden)))
+		}
+		for i, step := range visible {
+			// The newest call (or any still running) opens; older finished calls
+			// fold to a single header row so a long turn does not bury the answer.
+			expanded := !step.Done || i == len(visible)-1
+			elements = append(elements, richToolContainerElement(step, labels, expanded))
+		}
 	}
-	if len(panelMaps) == 0 && streaming {
-		panelMaps = append(panelMaps, buildRichPanel(labels.reasoning, true, richPanelElements(nil, labels)))
+	if len(elements) == 0 && streaming {
+		elements = append(elements, buildRichPanel(labels.reasoning, true, richPanelElements(nil, labels)))
 	}
 
 	markdownMap := map[string]any{
@@ -6824,13 +6968,7 @@ func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markd
 		}
 	}
 
-	var elements []map[string]any
-	if len(panelMaps) > 0 {
-		elements = append(elements, panelMaps...)
-		elements = append(elements, markdownMap)
-	} else {
-		elements = append(elements, markdownMap)
-	}
+	elements = append(elements, markdownMap)
 	if len(footerElements) > 0 {
 		// Insert a horizontal separator between body and footer so the boundary is clear.
 		elements = append(elements, map[string]any{"tag": "hr"})
@@ -6853,9 +6991,11 @@ func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markd
 	}
 
 	// Card 2.0 config: width_mode replaces the 1.0 wide_screen_mode; update_multi
-	// must stay true for streaming. streaming_config matches the client's print
-	// rate to the engine's frame rate (20 chars / 200ms): the defaults (1 char
-	// per 70ms) cannot keep up, so `fast` would dump each backlog at once.
+	// must stay true for streaming. The engine now pushes the newest snapshot at
+	// most every ~150ms, so the client printer must drain that backlog quickly:
+	// 8 chars per 20ms (~400 chars/s) instead of Feishu's default 1 char per 70ms
+	// (~14/s). The old 40ms/4-chars (100/s) left long answers typing for many
+	// seconds after the agent had already finished.
 	cardConfig := map[string]any{
 		"streaming_mode":             streaming,
 		"update_multi":               true,
@@ -6864,8 +7004,8 @@ func buildRichCardJSONBytes(status core.CardStatus, steps []core.ToolStep, markd
 	}
 	if streaming {
 		cardConfig["streaming_config"] = map[string]any{
-			"print_frequency_ms": map[string]any{"default": 40},
-			"print_step":         map[string]any{"default": 4},
+			"print_frequency_ms": map[string]any{"default": 20},
+			"print_step":         map[string]any{"default": 8},
 			"print_strategy":     "fast",
 		}
 	} else if summary := richCardSummary(markdown); summary != "" {

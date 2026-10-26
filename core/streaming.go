@@ -137,6 +137,15 @@ type RichCardTextStreamer interface {
 	StreamRichCardText(ctx context.Context, previewHandle any, fullText string) error
 }
 
+// RichCardTextCapable lets a platform report whether a specific preview handle
+// supports the streaming-text path. Platforms that implement it opt in to the
+// engine's background rich-card pusher (latest-value conflation + single
+// flight); a false result keeps the older synchronous full-card update path,
+// which is what inline-JSON fallback handles need.
+type RichCardTextCapable interface {
+	SupportsRichCardTextStreaming(previewHandle any) bool
+}
+
 // PreviewStarter is an optional interface for platforms that can initiate a
 // streaming preview message and return a handle for subsequent updates.
 type PreviewStarter interface {

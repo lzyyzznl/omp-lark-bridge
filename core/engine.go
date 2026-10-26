@@ -4949,6 +4949,7 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	var lastRichCardUpdate time.Time
 	var lastRichCardLen int
 	var cardMessageID any
+	var cardPusher *richCardPusher // background streaming-text pusher (nil = synchronous path)
 	var partialText string
 	triggerAutoCompress := false
 	pendingSend := sendDone
@@ -4960,6 +4961,9 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 	// Set during EventResult handling for multi-round quiet turns.
 	var doneReaction func()
 	defer func() {
+		if cardPusher != nil {
+			cardPusher.Close()
+		}
 		if stopTyping != nil {
 			stopTyping()
 		}
@@ -5517,21 +5521,34 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 									}
 								}
 							}
-							// Throttle: cardkit-v1 streaming text path uses tighter limits (200ms / 20 chars)
-							// for smoother typewriter UX; full-card Patch fallback keeps the original 1500ms / 30 chars.
-							streamer, hasStreamer := p.(RichCardTextStreamer)
-							throttleDur := 1500 * time.Millisecond
-							throttleChars := 30
-							if hasStreamer && cardMessageID != nil {
-								throttleDur = 200 * time.Millisecond
-								throttleChars = 20
+							// Prefer the platform's streaming-text path through the
+							// background pusher: Update only records the latest
+							// cumulative snapshot (never blocks the event loop), and
+							// one goroutine flushes it at a bounded rate.
+							// Latest-value conflation means a slow card API can no
+							// longer lag behind the agent by more than one flush
+							// interval, no matter how many chunks arrive.
+							// Platforms without a streamable card entity (or without
+							// RichCardTextCapable) keep the synchronous throttle below.
+							usePusher := false
+							if capable, ok := p.(RichCardTextCapable); ok && cardMessageID != nil {
+								usePusher = capable.SupportsRichCardTextStreaming(cardMessageID)
 							}
-							if cardMessageID != nil && (time.Since(lastRichCardUpdate) > throttleDur || len(partialText)-lastRichCardLen > throttleChars) {
-								// Prefer per-element streaming text update (cardkit-v1) when available;
-								// it engages Lark's native typewriter rendering. Falls back to
-								// full-card Patch on ErrNotSupported (handle without cardID) or any error.
+							if usePusher {
+								if cardPusher == nil {
+									if streamer, ok := p.(RichCardTextStreamer); ok {
+										cardPusher = newRichCardPusher(e.ctx, streamer, cardMessageID)
+									}
+								}
+								if cardPusher != nil {
+									cardPusher.Update(resolveRichCardMarkdown(partialText, false))
+								}
+							} else if cardMessageID != nil && (time.Since(lastRichCardUpdate) > 1500*time.Millisecond || len(partialText)-lastRichCardLen > 30) {
+								// Synchronous fallback: full-card updates, or a
+								// best-effort stream attempt for a handle without a
+								// card entity (ErrNotSupported → Patch).
 								streamed := false
-								if hasStreamer {
+								if streamer, ok := p.(RichCardTextStreamer); ok {
 									streamBody := resolveRichCardMarkdown(partialText, false)
 									if err := streamer.StreamRichCardText(e.ctx, cardMessageID, streamBody); err == nil {
 										lastRichCardUpdate = time.Now()
@@ -5906,6 +5923,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				// orphaned shell. Finalizing-in-place avoids the "撤回了一条消息"
 				// gray bar that DeletePreviewMessage would leave in Lark.
 				if hasRichCard && cardMessageID != nil {
+					if cardPusher != nil {
+						cardPusher.Close()
+						cardPusher = nil
+					}
 					silentBody := partialText
 					if stripped, ok := stripTrailingSilent(partialText); ok {
 						silentBody = strings.TrimRight(stripped, " \t\r\n")
@@ -5947,13 +5968,14 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 				}
 				finalCard := richCardSupporter.BuildRichCard(CardStatusDone, "", toolSteps, finalBody, false, richStatusFooter)
 				if cardMessageID != nil {
-					// Forced final flush via cardkit-v1 streaming text update before
-					// flipping status to Done via full-card Patch. The throttle in the
-					// EventText path may have skipped the last <200ms / <20 chars; this
-					// catch-up keeps the typewriter rendering smooth all the way to the
-					// end. ErrNotSupported (no cardID) and any error are silent — the
-					// subsequent UpdateMessage will rewrite the body anyway.
-					if streamer, ok := p.(RichCardTextStreamer); ok {
+					// Stop the background pusher with one forced final frame BEFORE
+					// flipping status to Done: a late in-flight frame must not
+					// overwrite the finished card. Without a pusher (non-streaming
+					// handle) keep the best-effort synchronous flush.
+					if cardPusher != nil {
+						cardPusher.Final(finalBody)
+						cardPusher = nil
+					} else if streamer, ok := p.(RichCardTextStreamer); ok {
 						if err := streamer.StreamRichCardText(e.ctx, cardMessageID, finalBody); err != nil && !errors.Is(err, ErrNotSupported) {
 							slog.Debug("rich card: final streaming flush failed (proceeding to full Patch)", "platform", p.Name(), "error", err)
 						}
@@ -6235,6 +6257,10 @@ func (e *Engine) processInteractiveEvents(state *interactiveState, session *Sess
 			state.eventsNeedResync = true
 			state.mu.Unlock()
 			if hasRichCard && cardMessageID != nil {
+				if cardPusher != nil {
+					cardPusher.Close()
+					cardPusher = nil
+				}
 				errCard := buildResolvedRichCard(CardStatusError, "", toolSteps, partialText, false, e.composeRichStatusFooter(false, turnStart, e.agent, state.agentSession, state.workspaceDir))
 				if updater, ok := p.(MessageUpdater); ok {
 					if err := updater.UpdateMessage(e.ctx, cardMessageID, errCard); err != nil {

@@ -2292,3 +2292,99 @@ func TestCardStreamingClosedDetection(t *testing.T) {
 		}
 	}
 }
+
+// TestStreamRichCardTextCarriesIdempotencyUUID verifies every cardkit streaming
+// frame carries a per-frame uuid idempotency key (Feishu error 200770 dedupes
+// replays of the same frame), that each frame gets its own key, and that the
+// sequence counter still strictly increases.
+func TestStreamRichCardTextCarriesIdempotencyUUID(t *testing.T) {
+	type frame struct {
+		content  string
+		sequence int
+		uuid     string
+	}
+	var (
+		mu     sync.Mutex
+		frames []frame
+	)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/open-apis/auth/v3/tenant_access_token/internal":
+			writeJSON(t, w, map[string]any{
+				"code":                0,
+				"msg":                 "success",
+				"expire":              7200,
+				"tenant_access_token": "tenant-token",
+			})
+		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/elements/main_text/content"):
+			var body struct {
+				Content  string `json:"content"`
+				Sequence int    `json:"sequence"`
+				UUID     string `json:"uuid"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Errorf("decode content body: %v", err)
+			}
+			mu.Lock()
+			frames = append(frames, frame{body.Content, body.Sequence, body.UUID})
+			mu.Unlock()
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			writeJSON(t, w, map[string]any{"code": 0, "msg": "success"})
+		}
+	}))
+	defer srv.Close()
+
+	p := &Platform{
+		platformName: "feishu",
+		domain:       srv.URL,
+		appID:        "cli_uuid",
+		appSecret:    "secret-uuid",
+		client: lark.NewClient("cli_uuid", "secret-uuid",
+			lark.WithOpenBaseUrl(srv.URL),
+			lark.WithHttpClient(srv.Client()),
+		),
+	}
+	h := &feishuPreviewHandle{messageID: "om_card", chatID: "oc_chat", cardID: "7355"}
+
+	for i, want := range []string{"first frame", "second frame"} {
+		if err := p.StreamRichCardText(context.Background(), h, want); err != nil {
+			t.Fatalf("StreamRichCardText() frame %d error = %v", i+1, err)
+		}
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(frames) != 2 {
+		t.Fatalf("frames = %d, want 2: %+v", len(frames), frames)
+	}
+	if frames[0].sequence != 1 || frames[1].sequence != 2 {
+		t.Fatalf("sequence = %d,%d, want strictly increasing 1,2", frames[0].sequence, frames[1].sequence)
+	}
+	for i, f := range frames {
+		if !isHex32(f.uuid) {
+			t.Fatalf("frame %d uuid = %q, want 32 hex chars", i+1, f.uuid)
+		}
+		if f.content != "" && !strings.Contains(f.content, "frame") {
+			t.Fatalf("frame %d content = %q, want the full-frame text", i+1, f.content)
+		}
+	}
+	if frames[0].uuid == frames[1].uuid {
+		t.Fatalf("frames share the same uuid %q, want per-frame keys", frames[0].uuid)
+	}
+}
+
+func isHex32(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for _, r := range s {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f') {
+			return false
+		}
+	}
+	return true
+}

@@ -96,8 +96,10 @@ func TestBuildRichCard_ChineseLabels(t *testing.T) {
 	if got := cardPanelTitle(panels[0]); got != "思考 (1)" {
 		t.Fatalf("reasoning panel title = %q, want 思考 (1)", got)
 	}
-	if got := cardPanelTitle(panels[1]); got != "工具 (1)" {
-		t.Fatalf("tools panel title = %q, want 工具 (1)", got)
+	// Tool containers are titled by the tool descriptor, which is not localized;
+	// only the reasoning panel carries the Chinese label.
+	if got := cardPanelTitle(panels[1]); got != "Build" {
+		t.Fatalf("tool container title = %q, want Build", got)
 	}
 }
 

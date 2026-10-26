@@ -2192,6 +2192,106 @@ func runRichCardSilentScenario(t *testing.T, name string, chunks []string, final
 	return p.snapshot()
 }
 
+// stubPusherPlatform opts into the asynchronous streaming path
+// (RichCardTextCapable) so the engine's background pusher is exercised.
+type stubPusherPlatform struct {
+	*stubRichCardSilentPlatform
+	orderMu sync.Mutex
+	order   []string
+}
+
+func (p *stubPusherPlatform) SupportsRichCardTextStreaming(any) bool { return true }
+
+func (p *stubPusherPlatform) StreamRichCardText(ctx context.Context, h any, text string) error {
+	p.orderMu.Lock()
+	p.order = append(p.order, "stream")
+	p.orderMu.Unlock()
+	return p.stubRichCardSilentPlatform.StreamRichCardText(ctx, h, text)
+}
+
+func (p *stubPusherPlatform) UpdateMessage(ctx context.Context, h any, content string) error {
+	p.orderMu.Lock()
+	p.order = append(p.order, "update")
+	p.orderMu.Unlock()
+	return p.stubRichCardSilentPlatform.UpdateMessage(ctx, h, content)
+}
+
+// TestProcessInteractiveEvents_RichCardPusherCoalescesChunks pins the fix for
+// "agent finished but the card kept typing": a burst of text chunks must not
+// turn into one cardkit HTTP call per chunk. The background pusher coalesces
+// them, and the final frame lands BEFORE the Done patch so a late frame cannot
+// overwrite the finished card.
+func TestProcessInteractiveEvents_RichCardPusherCoalescesChunks(t *testing.T) {
+	base := &stubRichCardSilentPlatform{stubPlatformEngine: stubPlatformEngine{n: "feishu"}}
+	p := &stubPusherPlatform{stubRichCardSilentPlatform: base}
+	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
+	e.SetDisplayConfig(DisplayCfg{
+		Mode:             "full",
+		CardMode:         "rich",
+		ThinkingMessages: true,
+		ThinkingMaxLen:   300,
+		ToolMaxLen:       500,
+		ToolMessages:     true,
+	})
+	sessionKey := "feishu:user-pusher"
+	session := e.sessions.GetOrCreateActive(sessionKey)
+	agentSession := newControllableSession("s-pusher")
+	state := &interactiveState{
+		agentSession: agentSession,
+		platform:     p,
+		replyCtx:     "ctx-pusher",
+	}
+	e.interactiveStates[sessionKey] = state
+
+	// The stub session buffers only 8 events, so consume them from a goroutine
+	// while the test feeds the burst.
+	done := make(chan struct{})
+	go func() {
+		e.processInteractiveEvents(state, session, e.sessions, sessionKey, "m-pusher", time.Now(), nil, nil, state.replyCtx)
+		close(done)
+	}()
+
+	const chunks = 200
+	var full strings.Builder
+	for i := range chunks {
+		chunk := fmt.Sprintf("tok%d ", i)
+		full.WriteString(chunk)
+		agentSession.events <- Event{Type: EventText, Content: chunk}
+	}
+	agentSession.events <- Event{Type: EventResult, Content: full.String(), Done: true}
+	<-done
+
+	_, streams, updates, _ := base.snapshot()
+	if len(streams) == 0 {
+		t.Fatal("expected the pusher to stream at least the final frame")
+	}
+	if len(streams) >= chunks/4 {
+		t.Fatalf("pusher sent %d frames for %d chunks, want coalescing", len(streams), chunks)
+	}
+	if got := streams[len(streams)-1]; !strings.Contains(got, "tok199") {
+		t.Fatalf("last streamed frame = %q, want the final text", got)
+	}
+	if len(updates) == 0 {
+		t.Fatal("expected the terminal Done card patch")
+	}
+
+	p.orderMu.Lock()
+	order := append([]string(nil), p.order...)
+	p.orderMu.Unlock()
+	lastStream, lastUpdate := -1, -1
+	for i, op := range order {
+		if op == "stream" {
+			lastStream = i
+		}
+		if op == "update" {
+			lastUpdate = i
+		}
+	}
+	if lastStream < 0 || lastUpdate < 0 || lastStream > lastUpdate {
+		t.Fatalf("final stream frame must precede the Done patch, order = %v", order)
+	}
+}
+
 // TestProcessInteractiveEvents_RichCard_NoReplySingleChunk asserts that a
 // single-chunk NO_REPLY response in rich card mode leaves zero trace: no
 // preview card created, no streaming text update, no card deletion. Lark

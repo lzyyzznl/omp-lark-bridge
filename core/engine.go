@@ -1717,21 +1717,23 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 				applier3.ApplyCronGoal(content)
 			}
 		}
-		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
-		e.cleanupInteractiveState(iKey)
-		// Empty-response detection via session history delta: processInteractiveMessageWith
-		// always adds a "user" entry (prevHistLen+1), then an "assistant" entry on success
-		// (prevHistLen+2). This approach correctly detects empty responses across all
-		// delivery modes (plain text, cards, rich cards, DingTalk AI streaming) because
-		// AddHistory("assistant",...) is called before any platform-specific rendering path.
-		if !job.Mute && !job.ResultOnly && session.HistoryLen() < prevHistLen+2 {
-			return fmt.Errorf("cron job %q produced an empty response", job.ID)
-		}
-		if job.ResultOnly {
-			e.deliverCronResultOnly(targetPlatform, replyCtx, session)
-		}
-		e.recordCronLastSession(job, session)
-		return nil
+		return e.runTimedTurn(job.ExecutionTimeout(), iKey, func() error {
+			e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
+			e.cleanupInteractiveState(iKey)
+			// Empty-response detection via session history delta: processInteractiveMessageWith
+			// always adds a "user" entry (prevHistLen+1), then an "assistant" entry on success
+			// (prevHistLen+2). This approach correctly detects empty responses across all
+			// delivery modes (plain text, cards, rich cards, DingTalk AI streaming) because
+			// AddHistory("assistant",...) is called before any platform-specific rendering path.
+			if !job.Mute && !job.ResultOnly && session.HistoryLen() < prevHistLen+2 {
+				return fmt.Errorf("cron job %q produced an empty response", job.ID)
+			}
+			if job.ResultOnly {
+				e.deliverCronResultOnly(targetPlatform, replyCtx, session)
+			}
+			e.recordCronLastSession(job, session)
+			return nil
+		})
 	}
 
 	session := sessions.GetOrCreateActive(sessionKey)
@@ -1744,16 +1746,46 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		iKey = workspaceDir + ":" + sessionKey
 	}
 	prevHistLen := session.HistoryLen()
-	e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
-	// Same empty-response detection as the useNewSession path above.
-	if !job.Mute && !job.ResultOnly && session.HistoryLen() < prevHistLen+2 {
-		return fmt.Errorf("cron job %q produced an empty response", job.ID)
+	return e.runTimedTurn(job.ExecutionTimeout(), iKey, func() error {
+		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
+		// Same empty-response detection as the useNewSession path above.
+		if !job.Mute && !job.ResultOnly && session.HistoryLen() < prevHistLen+2 {
+			return fmt.Errorf("cron job %q produced an empty response", job.ID)
+		}
+		if job.ResultOnly {
+			e.deliverCronResultOnly(targetPlatform, replyCtx, session)
+		}
+		e.recordCronLastSession(job, session)
+		return nil
+	})
+}
+
+// runTimedTurn runs a scheduled (cron/timer) turn under the job's wall-clock
+// timeout. On timeout the running agent turn is aborted — via
+// AgentSessionCanceller.CancelTurn when the session supports it, otherwise by
+// stopping/closing the agent session — so the job can't keep producing replies
+// after the scheduler has reported it timed out. The turn goroutine is then
+// awaited (with a grace cap) so its writes finish before the caller records the
+// result. A timeout <= 0 means no limit and runs synchronously, unchanged.
+func (e *Engine) runTimedTurn(timeout time.Duration, iKey string, run func() error) error {
+	if timeout <= 0 {
+		return run()
 	}
-	if job.ResultOnly {
-		e.deliverCronResultOnly(targetPlatform, replyCtx, session)
+	errCh := make(chan error, 1)
+	go func() { errCh <- run() }()
+	select {
+	case err := <-errCh:
+		return err
+	case <-time.After(timeout):
+		slog.Warn("scheduled job turn timed out, aborting turn", "interactive_key", iKey, "timeout", timeout)
+		e.stopInteractiveSessionWithOptions(iKey, false)
+		select {
+		case <-errCh:
+		case <-time.After(10 * time.Second):
+			slog.Warn("timed-out scheduled job turn did not finish within grace window", "interactive_key", iKey)
+		}
+		return fmt.Errorf("job timed out after %v", timeout)
 	}
-	e.recordCronLastSession(job, session)
-	return nil
 }
 
 // recordCronLastSession persists the transcript id of a finished cron run to
@@ -1947,9 +1979,11 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 		if workspaceDir != "" {
 			iKey = workspaceDir + ":" + iKey
 		}
-		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
-		e.cleanupInteractiveState(iKey)
-		return nil
+		return e.runTimedTurn(job.ExecutionTimeout(), iKey, func() error {
+			e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, runSessionKey)
+			e.cleanupInteractiveState(iKey)
+			return nil
+		})
 	}
 
 	session := sessions.GetOrCreateActive(sessionKey)
@@ -1961,8 +1995,10 @@ func (e *Engine) ExecuteTimerJob(job *TimerJob) error {
 	if workspaceDir != "" {
 		iKey = workspaceDir + ":" + sessionKey
 	}
-	e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
-	return nil
+	return e.runTimedTurn(job.ExecutionTimeout(), iKey, func() error {
+		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
+		return nil
+	})
 }
 
 func timerRunTitle(job *TimerJob) string {

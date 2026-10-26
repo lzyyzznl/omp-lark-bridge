@@ -22,7 +22,7 @@ func (a *skillExecuteAgent) ListSkills(_ context.Context) ([]Skill, error) { ret
 func waitForPrompts(s *resultAgentSession, n int) bool {
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
-		if len(s.sentPrompts) >= n {
+		if len(s.getSentPrompts()) >= n {
 			return true
 		}
 		time.Sleep(5 * time.Millisecond)
@@ -43,10 +43,10 @@ func TestHandleCommand_SkillInvocationForwardsOmpProtocol(t *testing.T) {
 		t.Fatal("skill slash command must be handled by the engine")
 	}
 	if !waitForPrompts(agentSession, 1) {
-		t.Fatalf("agent never received a prompt: %v", agentSession.sentPrompts)
+		t.Fatalf("agent never received a prompt: %v", agentSession.getSentPrompts())
 	}
 	want := "/skill:edw-zmail 查今天的邮件"
-	if got := agentSession.sentPrompts[0]; got != want {
+	if got := agentSession.getSentPrompts()[0]; got != want {
 		t.Errorf("agent prompt = %q, want %q", got, want)
 	}
 }

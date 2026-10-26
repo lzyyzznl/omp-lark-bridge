@@ -166,7 +166,7 @@ func TestTimerStore_CRUD(t *testing.T) {
 	}
 
 	// MarkFired
-	store.MarkFired("abcd1234", nil)
+	store.MarkFiredWithResult("abcd1234", nil)
 	got = store.Get("abcd1234")
 	if !got.Fired {
 		t.Error("Fired not set")

@@ -292,3 +292,36 @@ func TestSplitAskAnswer(t *testing.T) {
 		t.Fatalf("empty answer = (%v, %q), want no selection", selected, custom)
 	}
 }
+
+func TestAskExpiry(t *testing.T) {
+	s, _ := newAskTestSession(t)
+
+	// A fresh dialog is answerable.
+	s.storeAsk("fresh", &ompPendingAsk{kind: "select"})
+	if pending := s.takeAsk("fresh"); pending == nil || pending.kind != "select" {
+		t.Fatalf("fresh ask not answerable: %#v", pending)
+	}
+
+	// An ask older than askTTL is stale: storeAsk's sweep drops it, and even
+	// if one slips through, takeAsk refuses to hand it back.
+	s.storeAsk("stale", &ompPendingAsk{kind: "ask", created: time.Now().Add(-askTTL - time.Minute)})
+	if pending := s.takeAsk("stale"); pending != nil {
+		t.Fatalf("stale ask must be ignored, got %#v", pending)
+	}
+
+	// purgeExpiredAsksLocked reclaims aged entries but keeps fresh ones.
+	s.storeAsk("keeper", &ompPendingAsk{kind: "ask"})
+	s.askMu.Lock()
+	s.purgeExpiredAsksLocked()
+	s.askMu.Unlock()
+	if pending := s.takeAsk("keeper"); pending == nil || pending.kind != "ask" {
+		t.Fatalf("fresh ask purged alongside expired ones: %#v", pending)
+	}
+
+	// closeAsks drops every open dialog.
+	s.storeAsk("c", &ompPendingAsk{kind: "ask"})
+	s.closeAsks()
+	if pending := s.takeAsk("c"); pending != nil {
+		t.Fatalf("ask survived closeAsks: %#v", pending)
+	}
+}

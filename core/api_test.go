@@ -276,8 +276,9 @@ func TestHandleSend_WorkDirStartsSideSession(t *testing.T) {
 	if len(sent) == 0 || !strings.Contains(strings.Join(sent, "\n"), "agent result from "+targetDir) {
 		t.Fatalf("platform sent after reply = %#v, want agent result from target work dir", sent)
 	}
-	if workspaceSession == nil || len(workspaceSession.sentPrompts) != 1 || !strings.Contains(workspaceSession.sentPrompts[0], "human answer") {
-		t.Fatalf("workspace session prompts = %#v, want human reply prompt", workspaceSession)
+	wp := workspaceSession.getSentPrompts()
+	if len(wp) != 1 || !strings.Contains(wp[0], "human answer") {
+		t.Fatalf("workspace session prompts = %#v, want human reply prompt", wp)
 	}
 }
 
@@ -346,8 +347,9 @@ func TestHandleSend_WorkDirFollowsDirectParticipantOnInboundSession(t *testing.T
 	if len(sent) == 0 || !strings.Contains(strings.Join(sent, "\n"), "agent result from "+targetDir) {
 		t.Fatalf("platform sent after reply = %#v, want agent result from target work dir", sent)
 	}
-	if workspaceSession == nil || len(workspaceSession.sentPrompts) != 1 || !strings.Contains(workspaceSession.sentPrompts[0], "human answer") {
-		t.Fatalf("workspace session prompts = %#v, want human reply prompt", workspaceSession)
+	wp := workspaceSession.getSentPrompts()
+	if len(wp) != 1 || !strings.Contains(wp[0], "human answer") {
+		t.Fatalf("workspace session prompts = %#v, want human reply prompt", wp)
 	}
 }
 

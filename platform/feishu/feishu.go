@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -166,14 +167,23 @@ type Platform struct {
 	// cardActionMessageIDs tracks the most recent card-action messageID per
 	// session key, enabling async card refreshes via the Patch API.
 	cardActionMsgMu  sync.Mutex
-	cardActionMsgIDs map[string]string // sessionKey → messageID
+	cardActionMsgIDs map[string]cardActionMsgEntry // sessionKey → most recent card-action messageID
 	// activeThreadSessions tracks thread sessionKeys that have already been
 	// accepted by the bot. In group chats with thread_isolation, once a thread
 	// has been engaged (the first @bot message), subsequent attachment-only
 	// messages (image/file/audio) inside the same thread are passed through
-	// without requiring another @bot mention. Value is the last-seen time so
-	// stale entries can be expired by a future TTL sweep if needed.
-	activeThreadSessions sync.Map // sessionKey -> time.Time
+	// without requiring another @bot mention. Value is the last-seen time; a
+	// periodic sweep evicts entries idle beyond activeThreadTTL.
+	activeThreadSessions sync.Map  // sessionKey -> time.Time
+	threadSweepTick      atomic.Uint64
+
+	// messageQueue serializes inbound message dispatch per sessionKey so a
+	// single session's messages reach the engine in arrival order (see
+	// messageQueueFor). One goroutine per active session, released only when
+	// the platform is discarded — the count is bounded by active sessions, not
+	// by message volume.
+	messageQueueMu sync.Mutex
+	messageQueues  map[string]*messageQueue
 
 	richCardImageMu         sync.Mutex
 	richCardImageResolved   map[string]string
@@ -190,6 +200,69 @@ type Platform struct {
 	imageBatchMu     sync.Mutex
 	imageBatch       map[string]*imageBatchEntry
 	imageBatchWindow time.Duration // quiet period before flushing a batch; 0 means use defaultImageBatchWindow
+}
+
+// cardActionMsgEntry records the most recent card-action messageID for a
+// session key together with when it was stored, so RefreshCard can ignore
+// entries that are no longer recent rather than patching a long-gone message.
+type cardActionMsgEntry struct {
+	messageID  string
+	lastAction time.Time
+}
+
+// cardActionMsgTTL bounds how long a card-action messageID is considered
+// usable for in-place card refreshes. Card actions refresh the card they were
+// invoked on within seconds; anything older is stale.
+const cardActionMsgTTL = time.Hour
+
+// activeThreadTTL is how long a thread session stays "bot-engaged" before the
+// thread pass-through set forgets it.
+const activeThreadTTL = 24 * time.Hour
+
+// threadSweepEvery runs the active-thread TTL sweep once every N
+// markThreadSessionActive calls instead of per message.
+const threadSweepEvery = 128
+
+// messageQueue serializes dispatch work for one sessionKey. Inbound messages
+// are submitted in arrival order (onMessage runs on the SDK's single
+// event-loop goroutine) and executed one at a time, so an image batch buffered
+// by an earlier message is always flushed before a later message advances the
+// engine's user-message watermark. The buffered channel absorbs bursts without
+// blocking the SDK event loop.
+type messageQueue struct {
+	ch chan func()
+}
+
+// messageQueueDepth bounds how many dispatch jobs may be queued per session
+// before onMessage blocks on submit. Far above any realistic per-session burst.
+const messageQueueDepth = 256
+
+// messageQueueFor returns the serial queue for a sessionKey, creating it on
+// first use. One goroutine lives per active session; sessions are bounded by
+// real user/chat count, not by message volume, so this never grows unbounded.
+func (p *Platform) messageQueueFor(sessionKey string) *messageQueue {
+	p.messageQueueMu.Lock()
+	defer p.messageQueueMu.Unlock()
+	if p.messageQueues == nil {
+		p.messageQueues = make(map[string]*messageQueue)
+	}
+	q, ok := p.messageQueues[sessionKey]
+	if !ok {
+		q = &messageQueue{ch: make(chan func(), messageQueueDepth)}
+		go func() {
+			for fn := range q.ch {
+				fn()
+			}
+		}()
+		p.messageQueues[sessionKey] = q
+	}
+	return q
+}
+
+// submit enqueues fn on the queue; the queue's single worker runs it in FIFO
+// order.
+func (q *messageQueue) submit(fn func()) {
+	q.ch <- fn
 }
 
 // defaultImageBatchWindow is the quiet period after the last image in a
@@ -493,24 +566,48 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 		}
 	}
 
-	// Register for shared WebSocket: multiple projects using the same app_id
-	// share a single WebSocket connection to avoid Feishu's server-side
-	// load-balancing which randomly routes messages across connections.
-	group, isPrimary := registerSharedWS(p)
-	p.sharedGroup = group
-	p.isWSPrimary = isPrimary
+	// Register into the shared WebSocket group only in WebSocket mode: the
+	// group shares ONE connection and fans events out to every platform with
+	// the same app_id+domain. Webhook mode platforms each run their own HTTP
+	// webhook server, so they never join the group — registering them would
+	// mark the second webhook platform "secondary" and its server would never
+	// start, silently dropping events.
+	if !p.shouldUseWebhookMode() {
+		group, isPrimary := registerSharedWS(p)
+		p.sharedGroup = group
+		p.isWSPrimary = isPrimary
+	}
+
+	p.eventHandler = p.buildEventHandler()
+
+	if p.useInteractiveCard {
+		slog.Info(p.platformName + ": interactive card mode enabled, ensure card.action.trigger event is subscribed in Feishu console")
+	}
+
+	if p.shouldUseWebhookMode() {
+		return p.startWebhookMode()
+	}
 
 	// Secondary platforms skip connection creation — the primary's connection
-	// fans out events to all platforms in the shared group.
-	if !isPrimary {
+	// fans out events to all platforms in the shared group. If the primary
+	// exits later, a remaining secondary is promoted (see Stop and
+	// promoteSharedWSPrimary) and starts its own connection.
+	if !p.isWSPrimary {
 		return nil
 	}
 
-	p.eventHandler = dispatcher.NewEventDispatcher("", p.encryptKey).
+	return p.startWebSocketMode()
+}
+
+// buildEventHandler wires the SDK event dispatcher. In shared WebSocket mode
+// every event fans out to all platforms of the shared group; in webhook mode a
+// platform handles events for itself only (sharedGroup is nil).
+func (p *Platform) buildEventHandler() *dispatcher.EventDispatcher {
+	return dispatcher.NewEventDispatcher("", p.encryptKey).
 		OnP2MessageReceiveV1(func(ctx context.Context, event *larkim.P2MessageReceiveV1) error {
 			// Fan out to all platforms sharing this WebSocket connection.
 			// Each platform's onMessage applies its own allow_chat filter.
-			for _, sibling := range p.sharedGroup.allPlatforms() {
+			for _, sibling := range p.eventSiblings() {
 				if err := sibling.onMessage(ctx, event); err != nil {
 					slog.Error("shared ws: onMessage error", "err", err)
 				}
@@ -518,7 +615,7 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 			return nil
 		}).
 		OnP2MessageRecalledV1(func(ctx context.Context, event *larkim.P2MessageRecalledV1) error {
-			for _, sibling := range p.sharedGroup.allPlatforms() {
+			for _, sibling := range p.eventSiblings() {
 				if err := sibling.onMessageRecalled(ctx, event); err != nil {
 					slog.Error("shared ws: onMessageRecalled error", "err", err)
 				}
@@ -545,7 +642,7 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 		OnP2CardActionTrigger(func(ctx context.Context, event *callback.CardActionTriggerEvent) (*callback.CardActionTriggerResponse, error) {
 			// Fan out card actions: try each platform, return first non-nil response.
 			// Each platform's onCardAction checks allow_chat before processing.
-			for _, sibling := range p.sharedGroup.allPlatforms() {
+			for _, sibling := range p.eventSiblings() {
 				resp, err := sibling.onCardAction(event)
 				if err != nil {
 					return nil, err
@@ -557,23 +654,23 @@ func (p *Platform) Start(handler core.MessageHandler) error {
 			return nil, nil
 		}).
 		OnP2BotMenuV6(func(ctx context.Context, event *larkapplication.P2BotMenuV6) error {
-			for _, sibling := range p.sharedGroup.allPlatforms() {
+			for _, sibling := range p.eventSiblings() {
 				if err := sibling.onBotMenu(event); err != nil {
 					slog.Error("shared ws: onBotMenu error", "err", err)
 				}
 			}
 			return nil
 		})
+}
 
-	if p.useInteractiveCard {
-		slog.Info(p.platformName + ": interactive card mode enabled, ensure card.action.trigger event is subscribed in Feishu console")
+// eventSiblings returns the platforms that should receive events arriving on
+// this platform's connection: every member of the shared group in WebSocket
+// mode, or just this platform in webhook mode.
+func (p *Platform) eventSiblings() []*Platform {
+	if p.sharedGroup != nil {
+		return p.sharedGroup.allPlatforms()
 	}
-
-	if p.shouldUseWebhookMode() {
-		return p.startWebhookMode()
-	}
-
-	return p.startWebSocketMode()
+	return []*Platform{p}
 }
 
 func (p *Platform) shouldUseWebhookMode() bool {
@@ -714,11 +811,19 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	// nav: / act: — synchronous card update
 	if strings.HasPrefix(actionVal, "nav:") || strings.HasPrefix(actionVal, "act:") {
 		if messageID != "" {
+			now := time.Now()
 			p.cardActionMsgMu.Lock()
 			if p.cardActionMsgIDs == nil {
-				p.cardActionMsgIDs = make(map[string]string)
+				p.cardActionMsgIDs = make(map[string]cardActionMsgEntry)
 			}
-			p.cardActionMsgIDs[sessionKey] = messageID
+			// Evict entries idle past the TTL so the map stays bounded — only
+			// the most recent card-action messageID per session is ever needed.
+			for k, e := range p.cardActionMsgIDs {
+				if now.Sub(e.lastAction) > cardActionMsgTTL {
+					delete(p.cardActionMsgIDs, k)
+				}
+			}
+			p.cardActionMsgIDs[sessionKey] = cardActionMsgEntry{messageID: messageID, lastAction: now}
 			p.cardActionMsgMu.Unlock()
 		}
 		// Feishu uses native form checker for delete-mode toggle,
@@ -1194,19 +1299,27 @@ func (p *Platform) bufferImage(sessionKey string, entry *imageBatchEntry) {
 // same entry pointer (i.e. the timer wasn't superseded). Called by the
 // AfterFunc timer callback.
 func (p *Platform) flushImageBatchByRef(sessionKey string, ref *imageBatchEntry) {
-	p.imageBatchMu.Lock()
-	current, ok := p.imageBatch[sessionKey]
-	if !ok || current != ref {
-		p.imageBatchMu.Unlock()
+	if sessionKey == "" {
 		return
 	}
-	if current.timer != nil {
-		current.timer.Stop()
-	}
-	delete(p.imageBatch, sessionKey)
-	p.imageBatchMu.Unlock()
-
-	p.dispatchImageBatchEntry(current)
+	// Run through the session's serial queue: an image batch flushed by the
+	// timer must not dispatch concurrently with (or after) a later message of
+	// the same session, or the engine could advance the watermark past the
+	// batch's older create_time and drop the images as stale.
+	p.messageQueueFor(sessionKey).submit(func() {
+		p.imageBatchMu.Lock()
+		current, ok := p.imageBatch[sessionKey]
+		if !ok || current != ref {
+			p.imageBatchMu.Unlock()
+			return
+		}
+		if current.timer != nil {
+			current.timer.Stop()
+		}
+		delete(p.imageBatch, sessionKey)
+		p.imageBatchMu.Unlock()
+		p.dispatchImageBatchEntry(current)
+	})
 }
 
 // flushImageBatchForSession synchronously dispatches the pending image batch
@@ -1456,8 +1569,14 @@ func (p *Platform) onMessage(ctx context.Context, event *larkim.P2MessageReceive
 	// Dispatch message handling asynchronously so the SDK event loop is not
 	// blocked by IO-heavy operations (image/audio download, handler HTTP calls).
 	// The dedup and old-message checks above remain synchronous to guarantee
-	// correctness before spawning the goroutine.
-	go p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs)
+	// correctness before spawning the goroutine. Submitting into the session's
+	// serial queue (instead of a bare goroutine) keeps this session's messages
+	// arriving at the engine in event order: an earlier image whose download is
+	// still running can never be overtaken by a later text that would advance
+	// the engine watermark past the image's older create_time.
+	p.messageQueueFor(sessionKey).submit(func() {
+		p.dispatchMessage(ctx, msgType, content, mentions, messageID, sessionKey, userID, chatID, rctx, parentID, createTimeMs)
+	})
 
 	return nil
 }
@@ -2892,7 +3011,7 @@ func (p *Platform) SendImage(ctx context.Context, rctx any, img core.ImageAttach
 
 func (p *Platform) uploadImageKey(ctx context.Context, data []byte) (string, error) {
 	var uploadResp *larkim.CreateImageResp
-	if err := p.withTransientRetry(ctx, "upload image", func() error {
+	if err := p.withTransientRetryNoRepeat(ctx, "upload image", func() error {
 		return p.withFreshTenantAccessTokenRetry(ctx, "upload image", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 			req := larkim.NewCreateImageReqBuilder().
 				Body(larkim.NewCreateImageReqBodyBuilder().
@@ -2932,7 +3051,7 @@ func (p *Platform) SendFile(ctx context.Context, rctx any, file core.FileAttachm
 	}
 	fileType := detectFeishuFileType(file.MimeType, fileName)
 	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload file", func() error {
+	if err := p.withTransientRetryNoRepeat(ctx, "upload file", func() error {
 		return p.withFreshTenantAccessTokenRetry(ctx, "upload file", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 			req := larkim.NewCreateFileReqBuilder().
 				Body(larkim.NewCreateFileReqBodyBuilder().
@@ -3593,11 +3712,28 @@ func (p *Platform) markThreadSessionActive(sessionKey string) bool {
 	if !p.threadIsolation || !isThreadSessionKey(sessionKey) {
 		return false
 	}
+	// Triggered every threadSweepEvery engages so the sweep cost stays
+	// amortized instead of running per (@bot) message.
+	if p.threadSweepTick.Add(1)%threadSweepEvery == 0 {
+		p.sweepActiveThreadSessions()
+	}
 	_, loaded := p.activeThreadSessions.LoadOrStore(sessionKey, time.Now())
 	if loaded {
 		p.activeThreadSessions.Store(sessionKey, time.Now())
 	}
 	return !loaded
+}
+
+// sweepActiveThreadSessions removes thread sessions that have not been
+// re-engaged within activeThreadTTL, keeping the pass-through set bounded.
+func (p *Platform) sweepActiveThreadSessions() {
+	cutoff := time.Now().Add(-activeThreadTTL)
+	p.activeThreadSessions.Range(func(k, v any) bool {
+		if t, ok := v.(time.Time); ok && t.Before(cutoff) {
+			p.activeThreadSessions.Delete(k)
+		}
+		return true
+	})
 }
 
 // isActiveThreadSession reports whether the given sessionKey corresponds to a
@@ -3699,7 +3835,7 @@ func (p *Platform) replyMessage(ctx context.Context, rc replyContext, msgType, c
 		MessageId(rc.messageID).
 		Body(p.buildReplyMessageReqBody(rc, msgType, content)).
 		Build()
-	return p.withTransientRetry(ctx, "reply", func() error {
+	return p.withTransientRetryNoRepeat(ctx, "reply", func() error {
 		return p.withFreshTenantAccessTokenRetry(ctx, "reply", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 			resp, err := client.Im.Message.Reply(ctx, req, options...)
 			if err != nil {
@@ -3722,7 +3858,7 @@ func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, 
 			Content(content).
 			Build()).
 		Build()
-	return p.withTransientRetry(ctx, op, func() error {
+	return p.withTransientRetryNoRepeat(ctx, op, func() error {
 		return p.withFreshTenantAccessTokenRetry(ctx, op, func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 			resp, err := client.Im.Message.Create(ctx, req, options...)
 			if err != nil {
@@ -3889,6 +4025,23 @@ func (p *Platform) withTransientRetry(ctx context.Context, operation string, fn 
 		delay = min(delay*2, transientRetryMaxDelay)
 	}
 	return fmt.Errorf("%s failed after %d retries: %w", operation, maxTransientRetries, lastErr)
+}
+
+// withTransientRetryNoRepeat runs a non-idempotent write operation exactly
+// once. Transient network errors (timeout/EOF/reset) are NOT retried because
+// the first request may already have been delivered — retrying would duplicate
+// user-visible sends (two replies, two uploads). We accept losing the request
+// over sending it twice; the caller surfaces the error once. Server-side
+// rejections are still handled by the inner withFreshTenantAccessTokenRetry at
+// each call site (expired-token refresh). Idempotent writes (Patch / Delete on
+// a known messageID) and reads keep the full withTransientRetry backoff.
+func (p *Platform) withTransientRetryNoRepeat(ctx context.Context, operation string, fn func() error) error {
+	err := fn()
+	if err != nil && isTransientError(err) {
+		slog.Warn(p.tag()+": transient network error on non-idempotent write, not retrying to avoid duplicate delivery",
+			"operation", operation, "error", err)
+	}
+	return err
 }
 
 func stringValue(v *string) string {
@@ -4565,7 +4718,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 			Body(p.buildReplyMessageReqBody(rc, larkim.MsgTypeInteractive, sendContent)).
 			Build()
 		var resp *larkim.ReplyMessageResp
-		if err := p.withTransientRetry(ctx, "send preview", func() error {
+		if err := p.withTransientRetryNoRepeat(ctx, "send preview", func() error {
 			return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 				var err error
 				resp, err = client.Im.Message.Reply(ctx, req, options...)
@@ -4593,7 +4746,7 @@ func (p *Platform) SendPreviewStart(ctx context.Context, rctx any, content strin
 				Build()).
 			Build()
 		var resp *larkim.CreateMessageResp
-		if err := p.withTransientRetry(ctx, "send preview", func() error {
+		if err := p.withTransientRetryNoRepeat(ctx, "send preview", func() error {
 			return p.withFreshTenantAccessTokenRetry(ctx, "send preview", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 				var err error
 				resp, err = client.Im.Message.Create(ctx, req, options...)
@@ -4975,13 +5128,18 @@ func (p *Platform) updateCardEntity(ctx context.Context, h *feishuPreviewHandle,
 
 func (p *Platform) Stop() error {
 	if p.isWSPrimary {
+		g := p.sharedGroup
 		remaining := unregisterSharedWS(p)
-		if remaining > 0 {
-			slog.Warn(p.tag()+": primary shutting down, secondary platforms will lose event source",
-				"remaining", remaining)
-		}
 		if cancel := p.getCancel(); cancel != nil {
 			cancel()
+		}
+		if remaining > 0 && g != nil {
+			// Another platform of this app_id+domain is still online: promote it
+			// to primary and start a fresh WebSocket connection so the group
+			// keeps a live event source instead of silently going deaf.
+			slog.Info(p.tag()+": primary shutting down, promoting replacement",
+				"remaining", remaining)
+			promoteSharedWSPrimary(g)
 		}
 	} else {
 		unregisterSharedWS(p)
@@ -5047,7 +5205,7 @@ func (p *Platform) SendAudio(ctx context.Context, rctx any, audio []byte, format
 	}
 
 	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload audio", func() error {
+	if err := p.withTransientRetryNoRepeat(ctx, "upload audio", func() error {
 		return p.withFreshTenantAccessTokenRetry(ctx, "upload audio", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 			req := larkim.NewCreateFileReqBuilder().
 				Body(larkim.NewCreateFileReqBodyBuilder().
@@ -5122,7 +5280,7 @@ func (p *Platform) SendVideo(ctx context.Context, rctx any, video []byte, format
 	}
 
 	var uploadResp *larkim.CreateFileResp
-	if err := p.withTransientRetry(ctx, "upload video", func() error {
+	if err := p.withTransientRetryNoRepeat(ctx, "upload video", func() error {
 		return p.withFreshTenantAccessTokenRetry(ctx, "upload video", func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
 			req := larkim.NewCreateFileReqBuilder().
 				Body(larkim.NewCreateFileReqBodyBuilder().

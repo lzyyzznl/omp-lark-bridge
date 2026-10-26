@@ -159,7 +159,10 @@ func TestWithTransientRetry_RespectsContextCancellation(t *testing.T) {
 
 // ─── Integration tests: transient retry with Feishu API ────────────────────
 
-func TestReplyRetriesOnTransientNetworkError(t *testing.T) {
+func TestReplyDoesNotRetryOnTransientNetworkError(t *testing.T) {
+	// Reply is a non-idempotent write: a transient network error (timeout /
+	// EOF / reset) may mean the reply was already delivered, so it must NOT be
+	// retried — retrying would send the user a duplicate message.
 	const appID = "cli_transient_retry"
 	const appSecret = "secret"
 
@@ -176,26 +179,17 @@ func TestReplyRetriesOnTransientNetworkError(t *testing.T) {
 				"tenant_access_token": "valid-token",
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
-			call := replyCalls.Add(1)
-			if call <= 2 {
-				// Simulate transient error by closing connection abruptly
-				hj, ok := w.(http.Hijacker)
-				if !ok {
-					t.Fatalf("response writer does not support hijacking")
-				}
-				conn, _, err := hj.Hijack()
-				if err != nil {
-					t.Fatalf("hijack failed: %v", err)
-				}
-				conn.Close()
-				return
+			replyCalls.Add(1)
+			// Simulate transient error by closing connection abruptly.
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatalf("response writer does not support hijacking")
 			}
-			// 3rd call succeeds
-			writeJSON(t, w, map[string]any{
-				"code": 0,
-				"msg":  "success",
-				"data": map[string]any{"message_id": "om_reply_ok"},
-			})
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack failed: %v", err)
+			}
+			conn.Close()
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -219,15 +213,16 @@ func TestReplyRetriesOnTransientNetworkError(t *testing.T) {
 	}
 
 	err := p.Reply(context.Background(), replyContext{messageID: "om_root", chatID: "oc_chat"}, "hello")
-	if err != nil {
-		t.Fatalf("Reply() error = %v", err)
+	if err == nil {
+		t.Fatal("Reply() error = nil, want failure")
 	}
-	if got := replyCalls.Load(); got < 3 {
-		t.Fatalf("replyCalls = %d, want >= 3 (initial + retries)", got)
+	if got := replyCalls.Load(); got != 1 {
+		t.Fatalf("replyCalls = %d, want 1 (no transient retry on non-idempotent write)", got)
 	}
 }
 
-func TestCreateMessageRetriesOnTransientNetworkError(t *testing.T) {
+func TestCreateMessageDoesNotRetryOnTransientNetworkError(t *testing.T) {
+	// CreateMessage is a non-idempotent write like Reply — same no-retry rule.
 	const appID = "cli_transient_create"
 	const appSecret = "secret"
 
@@ -244,24 +239,16 @@ func TestCreateMessageRetriesOnTransientNetworkError(t *testing.T) {
 				"tenant_access_token": "valid-token",
 			})
 		case r.URL.Path == "/open-apis/im/v1/messages":
-			call := createCalls.Add(1)
-			if call == 1 {
-				hj, ok := w.(http.Hijacker)
-				if !ok {
-					t.Fatalf("response writer does not support hijacking")
-				}
-				conn, _, err := hj.Hijack()
-				if err != nil {
-					t.Fatalf("hijack failed: %v", err)
-				}
-				conn.Close()
-				return
+			createCalls.Add(1)
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatalf("response writer does not support hijacking")
 			}
-			writeJSON(t, w, map[string]any{
-				"code": 0,
-				"msg":  "success",
-				"data": map[string]any{"message_id": "om_create_ok"},
-			})
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("hijack failed: %v", err)
+			}
+			conn.Close()
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -285,13 +272,14 @@ func TestCreateMessageRetriesOnTransientNetworkError(t *testing.T) {
 	}
 
 	err := p.sendNewMessageToChat(context.Background(), replyContext{chatID: "oc_chat"}, "text", `{"text":"hello"}`)
-	if err != nil {
-		t.Fatalf("sendNewMessageToChat() error = %v", err)
+	if err == nil {
+		t.Fatal("sendNewMessageToChat() error = nil, want failure")
 	}
-	if got := createCalls.Load(); got < 2 {
-		t.Fatalf("createCalls = %d, want >= 2 (initial + retry)", got)
+	if got := createCalls.Load(); got != 1 {
+		t.Fatalf("createCalls = %d, want 1 (no transient retry on non-idempotent write)", got)
 	}
 }
+
 
 func TestReplyDoesNotRetryOnNonTransientAPIError(t *testing.T) {
 	const appID = "cli_no_transient_retry"
@@ -421,8 +409,10 @@ func TestPatchMessageRetriesOnTransientError(t *testing.T) {
 // ─── Test: transient retry + token refresh work together ───────────────────
 
 func TestReplyTransientRetryThenTokenRefresh(t *testing.T) {
-	// Scenario: first call gets connection reset (transient), retry gets
-	// invalid token error, which triggers token refresh, then succeeds.
+	// Expired tenant token on the first call triggers a refresh, after which
+	// the reply succeeds. Token refresh (a server-side rejection, safely
+	// retryable) is retained for the non-idempotent write path — only raw
+	// network failures skip retry.
 	const appID = "cli_combined_retry"
 	const appSecret = "secret"
 
@@ -441,32 +431,20 @@ func TestReplyTransientRetryThenTokenRefresh(t *testing.T) {
 			})
 		case strings.HasSuffix(r.URL.Path, "/reply"):
 			call := replyCalls.Add(1)
-			switch call {
-			case 1:
-				// First attempt: transient error
-				hj, ok := w.(http.Hijacker)
-				if !ok {
-					t.Fatalf("hijack not supported")
-				}
-				conn, _, _ := hj.Hijack()
-				conn.Close()
-				return
-			case 2:
-				// Second attempt (after transient retry): invalid token
+			if call == 1 {
+				// First attempt: expired token -> refresh and retry.
 				writeJSON(t, w, map[string]any{
 					"code": 99991663,
 					"msg":  "Invalid access token for authorization",
 				})
-			case 3:
-				// Third attempt (after token refresh): success
-				writeJSON(t, w, map[string]any{
-					"code": 0,
-					"msg":  "success",
-					"data": map[string]any{"message_id": "om_reply_ok"},
-				})
-			default:
-				t.Fatalf("unexpected reply call %d", call)
+				return
 			}
+			// Second attempt (after token refresh): success
+			writeJSON(t, w, map[string]any{
+				"code": 0,
+				"msg":  "success",
+				"data": map[string]any{"message_id": "om_reply_ok"},
+			})
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -493,8 +471,11 @@ func TestReplyTransientRetryThenTokenRefresh(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Reply() error = %v", err)
 	}
-	if got := replyCalls.Load(); got != 3 {
-		t.Fatalf("replyCalls = %d, want 3", got)
+	if got := replyCalls.Load(); got != 2 {
+		t.Fatalf("replyCalls = %d, want 2 (initial + post-refresh)", got)
+	}
+	if authCalls.Load() < 1 {
+		t.Fatalf("authCalls = %d, want >= 1", authCalls.Load())
 	}
 }
 

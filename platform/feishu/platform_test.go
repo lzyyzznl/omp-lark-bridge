@@ -538,7 +538,7 @@ func TestInteractivePlatform_ModelCardActionReturnsCardUpdate(t *testing.T) {
 		t.Fatal("expected non-empty session key")
 	}
 	ip.cardActionMsgMu.Lock()
-	tracked := ip.cardActionMsgIDs[gotSessionKey]
+	tracked := ip.cardActionMsgIDs[gotSessionKey].messageID
 	ip.cardActionMsgMu.Unlock()
 	if tracked != "om_test_message" {
 		t.Fatalf("tracked message id = %q, want om_test_message", tracked)

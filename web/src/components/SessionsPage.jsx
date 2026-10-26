@@ -244,6 +244,7 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [attachments, setAttachments] = useState([])
   const [live, setLive] = useState([])
   const [sendErr, setSendErr] = useState('')
+  const [stopping, setStopping] = useState(false)
   const [typingTick, setTypingTick] = useState(0)
   const pendingRef = useRef([])
   const flowRef = useRef(null)
@@ -642,6 +643,19 @@ export default function SessionsPage({ initialTx, onToast }) {
     }
   }, [sending, composerText, attachments, selectedTx, activeProject, appendLive, loadLibrary])
 
+  // 停止本轮对话：请求后端 abort（agent 进程保留），SSE 会以 done 结束并由
+  // sendComposer 的 finally 复位 sending/stopping。
+  const stopTurn = useCallback(async () => {
+    if (!activeProject || !selectedTx) return
+    setStopping(true)
+    try {
+      await api.stopChat(activeProject, selectedTx)
+    } catch (e) {
+      onToast?.('err', e.message || '停止失败')
+    } finally {
+      setStopping(false)
+    }
+  }, [activeProject, selectedTx, onToast])
   const histToolResults = useMemo(() => indexToolResults(txDetail || []), [txDetail])
   const histRendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, histToolResults, false)), [txDetail, histToolResults])
   const liveToolResults = useMemo(() => indexToolResults(live), [live])
@@ -985,6 +999,11 @@ export default function SessionsPage({ initialTx, onToast }) {
                     )}
                     {reasonCtrl.efforts.map((l) => <option key={l} value={l}>{l}</option>)}
                   </select>
+                )}
+                {sending && (
+                  <button className="btn btn-sm btn-red" onClick={stopTurn} disabled={stopping}>
+                    {stopping ? '停止中…' : '停止 ⏹'}
+                  </button>
                 )}
                 <button
                   className="btn btn-sm btn-solid"

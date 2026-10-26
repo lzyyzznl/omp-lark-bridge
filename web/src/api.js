@@ -108,6 +108,10 @@ export const api = {
     })
   },
 
+  // POST /projects/{name}/transcripts/{id}/stop → 中止该会话正在运行的一轮
+  // （agent 进程保留；对应 SSE 流会以 done 结束）。无运行中 turn 时返回 409。
+  stopChat: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/stop`, { method: 'POST', body: {} }),
+
   // POST /projects/{name}/transcripts/{id}/title → 用最近对话一键生成会话标题
   regenerateTitle: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/title`, { method: 'POST', body: {} }),
 

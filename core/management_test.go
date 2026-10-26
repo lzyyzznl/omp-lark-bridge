@@ -3389,6 +3389,66 @@ func waitChatSession(t *testing.T, a *chatTranscriptAgent) *chatStubSession {
 	return nil
 }
 
+// cancelRecordingSession records CancelTurn calls so the stop endpoint can be
+// verified without running a real agent turn.
+type cancelRecordingSession struct {
+	stubAgentSession
+	mu     sync.Mutex
+	called int
+	err    error
+}
+
+func (s *cancelRecordingSession) CancelTurn() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.called++
+	return s.err
+}
+
+func (s *cancelRecordingSession) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.called
+}
+
+func TestMgmt_Transcripts_StopTurn(t *testing.T) {
+	agent := &stubTranscriptAgent{dir: t.TempDir()}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+
+	mgmt := NewManagementServer(0, "tok", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	stopURL := ts.URL + "/api/v1/projects/test-project/transcripts/t1/stop"
+
+	// 没有运行中的 turn：409，不静默成功。
+	r := mgmtPost(t, stopURL, "tok", nil)
+	if r.OK || !strings.Contains(r.Error, "no running turn") {
+		t.Fatalf("stop without running turn: ok=%v err=%q", r.OK, r.Error)
+	}
+
+	// 注册运行中的 turn 后可停止，CancelTurn 被调用一次。
+	sess := &cancelRecordingSession{}
+	mgmt.registerRunningChat("t1", sess)
+	r = mgmtPost(t, stopURL, "tok", nil)
+	if !r.OK {
+		t.Fatalf("stop failed: %s", r.Error)
+	}
+	if got := sess.calls(); got != 1 {
+		t.Fatalf("CancelTurn calls = %d, want 1", got)
+	}
+
+	// CancelTurn 报错时透传 500，不谎报成功。
+	sess.err = errors.New("abort failed")
+	r = mgmtPost(t, stopURL, "tok", nil)
+	if r.OK || !strings.Contains(r.Error, "abort failed") {
+		t.Fatalf("cancel failure: ok=%v err=%q", r.OK, r.Error)
+	}
+}
+
 func TestMgmt_Transcripts_Chat(t *testing.T) {
 	dir := t.TempDir()
 	os.WriteFile(filepath.Join(dir, "2026-01-01_a.jsonl"),

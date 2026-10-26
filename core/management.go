@@ -65,6 +65,13 @@ type ManagementServer struct {
 	// 文件会竞态，见 chatWithTranscript）。
 	chatMu sync.Mutex
 
+	// chatStopMu guards chatStops: transcript id → the AgentSessionCanceller of
+	// the turn currently running for that transcript. The stop endpoint aborts
+	// the turn (CancelTurn) without killing the session process. Separate from
+	// chatMu so a stop request never waits behind the running turn's lock.
+	chatStopMu sync.Mutex
+	chatStops  map[string]AgentSessionCanceller
+
 	cronScheduler      *CronScheduler
 	timerScheduler     *TimerScheduler
 	heartbeatScheduler *HeartbeatScheduler
@@ -2561,6 +2568,10 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 		m.regenerateTranscriptTitle(w, r, e, dir, id)
 		return
 	}
+	if hasAction && action == "stop" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
+		m.stopTranscriptChat(w, id)
+		return
+	}
 	m.readTranscript(w, dir, rest)
 }
 
@@ -3292,6 +3303,42 @@ func decodeChatAttachments(raw []chatAttachment, images *[]ImageAttachment, file
 	return nil
 }
 
+// registerRunningChat / unregisterRunningChat track the turn currently running
+// for a transcript so the stop endpoint can reach it. Only sessions that
+// implement AgentSessionCanceller are registered; others simply have no stop.
+func (m *ManagementServer) registerRunningChat(id string, s AgentSessionCanceller) {
+	m.chatStopMu.Lock()
+	defer m.chatStopMu.Unlock()
+	if m.chatStops == nil {
+		m.chatStops = make(map[string]AgentSessionCanceller)
+	}
+	m.chatStops[id] = s
+}
+
+func (m *ManagementServer) unregisterRunningChat(id string) {
+	m.chatStopMu.Lock()
+	defer m.chatStopMu.Unlock()
+	delete(m.chatStops, id)
+}
+
+// stopTranscriptChat aborts the turn running for a transcript without tearing
+// down its agent process (AgentSessionCanceller.CancelTurn). The SSE stream of
+// that turn then ends with a normal "done" event.
+func (m *ManagementServer) stopTranscriptChat(w http.ResponseWriter, id string) {
+	m.chatStopMu.Lock()
+	canceller := m.chatStops[id]
+	m.chatStopMu.Unlock()
+	if canceller == nil {
+		mgmtError(w, http.StatusConflict, "no running turn for this transcript")
+		return
+	}
+	if err := canceller.CancelTurn(); err != nil {
+		mgmtError(w, http.StatusInternalServerError, "cancel turn: "+err.Error())
+		return
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{"message": "turn cancelled"})
+}
+
 // chatWithTranscript resumes the transcript's agent session with the user's
 // message (text + images + files) and streams the agent's events back as
 // Server-Sent Events. Each turn spawns its own agent process — cron transcripts
@@ -3348,6 +3395,13 @@ func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Req
 		return
 	}
 	defer sess.Close()
+	// Register the turn so POST .../stop can abort it. CancelTurn ends the
+	// turn (omp replies "aborted" → EventResult{Done}) while leaving the
+	// session process alive; the SSE loop then finishes normally.
+	if canceller, ok := sess.(AgentSessionCanceller); ok {
+		m.registerRunningChat(id, canceller)
+		defer m.unregisterRunningChat(id)
+	}
 
 	fl, ok := w.(http.Flusher)
 	if !ok {

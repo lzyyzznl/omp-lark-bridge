@@ -92,6 +92,38 @@ func TestExtForMime(t *testing.T) {
 	}
 }
 
+// ReasoningEffortSwitcher：agent 级默认思考强度在下个会话生效；cron 一次性
+// override 优先。注入链（thinking → enterSession → set_thinking_level）由
+// TestEnterSession_SendsModelAndThinkingLevel 覆盖。
+func TestReasoningEffort_SwitcherAndSessionResolution(t *testing.T) {
+	a := &Agent{}
+
+	if got := a.GetReasoningEffort(); got != "" {
+		t.Fatalf("initial effort = %q, want empty", got)
+	}
+	if got := a.AvailableReasoningEfforts(); len(got) == 0 {
+		t.Fatal("AvailableReasoningEfforts() = empty, want levels")
+	}
+
+	a.SetReasoningEffort("high")
+	if got := a.GetReasoningEffort(); got != "high" {
+		t.Fatalf("GetReasoningEffort() = %q, want high", got)
+	}
+
+	// 无 override 用 agent 默认；cron override 优先。
+	if got := a.thinkingForNextSession(""); got != "high" {
+		t.Fatalf(`thinkingForNextSession("") = %q, want agent default high`, got)
+	}
+	if got := a.thinkingForNextSession("low"); got != "low" {
+		t.Fatalf(`thinkingForNextSession("low") = %q, want cron override low`, got)
+	}
+
+	a.SetReasoningEffort("")
+	if got := a.thinkingForNextSession(""); got != "" {
+		t.Fatalf(`thinkingForNextSession("") after reset = %q, want empty`, got)
+	}
+}
+
 // Regression: thinking_delta must be accumulated, never emitted per delta —
 // the engine's EventThinking handler overwrites (not appends) the card's
 // thinking area, so per-delta emission renders 1-2 chars per line.

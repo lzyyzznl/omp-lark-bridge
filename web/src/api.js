@@ -81,6 +81,12 @@ export const api = {
   listProjects: () => request('/projects'),
   // GET /api/v1/projects/{name}/models → {models:[string], current:string}
   getModels: (project) => request(`/projects/${encodeURIComponent(project)}/models`),
+  // POST /api/v1/projects/{name}/model {model} → 运行时切换引擎默认模型（下次会话生效；空值回默认）
+  setModel: (project, model) => request(`/projects/${encodeURIComponent(project)}/model`, { method: 'POST', body: { model } }),
+  // GET /api/v1/projects/{name}/reasoning → {efforts:[string], current:string}
+  getReasoning: (project) => request(`/projects/${encodeURIComponent(project)}/reasoning`),
+  // POST /api/v1/projects/{name}/reasoning {effort} → 运行时切换思考强度（下次会话生效；空值回默认）
+  setReasoning: (project, effort) => request(`/projects/${encodeURIComponent(project)}/reasoning`, { method: 'POST', body: { effort } }),
   // GET /api/v1/projects/{name}/sessions → {sessions:[{id, session_key, ...}], active_keys}
   getSessions: (project) => request(`/projects/${encodeURIComponent(project)}/sessions`),
 

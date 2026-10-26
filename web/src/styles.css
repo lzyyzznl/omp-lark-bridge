@@ -743,6 +743,17 @@ textarea.input { resize: vertical; min-height: 72px; }
 .sess-composer-actions { display: flex; align-items: center; gap: 10px; }
 .sess-attach { cursor: pointer; user-select: none; display: inline-block; }
 .sess-streaming { font-size: 11px; color: var(--ink-dim); flex: 1; }
+.sess-sel {
+  font-size: 12px;
+  padding: 4px 6px;
+  max-width: 132px;
+  background: var(--surface-dim);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--ink);
+  cursor: pointer;
+}
+
 .sess-stream-err { font-size: 12px; color: var(--red); }
 
 /* 用户上滑查看历史时出现的「回到底部」悬浮按钮 */

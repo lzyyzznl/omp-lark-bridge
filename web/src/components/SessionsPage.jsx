@@ -239,6 +239,8 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [copied, setCopied] = useState({})
   const [sending, setSending] = useState(false)
   const [composerText, setComposerText] = useState('')
+  const [modelCtrl, setModelCtrl] = useState({ models: [], current: '' })    // 发送左侧：可用模型 + 当前
+  const [reasonCtrl, setReasonCtrl] = useState({ efforts: [], current: '' })  // 发送左侧：思考强度级别 + 当前
   const [attachments, setAttachments] = useState([])
   const [live, setLive] = useState([])
   const [sendErr, setSendErr] = useState('')
@@ -355,6 +357,38 @@ export default function SessionsPage({ initialTx, onToast }) {
 
   const currentTx = useMemo(() => (library || []).find((x) => x.id === selectedTx), [library, selectedTx])
   const activeProject = useMemo(() => projectFor(currentTx), [currentTx, projectFor])
+
+  // 发送旁的下拉：按当前项目引擎读取可切换的模型 / 思考强度与当前值；
+  // agent 不支持（接口报错）时静默隐藏对应控件。
+  useEffect(() => {
+    if (!activeProject) { setModelCtrl({ models: [], current: '' }); setReasonCtrl({ efforts: [], current: '' }); return }
+    let alive = true
+    api.getModels(activeProject)
+      .then((d) => { if (alive) setModelCtrl({ models: (d && d.models) || [], current: (d && d.current) || '' }) })
+      .catch(() => { if (alive) setModelCtrl({ models: [], current: '' }) })
+    api.getReasoning(activeProject)
+      .then((d) => { if (alive) setReasonCtrl({ efforts: (d && d.efforts) || [], current: (d && d.current) || '' }) })
+      .catch(() => { if (alive) setReasonCtrl({ efforts: [], current: '' }) })
+    return () => { alive = false }
+  }, [activeProject])
+
+  const switchModel = useCallback(async (m) => {
+    if (!activeProject || m === modelCtrl.current) return
+    try {
+      await api.setModel(activeProject, m)
+      setModelCtrl((c) => ({ ...c, current: m }))
+      onToast?.('ok', m ? `模型已切换：${m}（下次发送生效）` : '已恢复默认模型（下次发送生效）')
+    } catch (e) { onToast?.('err', e.message || '模型切换失败') }
+  }, [activeProject, modelCtrl.current, onToast])
+
+  const switchReasoning = useCallback(async (level) => {
+    if (!activeProject || level === reasonCtrl.current) return
+    try {
+      await api.setReasoning(activeProject, level)
+      setReasonCtrl((c) => ({ ...c, current: level }))
+      onToast?.('ok', `思考强度已切换：${level}（下次发送生效）`)
+    } catch (e) { onToast?.('err', e.message || '思考强度切换失败') }
+  }, [activeProject, reasonCtrl.current, onToast])
 
   // 从任务执行记录点「查看对话」跳进来：定位到该会话所在文件夹。
   useEffect(() => {
@@ -920,6 +954,38 @@ export default function SessionsPage({ initialTx, onToast }) {
                   <input type="file" multiple hidden onChange={onPickFile} />
                 </label>
                 <span className="sess-streaming">{sending ? '对话中…' : '可继续对话'}</span>
+                {modelCtrl.models.length > 0 && (
+                  <select
+                    className="sess-sel"
+                    value={modelCtrl.current}
+                    disabled={sending}
+                    aria-label="切换模型"
+                    title="切换模型（下次发送生效）"
+                    onChange={(e) => switchModel(e.target.value)}
+                  >
+                    <option value="">默认模型</option>
+                    {modelCtrl.current && !modelCtrl.models.includes(modelCtrl.current) && (
+                      <option value={modelCtrl.current}>{modelCtrl.current}（当前）</option>
+                    )}
+                    {modelCtrl.models.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                )}
+                {reasonCtrl.efforts.length > 0 && (
+                  <select
+                    className="sess-sel"
+                    value={reasonCtrl.current}
+                    disabled={sending}
+                    aria-label="切换思考强度"
+                    title="切换思考强度（下次发送生效）"
+                    onChange={(e) => switchReasoning(e.target.value)}
+                  >
+                    <option value="">默认强度</option>
+                    {reasonCtrl.current && !reasonCtrl.efforts.includes(reasonCtrl.current) && (
+                      <option value={reasonCtrl.current}>{reasonCtrl.current}（当前）</option>
+                    )}
+                    {reasonCtrl.efforts.map((l) => <option key={l} value={l}>{l}</option>)}
+                  </select>
+                )}
                 <button
                   className="btn btn-sm btn-solid"
                   onClick={sendComposer}

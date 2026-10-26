@@ -790,6 +790,8 @@ func (m *ManagementServer) handleProjectRoutes(w http.ResponseWriter, r *http.Re
 		m.handleProjectModels(w, r, engine)
 	case "model":
 		m.handleProjectModel(w, r, engine)
+	case "reasoning":
+		m.handleProjectReasoning(w, r, engine)
 	case "heartbeat":
 		m.handleProjectHeartbeat(w, r, projName, rest)
 	case "users":
@@ -1866,10 +1868,7 @@ func (m *ManagementServer) handleProjectModel(w http.ResponseWriter, r *http.Req
 		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if body.Model == "" {
-		mgmtError(w, http.StatusBadRequest, "model is required")
-		return
-	}
+
 	model, err := e.switchModel(body.Model)
 	if err != nil {
 		mgmtError(w, http.StatusInternalServerError, err.Error())
@@ -1879,6 +1878,56 @@ func (m *ManagementServer) handleProjectModel(w http.ResponseWriter, r *http.Req
 		"model":   model,
 		"message": "model updated",
 	})
+}
+
+// handleProjectReasoning exposes ReasoningEffortSwitcher over REST so the web
+// session UI can switch thinking strength next to its send button.
+//
+//	GET  /projects/{name}/reasoning → {efforts:[string], current:string}
+//	POST /projects/{name}/reasoning {effort} → {effort, current, message}
+func (m *ManagementServer) handleProjectReasoning(w http.ResponseWriter, r *http.Request, e *Engine) {
+	switcher, ok := e.agent.(ReasoningEffortSwitcher)
+	if !ok {
+		mgmtError(w, http.StatusBadRequest, "agent does not support reasoning switching")
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"efforts": switcher.AvailableReasoningEfforts(),
+			"current": switcher.GetReasoningEffort(),
+		})
+	case http.MethodPost:
+		var body struct {
+			Effort string `json:"effort"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		target := strings.ToLower(strings.TrimSpace(body.Effort))
+		valid := target == ""
+		if !valid {
+			for _, eff := range switcher.AvailableReasoningEfforts() {
+				if eff == target {
+					valid = true
+					break
+				}
+			}
+		}
+		if !valid {
+			mgmtError(w, http.StatusBadRequest, fmt.Sprintf("invalid effort %q (want %s)", body.Effort, strings.Join(switcher.AvailableReasoningEfforts(), ", ")))
+			return
+		}
+		switcher.SetReasoningEffort(target)
+		mgmtJSON(w, http.StatusOK, map[string]any{
+			"effort":  target,
+			"current": switcher.GetReasoningEffort(),
+			"message": "reasoning effort updated",
+		})
+	default:
+		mgmtError(w, http.StatusMethodNotAllowed, "GET or POST only")
+	}
 }
 
 // ── Heartbeat endpoints ───────────────────────────────────────

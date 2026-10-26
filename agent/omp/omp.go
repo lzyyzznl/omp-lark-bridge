@@ -34,14 +34,21 @@ func init() {
 
 // Agent drives the omp CLI in RPC mode.
 type Agent struct {
-	workDir      string
-	model        string
-	cmd          string   // CLI binary name, default "omp"
-	cliExtraArgs []string // extra args parsed from cmd after the binary name
-	configEnv    []string // env vars from [projects.agent.options.env]
-	sessionEnv   []string
-	ccDataDir    string // global omp-lark-bridge data dir (session stores + model cache)
-	mu           sync.RWMutex
+	workDir string
+	model   string
+	// thinkingLevel is the agent-wide default omp thinking level (set via
+	// ReasoningEffortSwitcher from the management UI / /reasoning). Applied on
+	// the next session the agent creates (enterSession sends set_thinking_level),
+	// so running sessions are never mutated mid-turn. "" = omp's default.
+	// Not persisted across restarts (unlike model); the web dropdown reflects
+	// the in-memory value and resets to "default" after a reload.
+	thinkingLevel string
+	cmd           string   // CLI binary name, default "omp"
+	cliExtraArgs  []string // extra args parsed from cmd after the binary name
+	configEnv     []string // env vars from [projects.agent.options.env]
+	sessionEnv    []string
+	ccDataDir     string // global omp-lark-bridge data dir (session stores + model cache)
+	mu            sync.RWMutex
 
 	// appendSystemPrompt is the omp-lark-bridge capability brief injected into each
 	// live RPC session via --append-system-prompt (one process per session, so
@@ -148,6 +155,42 @@ func (a *Agent) SetModel(model string) {
 	defer a.mu.Unlock()
 	a.model = model
 	slog.Info("omp: model changed (next session)", "model", model)
+}
+
+// GetReasoningEffort implements core.ReasoningEffortSwitcher.
+func (a *Agent) GetReasoningEffort() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.thinkingLevel
+}
+
+// SetReasoningEffort implements core.ReasoningEffortSwitcher. Changes apply on
+// the next session (each web chat turn / cron run starts one and re-issues
+// set_thinking_level), so running sessions are never mutated mid-turn.
+func (a *Agent) SetReasoningEffort(level string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.thinkingLevel = level
+	slog.Info("omp: thinking level changed (next session)", "level", level)
+}
+
+// AvailableReasoningEfforts implements core.ReasoningEffortSwitcher and mirrors
+// the levels omp's set_thinking_level accepts (verified on omp 18.12.6; unknown
+// levels are clamped rather than rejected).
+func (a *Agent) AvailableReasoningEfforts() []string {
+	return []string{"off", "minimal", "low", "medium", "high", "xhigh", "max"}
+}
+
+// thinkingForNextSession resolves the thinking level a new session should use:
+// a one-shot cron override wins when the job pins one, otherwise the
+// agent-wide default from SetReasoningEffort.
+func (a *Agent) thinkingForNextSession(override string) string {
+	if override != "" {
+		return override
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.thinkingLevel
 }
 
 // ApplyCronOverrides implements core.CronOverrideApplier. It stores a one-shot
@@ -277,7 +320,7 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	// agent is injected into the session's first prompt). All three are
 	// one-shot: they belong to exactly the next session this agent creates.
 	a.overrideMu.Lock()
-	thinking := a.pendingThinking
+	thinking := a.thinkingForNextSession(a.pendingThinking)
 	agent := a.pendingAgent
 	goal := a.pendingGoal
 	if a.pendingModel != "" {

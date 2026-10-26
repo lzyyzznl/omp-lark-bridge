@@ -949,6 +949,101 @@ func TestMgmt_ProjectModel_ReturnsErrorWhenModelSaveFails(t *testing.T) {
 	}
 }
 
+func TestMgmt_ProjectReasoning_GetAndSwitch(t *testing.T) {
+	agent := &stubModelModeAgent{}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+
+	mgmt := NewManagementServer(0, "tok", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	// GET 初始：无当前 effort，列出全部可用级别
+	g := mgmtGet(t, ts.URL+"/api/v1/projects/test-project/reasoning", "tok")
+	if !g.OK {
+		t.Fatalf("get reasoning failed: %s", g.Error)
+	}
+	var got struct {
+		Efforts []string `json:"efforts"`
+		Current string   `json:"current"`
+	}
+	if err := json.Unmarshal(g.Data, &got); err != nil {
+		t.Fatalf("decode reasoning: %v", err)
+	}
+	if got.Current != "" {
+		t.Fatalf("initial current = %q, want empty", got.Current)
+	}
+	if len(got.Efforts) != 4 || got.Efforts[0] != "low" || got.Efforts[3] != "xhigh" {
+		t.Fatalf("efforts = %v, want [low medium high xhigh]", got.Efforts)
+	}
+
+	// POST 切换
+	r := mgmtPost(t, ts.URL+"/api/v1/projects/test-project/reasoning", "tok", map[string]string{"effort": "high"})
+	if !r.OK {
+		t.Fatalf("switch reasoning failed: %s", r.Error)
+	}
+	if got := agent.GetReasoningEffort(); got != "high" {
+		t.Fatalf("GetReasoningEffort() = %q, want high", got)
+	}
+
+	// 空 effort 切回默认
+	if back := mgmtPost(t, ts.URL+"/api/v1/projects/test-project/reasoning", "tok", map[string]string{"effort": ""}); !back.OK {
+		t.Fatalf("reset reasoning failed: %s", back.Error)
+	}
+	if got := agent.GetReasoningEffort(); got != "" {
+		t.Fatalf("GetReasoningEffort() after reset = %q, want empty", got)
+	}
+
+	// 无效 effort 拒绝且不改变当前值
+	bad := mgmtPost(t, ts.URL+"/api/v1/projects/test-project/reasoning", "tok", map[string]string{"effort": "ultra"})
+	if bad.OK || !strings.Contains(bad.Error, "invalid effort") {
+		t.Fatalf("invalid effort accepted? ok=%v err=%q", bad.OK, bad.Error)
+	}
+	if got := agent.GetReasoningEffort(); got != "" {
+		t.Fatalf("GetReasoningEffort() after invalid = %q, want still empty", got)
+	}
+}
+
+func TestMgmt_ProjectReasoning_NoSwitcher(t *testing.T) {
+	// stubAgent 未实现 ReasoningEffortSwitcher
+	agent := &stubAgent{}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+
+	mgmt := NewManagementServer(0, "tok", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	r := mgmtGet(t, ts.URL+"/api/v1/projects/test-project/reasoning", "tok")
+	if r.OK || !strings.Contains(r.Error, "reasoning switching") {
+		t.Fatalf("expected no-switcher error, ok=%v err=%q", r.OK, r.Error)
+	}
+}
+
+func TestMgmt_ProjectModel_EmptyResetsToDefault(t *testing.T) {
+	agent := &stubModelModeAgent{model: "gpt-4.1-mini"}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+
+	mgmt := NewManagementServer(0, "tok", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/projects/", mgmt.wrap(mgmt.handleProjectRoutes))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	r := mgmtPost(t, ts.URL+"/api/v1/projects/test-project/model", "tok", map[string]string{"model": ""})
+	if !r.OK {
+		t.Fatalf("reset model failed: %s", r.Error)
+	}
+	if got := agent.GetModel(); got != "" {
+		t.Fatalf("GetModel() = %q, want empty (agent default)", got)
+	}
+}
+
 func TestMgmt_ProjectModels_UsesTimeoutContext(t *testing.T) {
 	agent := &deadlineAwareModelAgent{}
 	e := NewEngine("test-project", agent, nil, "", LangEnglish)

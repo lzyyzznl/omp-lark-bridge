@@ -11,11 +11,21 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 )
 
 const (
 	windowsTaskName   = ServiceName
 	windowsScriptName = "omp-lark-bridge-daemon.ps1"
+
+	// CREATE_NO_WINDOW: DETACHED_PROCESS (0x8) looks right but makes
+	// powershell.exe exit immediately — it refuses to run without a console and
+	// standard handles.
+	createNoWindow = 0x08000000
+	// CREATE_BREAKAWAY_FROM_JOB: Task Scheduler runs the task inside a job
+	// object, and `schtasks /End` terminates that whole job, so the helper must
+	// leave it first or it dies before issuing /Run.
+	createBreakawayFromJob = 0x01000000
 )
 
 var runPowerShell = func(script string) (string, error) {
@@ -274,7 +284,52 @@ func CheckLinger() (enabled bool, user string) {
 	return false, ""
 }
 
-// RestartServiceAsync is unsupported on Windows.
+// RestartServiceAsync restarts the scheduled task without blocking the caller.
+//
+// The restart has to survive this process being stopped, so it is delegated to
+// a detached PowerShell helper: wait for the HTTP response to flush, end the
+// task (which kills the wrapper and this bridge), then run it again. The helper
+// must not be a child of the bridge, otherwise /End would kill it too.
+//
+// Only valid under the Task Scheduler daemon: the generated wrapper exports
+// CC_LOG_FILE, so its presence is what distinguishes "managed by schtasks" from
+// a foreground run (where ending the task would leave two instances competing
+// for the instance lock).
 func RestartServiceAsync() error {
-	return fmt.Errorf("async restart unsupported on windows")
+	if strings.TrimSpace(os.Getenv("CC_LOG_FILE")) == "" {
+		return fmt.Errorf("async restart needs the scheduled-task daemon (CC_LOG_FILE is unset)")
+	}
+	// The helper is detached, so its output only survives in this file.
+	helperLog := filepath.Join(os.TempDir(), "omp-lark-bridge-restart.log")
+	script := fmt.Sprintf(`'helper start ' + (Get-Date -Format o) | Add-Content -Encoding utf8 -LiteralPath %s
+Start-Sleep -Seconds 2
+schtasks.exe /End /TN %s *>> %s
+Start-Sleep -Seconds 2
+schtasks.exe /Run /TN %s *>> %s
+'helper done ' + (Get-Date -Format o) | Add-Content -Encoding utf8 -LiteralPath %s
+`,
+		powerShellLiteral(helperLog),
+		powerShellLiteral(windowsTaskName), powerShellLiteral(helperLog),
+		powerShellLiteral(windowsTaskName), powerShellLiteral(helperLog),
+		powerShellLiteral(helperLog))
+
+	cmd := exec.Command("powershell.exe",
+		"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
+	// Break away from the task's job first; jobs that forbid breakaway reject
+	// the create call, in which case a plain no-window child is still the best
+	// available (it survives this process, just not `schtasks /End`).
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		HideWindow:    true,
+		CreationFlags: createNoWindow | createBreakawayFromJob,
+	}
+	err := cmd.Start()
+	if err != nil {
+		cmd = exec.Command("powershell.exe",
+			"-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script)
+		cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true, CreationFlags: createNoWindow}
+		if err := cmd.Start(); err != nil {
+			return fmt.Errorf("start restart helper: %w", err)
+		}
+	}
+	return cmd.Process.Release()
 }

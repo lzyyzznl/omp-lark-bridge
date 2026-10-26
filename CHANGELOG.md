@@ -5,6 +5,17 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Fixed
+- Windows 上管理后台改配置不再需要手动重启：`daemon.RestartServiceAsync` 原先
+  直接返回 `async restart unsupported on windows`，导致网页保存/扫码绑定后
+  `restart_required` 永远不生效（前端仍提示"正在自动重启生效…"），新建项目/换绑
+  应用后表现为飞书断连。现改为派生一个 `CREATE_NO_WINDOW|CREATE_BREAKAWAY_FROM_JOB`
+  的 PowerShell 助手：等 2s 让 HTTP 响应落地 → `schtasks /End` → 等 2s →
+  `schtasks /Run`；`CREATE_BREAKAWAY_FROM_JOB` 让助手脱离任务 job，否则 `/End`
+  会把它一起杀掉（job 不允许 breakaway 时回退到普通 no-window 子进程）。
+  助手输出落到 `%TEMP%\omp-lark-bridge-restart.log` 便于事后核对；仅在计划任务
+  守护模式下生效（`CC_LOG_FILE` 存在），前台运行仍明确报错，避免误停任务。
+
 ### Added
 - cron 任务新增 `goal_mode`（默认开启）：以 omp goal 模式执行 —— 全新会话、
   按目标自主推进，不依赖会话恢复。Web JobDialog 勾选；API `POST/GET/PATCH`

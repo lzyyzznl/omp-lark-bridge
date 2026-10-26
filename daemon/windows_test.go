@@ -198,3 +198,11 @@ func TestSchtasksInstall_TightensExistingScriptFrom0644(t *testing.T) {
 		t.Errorf("script mode after reinstall = %o, want 0600", info.Mode().Perm())
 	}
 }
+
+func TestRestartServiceAsyncRequiresDaemonMode(t *testing.T) {
+	t.Setenv("CC_LOG_FILE", "")
+	if err := RestartServiceAsync(); err == nil {
+		t.Fatal("RestartServiceAsync() must refuse to restart when not running as the scheduled task " +
+			"(a foreground run would otherwise end the task behind the user's back)")
+	}
+}

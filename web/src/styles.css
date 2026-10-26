@@ -867,20 +867,24 @@ textarea.input { resize: vertical; min-height: 72px; }
 .sess-item-head .sess-item-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lib-projects { display: flex; align-items: center; gap: 4px; flex: 0 1 auto; min-width: 0; max-width: 62%; }
 /* 一个文件夹挂多个项目：逐行列出子节点 */
-.lib-projects-col { flex-direction: column; align-items: stretch; max-width: none; padding: 2px 12px 4px 26px; }
-.lib-project-row { display: flex; align-items: center; gap: 4px; min-width: 0; }
+.lib-projects-col { flex-direction: column; align-items: stretch; max-width: none; padding: 4px 12px 6px 26px; gap: 2px; }
+.lib-project-row { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 2px 0; }
 .lib-project-name {
-  flex: 1; min-width: 0; font-size: 11px; color: var(--ink-dim);
+  flex: 1; min-width: 0; font-size: 13px; font-weight: 500; color: var(--ink-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .lib-project-off { opacity: .55; }
-.lib-rename-input { flex: 1; min-width: 0; font-size: 11px; padding: 1px 4px; }
+.lib-rename-input { flex: 1; min-width: 0; font-size: 13px; padding: 2px 6px; }
 .lib-proj-menu-wrap { position: relative; flex: 0 0 auto; }
 .lib-dots {
   background: none; border: none; cursor: pointer; font-family: inherit;
-  color: var(--ink-dim); font-size: 14px; line-height: 1; padding: 0 4px; border-radius: 4px;
+  color: var(--ink-dim); font-size: 17px; line-height: 1; padding: 0 5px; border-radius: 4px;
 }
 .lib-dots:hover { background: color-mix(in srgb, var(--ink) 10%, transparent); color: var(--ink); }
+/* 选中的文件夹是深底，项目行必须换成浅色，否则看不出 */
+.sess-item-on .lib-project-name { color: color-mix(in srgb, var(--cream) 92%, transparent); }
+.sess-item-on .lib-dots { color: color-mix(in srgb, var(--cream) 80%, transparent); }
+.sess-item-on .lib-dots:hover { background: color-mix(in srgb, var(--cream) 22%, transparent); color: var(--cream); }
 .lib-proj-menu {
   position: absolute; right: 0; top: 18px; z-index: 50; min-width: 92px;
   background: var(--surface); border: 1.5px solid var(--ink); border-radius: 6px;

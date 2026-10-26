@@ -372,7 +372,9 @@ export default function ProjectConfigPanel({ project, onToast, onDeleted, onSave
             {fsLoading && <div className="sess-empty">加载中…</div>}
             <div className="fs-list">
               {fsParent && <div className="fs-item" onClick={() => browseFS(fsParent)}>📁 ..（上级）</div>}
-              {fsDirs.map((d) => <div key={d} className="fs-item" onClick={() => browseFS(fsPath.endsWith('/') ? fsPath + d : fsPath + '/' + d)}>📁 {d}</div>)}
+              {fsDirs.map((d) => (
+                <div key={d.path} className="fs-item" onClick={() => browseFS(d.path)}>📁 {d.name}</div>
+              ))}
               {!fsLoading && fsDirs.length === 0 && <div className="sess-empty">无子目录</div>}
             </div>
             <div className="prj-new-actions">

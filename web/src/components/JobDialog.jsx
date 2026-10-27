@@ -142,7 +142,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
       cron_expr: cronExpr.trim(),
       mute,
       result_only: resultOnly,
-      session_mode: sessionMode || '',
+      session_mode: goal ? 'new_per_run' : sessionMode || '',
       model: model.trim() || undefined,
       thinking_level: thinking || undefined,
       agent: agent.trim() || undefined,
@@ -234,10 +234,10 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
           <div className="field">
             <label>会话模式</label>
             <div className="radio-row">
-              <label><input type="radio" checked={sessionMode === ''} onChange={() => setSessionMode('')} /> 复用会话</label>
-              <label><input type="radio" checked={sessionMode === 'new_per_run'} onChange={() => setSessionMode('new_per_run')} /> 每次新建</label>
+              <label><input type="radio" checked={!goal && sessionMode === ''} disabled={goal} onChange={() => setSessionMode('')} /> 复用会话</label>
+              <label><input type="radio" checked={sessionMode === 'new_per_run' || goal} onChange={() => setSessionMode('new_per_run')} /> 每次新建</label>
             </div>
-            <div className="help">复用 = 每次都在该会话里继续；新建 = 每次全新会话。</div>
+            <div className="help">复用 = 每次都在该会话里继续；新建 = 每次全新会话。注意：开启「以 goal 模式执行」或绑定模型/子代理会强制每次新建会话（覆盖本选项）。</div>
           </div>
           <div className="field">
             <label htmlFor="jd-model">模型（可选）</label>
@@ -258,7 +258,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
               <input type="checkbox" checked={goal} onChange={(e) => setGoal(e.target.checked)} />
               以 goal 模式执行（默认开启）
             </label>
-            <div className="help">以 omp 目标驱动模式运行：全新会话、按目标自主推进并回报，不依赖会话恢复。关闭后按普通提示词会话执行。工程类任务（初始化目录、把某个任务做完）在主会话无法恢复时会话时推荐启用。</div>
+            <div className="help">以 omp 目标驱动模式运行：每次都用全新会话、按目标自主推进并回报，不依赖会话恢复——因此该模式与「复用会话」互斥，开启时每次运行都会在会话列表新增一条。要跨次复用同一个会话需关闭本项。不清楚时对工程类任务（初始化目录、把某任务做完）推荐开启。</div>
           </div>
 
           <div className="field">

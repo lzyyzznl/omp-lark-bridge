@@ -85,7 +85,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
     setTouched(false)
   }, [open, job])
 
-  // 打开时加载可用模型与会话锚点（下拉候选）。失败静默——仅丢失候选，仍可手输。
+  // 打开时加载项目列表并选中当前（或第一个）项目。
   useEffect(() => {
     if (!open) return
     let alive = true
@@ -95,10 +95,22 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
         const list = (projs?.projects || []).filter((p) => p.name)
         if (!alive) return
         setProjects(list)
-        const proj = job?.project || list[0]?.name
-        if (!proj) return
-        setProject(proj)
-        const [m, s, ag] = await Promise.all([api.getModels(proj), api.getSessions(proj), api.listAgents().catch(() => null)])
+        setProject(job?.project || list[0]?.name || '')
+      } catch {
+        /* 忽略：只有下拉候选丢失，手输不受影响 */
+      }
+    })()
+    return () => { alive = false }
+  }, [open])
+
+  // 按当前项目加载模型与会话锚点候选；切换「所属项目」时自动重新拉取，
+  // 保证会话下拉只列所选中项目的 bot 名下会话。失败静默——仅丢失候选。
+  useEffect(() => {
+    if (!open || !project) return
+    let alive = true
+    ;(async () => {
+      try {
+        const [m, s, ag] = await Promise.all([api.getModels(project), api.getSessions(project), api.listAgents().catch(() => null)])
         if (!alive) return
         setModelOptions(m?.models || [])
         // 所有已发现 agent（bundled/user/project）都可被指派执行，read_only 只是禁止在管理页编辑。
@@ -116,7 +128,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
       }
     })()
     return () => { alive = false }
-  }, [open])
+  }, [open, project])
 
   const parsed = useMemo(() => parseCron(cronExpr), [cronExpr])
   const cronInvalid = touched && !parsed

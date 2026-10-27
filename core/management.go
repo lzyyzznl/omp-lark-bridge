@@ -1493,6 +1493,17 @@ func (m *ManagementServer) handleProjectSessions(w http.ResponseWriter, r *http.
 				}
 			}
 
+			// 会话归属校验：只标出本平台 bot 名下的会话（如飞书 p2p 校验
+			// user open_id 是否属于本 app），前端下拉借此过滤跨 bot 残留。
+			platName, _ := info["platform"].(string)
+			for _, p := range e.allPlatforms() {
+				v, ok := p.(SessionKeyUserValidator)
+				if ok && p.Name() == platName {
+					info["valid_for_bot"] = v.ValidSessionUser(sessionKey)
+					break
+				}
+			}
+
 			if meta := e.sessions.GetUserMeta(sessionKey); meta != nil {
 				info["user_name"] = meta.UserName
 				info["chat_name"] = meta.ChatName

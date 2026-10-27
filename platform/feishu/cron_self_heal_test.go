@@ -145,6 +145,28 @@ func TestCronSelfHeal_SendUsesOpenID_NotStaleChat(t *testing.T) {
 	}
 }
 
+func TestValidSessionUser_ScopesToOwnBot(t *testing.T) {
+	p, _, _ := cronSelfHealTestPlatform(t, map[string]bool{"ou_validuser": true, "ou_foreign": false})
+
+	if !p.ValidSessionUser("feishu:oc_chat:ou_validuser") {
+		t.Fatal("own-app open_id should be valid")
+	}
+	if p.ValidSessionUser("feishu:oc_chat:ou_foreign") {
+		t.Fatal("cross-app open_id must not count as this bot's session")
+	}
+	// 无法校验（权限/网络）时降级放行，与 cron 自愈语义一致。
+	if !p.ValidSessionUser("feishu:oc_chat:ou_unknown") {
+		t.Fatal("unverifiable open_id should degrade to valid")
+	}
+	// 群/话题以及非本平台 key 不做 user 归属判定，一律放行。
+	if !p.ValidSessionUser("feishu:oc_group:root:om_root1") {
+		t.Fatal("thread key should pass through")
+	}
+	if !p.ValidSessionUser("telegram:123:456") {
+		t.Fatal("non-feishu key should pass through")
+	}
+}
+
 func isErrNotSupported(err error) bool {
 	if err == nil {
 		return false

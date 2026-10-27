@@ -4150,6 +4150,23 @@ func (p *Platform) ResolveCronReplyTarget(sessionKey, _ string) (string, any, er
 	return sessionKey, rc, nil
 }
 
+// ValidSessionUser implements core.SessionKeyUserValidator: a p2p session key
+// counts as belonging to this bot only when its user open_id resolves to this
+// app. Cross-app open_ids (relics of another bot's session bound into this
+// project) return false so the web UI can drop them from session candidates.
+func (p *Platform) ValidSessionUser(sessionKey string) bool {
+	parts := strings.SplitN(sessionKey, ":", 4)
+	if len(parts) < 3 || parts[0] != p.platformName {
+		return true // 不是本平台的 key / 无法判定：放行，交由调用方处理
+	}
+	user := parts[2]
+	if !strings.HasPrefix(user, "ou_") {
+		return true // 群 / 话题等不用 user 归属判定
+	}
+	valid, _ := p.cronUserOpenIDValid(user)
+	return valid
+}
+
 // cronUserOpenIDValid returns whether openID belongs to this app, with a short
 // TTL cache. A hard error (missing contact permission / network) means we can't
 // tell, so the caller trusts the open_id and lets the actual send surface

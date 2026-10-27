@@ -18,6 +18,8 @@ const PLAT_LABELS = {
 function sessionOption(x) {
   const key = (x.session_key || '').trim()
   if (!key) return null
+  // 后端标记为不属于本平台 bot 的会话（如跨应用 open_id 残留）不进候选。
+  if (x.valid_for_bot === false) return null
   const parts = key.split(':')
   const tail = parts[2] || ''
   let kind = '群聊'

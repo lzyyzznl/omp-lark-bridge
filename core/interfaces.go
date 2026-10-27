@@ -66,6 +66,15 @@ type CronReplyTargetResolver interface {
 	ResolveCronReplyTarget(sessionKey string, title string) (resolvedSessionKey string, replyCtx any, err error)
 }
 
+// SessionKeyUserValidator is an optional interface for platforms that can tell
+// whether a session key's user identity belongs to this platform's own
+// bot/account. Used to filter session candidates (e.g. the cron target
+// dropdown) so entries bound to another bot (cross-app open_id) don't clutter
+// the list.
+type SessionKeyUserValidator interface {
+	ValidSessionUser(sessionKey string) bool
+}
+
 // SessionEnvInjector is an optional interface for agents that accept
 // per-session environment variables (e.g. CC_PROJECT, CC_SESSION_KEY).
 type SessionEnvInjector interface {

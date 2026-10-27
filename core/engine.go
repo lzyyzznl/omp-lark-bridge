@@ -384,6 +384,12 @@ type Engine struct {
 
 	hooks              *HookManager
 	cronScheduler      *CronScheduler
+	// cronSpawnJobs records cron jobs currently executing, keyed by every
+	// session key the run may identify itself with (job.SessionKey and the
+	// resolved run key), so the shared agent-spawn path can immediately attach
+	// the in-flight transcript to the job and its running entry.
+	cronSpawnMu   sync.Mutex
+	cronSpawnJobs map[string]*CronJob
 	timerScheduler     *TimerScheduler
 	heartbeatScheduler *HeartbeatScheduler
 
@@ -1591,6 +1597,17 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 			return fmt.Errorf("reconstruct reply context: %w", err)
 		}
 	}
+	// Track the in-flight execution so the spawned session is attributed to the
+	// job immediately (running sessions become linkable from the web UI). The
+	// job is registered under its own session key plus the resolved run key; the
+	// interactive key the session actually spawns under is added below.
+	e.trackCronJob(job, job.SessionKey)
+	if runSessionKey != "" && runSessionKey != job.SessionKey {
+		e.trackCronJob(job, runSessionKey)
+	}
+	defer e.untrackCronJob(job)
+
+
 
 	// Wrap platform to discard all outgoing messages when muted or result-only.
 	// Result-only still delivers the final answer once after execution (below),
@@ -1696,6 +1713,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		if workspaceDir != "" {
 			iKey = workspaceDir + ":" + iKey
 		}
+		e.trackCronJob(job, iKey)
 		prevHistLen := session.HistoryLen()
 		// Let the agent apply the job's model / thinking level to the session
 		// it is about to start. Ignored by agents that do not implement it.
@@ -1745,6 +1763,7 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 	if workspaceDir != "" {
 		iKey = workspaceDir + ":" + sessionKey
 	}
+	e.trackCronJob(job, iKey)
 	prevHistLen := session.HistoryLen()
 	return e.runTimedTurn(job.ExecutionTimeout(), iKey, func() error {
 		e.processInteractiveMessageWith(effectivePlatform, msg, session, agent, sessions, iKey, workspaceDir, sessionKey)
@@ -1809,6 +1828,62 @@ func (e *Engine) recordCronLastSession(job *CronJob, session *Session) {
 	}
 	if e.cronScheduler != nil && id != "" {
 		e.cronScheduler.Store().AppendSessionID(job.ID, id)
+	}
+}
+
+// trackCronJob records an in-flight cron execution so the shared agent-spawn
+// path can tie the spawned transcript back to its job while it is still running.
+func (e *Engine) trackCronJob(job *CronJob, runSessionKey string) {
+	e.cronSpawnMu.Lock()
+	defer e.cronSpawnMu.Unlock()
+	if e.cronSpawnJobs == nil {
+		e.cronSpawnJobs = map[string]*CronJob{}
+	}
+	e.cronSpawnJobs[job.SessionKey] = job
+	if runSessionKey != "" && runSessionKey != job.SessionKey {
+		e.cronSpawnJobs[runSessionKey] = job
+	}
+}
+
+// untrackCronJob removes an in-flight cron execution once its turn finished.
+// The job pointer is recorded under several keys (job session key, resolved run
+// key, and the interactive key it spawned under), so all of them are purged.
+func (e *Engine) untrackCronJob(job *CronJob) {
+	e.cronSpawnMu.Lock()
+	defer e.cronSpawnMu.Unlock()
+	for k, j := range e.cronSpawnJobs {
+		if j == job {
+			delete(e.cronSpawnJobs, k)
+		}
+	}
+	if len(e.cronSpawnJobs) == 0 {
+		e.cronSpawnJobs = nil
+	}
+}
+
+func (e *Engine) cronJobForSpawn(sessionKey string) *CronJob {
+	e.cronSpawnMu.Lock()
+	defer e.cronSpawnMu.Unlock()
+	return e.cronSpawnJobs[sessionKey]
+}
+
+// markCronSpawn is called right after an agent session spawns. For cron-driven
+// runs it immediately records the transcript id — into both the job's session
+// history and the in-flight run entry — so the web UI can link into a running
+// session instead of waiting for the run to finish.
+func (e *Engine) markCronSpawn(sessionKey, txID string) {
+	if txID == "" {
+		return
+	}
+	job := e.cronJobForSpawn(sessionKey)
+	if job == nil {
+		return
+	}
+	if e.cronScheduler != nil {
+		e.cronScheduler.Store().AppendSessionID(job.ID, txID)
+		if rs := e.cronScheduler.RunStore(); rs != nil {
+			rs.AttachTranscriptID(job.ID, txID)
+		}
 	}
 }
 
@@ -4419,6 +4494,7 @@ func (e *Engine) getOrCreateInteractiveStateWith(sessionKey string, p Platform, 
 			"is_resume":        isResume,
 		},
 	})
+	e.markCronSpawn(sessionKey, cronSessionTranscriptID(session))
 
 	return state
 }

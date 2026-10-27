@@ -801,6 +801,11 @@ func (cs *CronScheduler) AttachRunStore(runs *CronRunStore) {
 	cs.runs = runs
 }
 
+// RunStore returns the execution history store (may be nil when not wired).
+func (cs *CronScheduler) RunStore() *CronRunStore {
+	return cs.runs
+}
+
 // Runs returns a job's execution history (newest first).
 func (cs *CronScheduler) Runs(jobID string) []*CronRun {
 	if cs.runs == nil {

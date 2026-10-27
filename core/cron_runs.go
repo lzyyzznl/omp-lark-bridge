@@ -148,6 +148,27 @@ func (s *CronRunStore) Finish(jobID, runID string, err error, transcriptID strin
 	}
 }
 
+// AttachTranscriptID fills the transcript id on the job's currently running run
+// as soon as the agent process has produced one. This lets the web UI link into
+// an in-flight session instead of waiting for the run to finish.
+func (s *CronRunStore) AttachTranscriptID(jobID, transcriptID string) {
+	if transcriptID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	runs := s.runs[jobID]
+	for i := len(runs) - 1; i >= 0; i-- {
+		if runs[i].Status == "running" {
+			runs[i].TranscriptID = transcriptID
+			break
+		}
+	}
+	if err := s.saveLocked(); err != nil {
+		slogWarn("cron runs: persist attach transcript failed", err)
+	}
+}
+
 // List returns a job's runs, newest first.
 func (s *CronRunStore) List(jobID string) []*CronRun {
 	s.mu.Lock()

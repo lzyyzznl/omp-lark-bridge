@@ -114,6 +114,7 @@ type replyContext struct {
 	chatID          string
 	sessionKey      string
 	bootstrapThread bool
+	receiveOpenID    string // when set, standalone sends use receive_id_type=open_id (self-healing p2p)
 }
 
 type Platform struct {
@@ -154,6 +155,9 @@ type Platform struct {
 	userNameCache    sync.Map          // open_id -> display name
 	chatNameCache    sync.Map          // chat_id -> chat name
 	chatMemberCache  sync.Map          // chatID -> *chatMemberEntry
+	// cronUserOpenIDCache caches whether an open_id belongs to this app, so
+	// cron/timer self-healing doesn't re-validate every fire.
+	cronUserOpenIDCache sync.Map // open_id -> cronUserEntry
 	recalledMu       sync.Mutex
 	recalledMsgIDs   map[string]time.Time // message_id -> recall time, short TTL race guard
 	// Webhook mode fields (for Lark international version)
@@ -2958,7 +2962,7 @@ func (p *Platform) Send(ctx context.Context, rctx any, content string) error {
 		return p.Reply(ctx, rctx, content)
 	}
 
-	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
+	content = p.resolveMentionsForSend(ctx, rc, content)
 	msgType, msgBody := buildReplyContent(content)
 	return p.sendNewMessageToChat(ctx, rc, msgType, msgBody)
 }
@@ -2975,7 +2979,7 @@ func (p *Platform) SendWithStatusFooter(ctx context.Context, rctx any, content, 
 		return fmt.Errorf("%s: invalid reply context type %T", p.tag(), rctx)
 	}
 	// Resolve mentions first so we can detect whether a real @mention is
-	content = p.resolveMentionsInContent(ctx, rc.chatID, content)
+	content = p.resolveMentionsForSend(ctx, rc, content)
 	if strings.TrimSpace(footer) == "" || strings.Contains(content, `<at user_id=`) || strings.Contains(content, `<at id=`) {
 		if strings.TrimSpace(footer) != "" {
 			content += "\n\n" + footer
@@ -3090,7 +3094,7 @@ func (p *Platform) sendMediaMessage(ctx context.Context, rc replyContext, msgTyp
 	if p.shouldUseThreadOrReplyAPI(rc) {
 		return p.replyMessage(ctx, rc, msgType, content)
 	}
-	return p.createMessage(ctx, rc.chatID, msgType, content, "send media message")
+	return p.sendWithReceive(ctx, rc, msgType, content, "send media message")
 }
 
 func detectFeishuFileType(mimeType, fileName string) string {
@@ -3814,10 +3818,7 @@ func (p *Platform) shouldUseThreadOrReplyAPI(rc replyContext) bool {
 }
 
 func (p *Platform) sendNewMessageToChat(ctx context.Context, rc replyContext, msgType, content string) error {
-	if rc.chatID == "" {
-		return fmt.Errorf("%s: chatID is empty, cannot send new message", p.tag())
-	}
-	return p.createMessage(ctx, rc.chatID, msgType, content, "send")
+	return p.sendWithReceive(ctx, rc, msgType, content, "send")
 }
 
 func (p *Platform) buildReplyMessageReqBody(rc replyContext, msgType, content string) *larkim.ReplyMessageReqBody {
@@ -3854,6 +3855,56 @@ func (p *Platform) createMessage(ctx context.Context, chatID, msgType, content, 
 		ReceiveIdType(larkim.ReceiveIdTypeChatId).
 		Body(larkim.NewCreateMessageReqBodyBuilder().
 			ReceiveId(chatID).
+			MsgType(msgType).
+			Content(content).
+			Build()).
+		Build()
+	return p.withTransientRetryNoRepeat(ctx, op, func() error {
+		return p.withFreshTenantAccessTokenRetry(ctx, op, func(client *lark.Client, options ...larkcore.RequestOptionFunc) error {
+			resp, err := client.Im.Message.Create(ctx, req, options...)
+			if err != nil {
+				return fmt.Errorf("%s: %s api call: %w", p.tag(), op, err)
+			}
+			if !resp.Success() {
+				return fmt.Errorf("%s: %s failed code=%d msg=%s", p.tag(), op, resp.Code, resp.Msg)
+			}
+			return nil
+		})
+	})
+}
+
+// resolveMentionsForSend resolves @name mentions for group sends; skipped when
+// the delivery targets a user by open_id (p2p has no group members to resolve,
+// and the chat_id may be stale).
+func (p *Platform) resolveMentionsForSend(ctx context.Context, rc replyContext, content string) string {
+	if rc.receiveOpenID != "" {
+		return content
+	}
+	return p.resolveMentionsInContent(ctx, rc.chatID, content)
+}
+
+// sendWithReceive creates a standalone message, preferring an open_id target
+// (the user identity routes to their current chat without depending on a stale
+// chat_id snapshot) and falling back to chat_id.
+func (p *Platform) sendWithReceive(ctx context.Context, rc replyContext, msgType, content, op string) error {
+	if rc.receiveOpenID != "" {
+		return p.createMessageToUser(ctx, rc.receiveOpenID, msgType, content, op)
+	}
+	if rc.chatID == "" {
+		return fmt.Errorf("%s: chatID is empty, cannot send new message", p.tag())
+	}
+	return p.createMessage(ctx, rc.chatID, msgType, content, op)
+}
+
+// createMessageToUser sends a standalone message addressed by the user's
+// open_id, letting Feishu route it to the bot-user single chat. This is what
+// makes cron/timer delivery self-healing: it survives the user deleting the
+// chat or the stored chat_id going stale.
+func (p *Platform) createMessageToUser(ctx context.Context, openID, msgType, content, op string) error {
+	req := larkim.NewCreateMessageReqBuilder().
+		ReceiveIdType(larkim.ReceiveIdTypeOpenId).
+		Body(larkim.NewCreateMessageReqBodyBuilder().
+			ReceiveId(openID).
 			MsgType(msgType).
 			Content(content).
 			Build()).
@@ -4064,6 +4115,81 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 		}
 	}
 	return rc, nil
+}
+
+
+const cronUserOpenIDCacheTTL = 10 * time.Minute
+
+type cronUserEntry struct {
+	valid bool
+	at    time.Time
+}
+// ResolveCronReplyTarget implements core.CronReplyTargetResolver for p2p
+// sessions: it re-anchors cron/timer delivery to the user's open_id and sends
+// by open_id, so a stale chat_id snapshot no longer blocks delivery. Group and
+// thread keys are not supported here (return ErrNotSupported so engine falls
+// back to the legacy ReconstructReplyCtx/chat_id path).
+func (p *Platform) ResolveCronReplyTarget(sessionKey, _ string) (string, any, error) {
+	if p.shareSessionInChannel {
+		return "", nil, core.ErrNotSupported
+	}
+	parts := strings.SplitN(sessionKey, ":", 3)
+	if len(parts) != 3 || parts[0] != p.platformName {
+		return "", nil, core.ErrNotSupported
+	}
+	user := parts[2]
+	if !strings.HasPrefix(user, "ou_") {
+		return "", nil, core.ErrNotSupported
+	}
+	// Validate the user belongs to this app so a cross-app open_id (e.g. copied
+	// from another bot's session) is surfaced instead of pushed into the void.
+	if valid, err := p.cronUserOpenIDValid(user); err == nil && !valid {
+		return "", nil, fmt.Errorf("%s: cron reply target user %q is not a user of this app", p.tag(), user)
+	}
+	rc := replyContext{chatID: parts[1], sessionKey: sessionKey, receiveOpenID: user}
+	return sessionKey, rc, nil
+}
+
+// cronUserOpenIDValid returns whether openID belongs to this app, with a short
+// TTL cache. A hard error (missing contact permission / network) means we can't
+// tell, so the caller trusts the open_id and lets the actual send surface
+// delivery problems.
+func (p *Platform) cronUserOpenIDValid(openID string) (bool, error) {
+	if v, ok := p.cronUserOpenIDCache.Load(openID); ok {
+		e := v.(cronUserEntry)
+		if time.Since(e.at) < cronUserOpenIDCacheTTL {
+			return e.valid, nil
+		}
+	}
+	valid, hardErr := p.checkCronUserOpenID(openID)
+	if hardErr != nil {
+		return true, hardErr
+	}
+	p.cronUserOpenIDCache.Store(openID, cronUserEntry{valid: valid, at: time.Now()})
+	return valid, nil
+}
+
+func (p *Platform) checkCronUserOpenID(openID string) (bool, error) {
+	resp, err := p.client.Get(context.Background(),
+		"/open-apis/contact/v3/users/"+openID+"?user_id_type=open_id",
+		nil, larkcore.AccessTokenTypeTenant)
+	if err != nil {
+		return false, fmt.Errorf("%s: cron user check: %w", p.tag(), err)
+	}
+	var body struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if err := json.Unmarshal(resp.RawBody, &body); err != nil {
+		return false, fmt.Errorf("%s: cron user check: decode: %w", p.tag(), err)
+	}
+	if body.Code == 0 {
+		return true, nil
+	}
+	if body.Code == 99992361 { // open_id cross app: not a user of this app
+		return false, nil
+	}
+	return false, fmt.Errorf("%s: cron user check code=%d msg=%s", p.tag(), body.Code, body.Msg)
 }
 
 // RelayGroupVisibilityKey implements core.RelayGroupVisibilityTarget for

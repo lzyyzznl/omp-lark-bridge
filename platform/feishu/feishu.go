@@ -158,6 +158,9 @@ type Platform struct {
 	// cronUserOpenIDCache caches whether an open_id belongs to this app, so
 	// cron/timer self-healing doesn't re-validate every fire.
 	cronUserOpenIDCache sync.Map // open_id -> cronUserEntry
+	// cronChatIDCache caches whether a chat_id is a live chat this bot is in,
+	// so session-candidate filtering doesn't re-check every render.
+	cronChatIDCache sync.Map // chat_id -> cronUserEntry
 	recalledMu       sync.Mutex
 	recalledMsgIDs   map[string]time.Time // message_id -> recall time, short TTL race guard
 	// Webhook mode fields (for Lark international version)
@@ -4150,21 +4153,71 @@ func (p *Platform) ResolveCronReplyTarget(sessionKey, _ string) (string, any, er
 	return sessionKey, rc, nil
 }
 
-// ValidSessionUser implements core.SessionKeyUserValidator: a p2p session key
-// counts as belonging to this bot only when its user open_id resolves to this
-// app. Cross-app open_ids (relics of another bot's session bound into this
-// project) return false so the web UI can drop them from session candidates.
+// ValidSessionUser implements core.SessionKeyUserValidator: for a feishu
+// session key it requires BOTH the user open_id to belong to this app AND the
+// chat to be a live chat this bot is actually in. A stale/removed chat (bot no
+// longer present) or a cross-app open_id yields false, so the web UI drops the
+// entry from session candidates instead of offering a dead target.
 func (p *Platform) ValidSessionUser(sessionKey string) bool {
 	parts := strings.SplitN(sessionKey, ":", 4)
 	if len(parts) < 3 || parts[0] != p.platformName {
 		return true // 不是本平台的 key / 无法判定：放行，交由调用方处理
 	}
-	user := parts[2]
-	if !strings.HasPrefix(user, "ou_") {
-		return true // 群 / 话题等不用 user 归属判定
+	if user := parts[2]; strings.HasPrefix(user, "ou_") {
+		if valid, _ := p.cronUserOpenIDValid(user); !valid {
+			return false
+		}
 	}
-	valid, _ := p.cronUserOpenIDValid(user)
-	return valid
+	if chatID := parts[1]; strings.HasPrefix(chatID, "oc_") && chatID != "" {
+		if valid, _ := p.cronChatIDValid(chatID); !valid {
+			return false
+		}
+	}
+	return true
+}
+
+// cronChatIDValid returns whether chatID is a live chat this bot is in, with a
+// short TTL cache. "Bot is in the chat" is read via the chat detail endpoint:
+// a live chat returns full fields (chat_mode etc.), while a stale/orphan chat
+// the bot can no longer see returns only a shell (or an error). Network /
+// permission failures degrade to true so filtering never hides a usable chat
+// over a transient problem.
+func (p *Platform) cronChatIDValid(chatID string) (bool, error) {
+	if v, ok := p.cronChatIDCache.Load(chatID); ok {
+		e := v.(cronUserEntry)
+		if time.Since(e.at) < cronUserOpenIDCacheTTL {
+			return e.valid, nil
+		}
+	}
+	valid, hardErr := p.checkCronChat(chatID)
+	if hardErr != nil {
+		return true, hardErr
+	}
+	p.cronChatIDCache.Store(chatID, cronUserEntry{valid: valid, at: time.Now()})
+	return valid, nil
+}
+
+func (p *Platform) checkCronChat(chatID string) (bool, error) {
+	resp, err := p.client.Get(context.Background(),
+		"/open-apis/im/v1/chats/"+chatID,
+		nil, larkcore.AccessTokenTypeTenant)
+	if err != nil {
+		return false, fmt.Errorf("%s: cron chat check: %w", p.tag(), err)
+	}
+	var body struct {
+		Code int `json:"code"`
+		Data struct {
+			ChatMode string `json:"chat_mode"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(resp.RawBody, &body); err != nil {
+		return false, fmt.Errorf("%s: cron chat check: decode: %w", p.tag(), err)
+	}
+	if body.Code != 0 {
+		return false, nil
+	}
+	// 活会话返回完整字段；bot 已被移出的残留会话只剩外壳（无 chat_mode）。
+	return body.Data.ChatMode != "", nil
 }
 
 // cronUserOpenIDValid returns whether openID belongs to this app, with a short

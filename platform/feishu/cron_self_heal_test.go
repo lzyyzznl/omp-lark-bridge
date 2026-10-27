@@ -48,6 +48,16 @@ func cronSelfHealTestPlatform(t *testing.T, userOpenIDOK map[string]bool) (*Plat
 			default: // unknown open_id → contact permission error, caller should degrade
 				_, _ = io.WriteString(w, `{"code":99991663,"msg":"no permission"}`)
 			}
+		case strings.HasPrefix(r.URL.Path, "/open-apis/im/v1/chats/"):
+			chatID := strings.TrimPrefix(r.URL.Path, "/open-apis/im/v1/chats/")
+			switch {
+			case chatID == "oc_stale" || chatID == "oc_errorlan":
+				_, _ = io.WriteString(w, `{"code":0,"msg":"success","data":{"bot_count":"0"}}`) // 空壳：bot 已不在
+			case chatID == "oc_missing":
+				_, _ = io.WriteString(w, `{"code":99991660,"msg":"chat not found"}`)
+			default:
+				_, _ = io.WriteString(w, `{"code":0,"msg":"success","data":{"chat_mode":"p2p"}}`) // 活会话
+			}
 		default:
 			t.Fatalf("unexpected path %s", r.URL.Path)
 		}
@@ -149,7 +159,7 @@ func TestValidSessionUser_ScopesToOwnBot(t *testing.T) {
 	p, _, _ := cronSelfHealTestPlatform(t, map[string]bool{"ou_validuser": true, "ou_foreign": false})
 
 	if !p.ValidSessionUser("feishu:oc_chat:ou_validuser") {
-		t.Fatal("own-app open_id should be valid")
+		t.Fatal("own-app user in a live chat should be valid")
 	}
 	if p.ValidSessionUser("feishu:oc_chat:ou_foreign") {
 		t.Fatal("cross-app open_id must not count as this bot's session")
@@ -158,9 +168,16 @@ func TestValidSessionUser_ScopesToOwnBot(t *testing.T) {
 	if !p.ValidSessionUser("feishu:oc_chat:ou_unknown") {
 		t.Fatal("unverifiable open_id should degrade to valid")
 	}
-	// 群/话题以及非本平台 key 不做 user 归属判定，一律放行。
+	// 死 chat（bot 已不在 / 找不到）：即使 user 有效也必须过滤掉。
+	if p.ValidSessionUser("feishu:oc_stale:ou_validuser") {
+		t.Fatal("stale chat (bot not present) must not be a valid session")
+	}
+	if p.ValidSessionUser("feishu:oc_errorlan:ou_validuser") {
+		t.Fatal("unreadable chat must not be a valid session")
+	}
+	// 群/话题以及非本平台 key 不做 user 归属判定，chat 有效则放行。
 	if !p.ValidSessionUser("feishu:oc_group:root:om_root1") {
-		t.Fatal("thread key should pass through")
+		t.Fatal("thread key in a live chat should pass through")
 	}
 	if !p.ValidSessionUser("telegram:123:456") {
 		t.Fatal("non-feishu key should pass through")

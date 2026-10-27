@@ -6,6 +6,34 @@ import { useEsc } from '../hooks/useEsc.js'
 
 const SESSION_PLACEHOLDER = 'feishu:<open_chat_id>:<open_id>'
 
+// 会话锚点下拉的友好化渲染：把后端 /sessions 的条目（platform/chat_name/
+// user_name/active/live + 原始 session_key）渲染成「平台 · 会话类型 · 名称」，
+// 避免用户面对一坨 platform:oc_xxx:ou_yyy 分不清。提交值仍是原始 session_key。
+const PLAT_LABELS = {
+  feishu: '飞书', telegram: 'Telegram', discord: 'Discord', slack: 'Slack',
+  dingtalk: '钉钉', wecom: '企业微信', weixin: '微信', qq: 'QQ', qqbot: 'QQ',
+  line: 'LINE', weibo: '微博',
+}
+
+function sessionOption(x) {
+  const key = (x.session_key || '').trim()
+  if (!key) return null
+  const parts = key.split(':')
+  const tail = parts[2] || ''
+  let kind = '群聊'
+  if (tail.startsWith('root:') || tail.startsWith('thread:')) kind = '话题'
+  else if (tail.startsWith('ou_')) kind = '私聊'
+  const marks = []
+  if (x.live) marks.push('在线')
+  else if (x.active) marks.push('活跃')
+  const plat = PLAT_LABELS[x.platform] || x.platform || ''
+  // chat_name/user_name 未解析出来时后端会回填类 id 值（oc_/ou_/om_），这种不显示。
+  const idish = (v) => !v || /^(oc_|ou_|om_|root:|thread:)/.test(v)
+  const who = !idish(x.chat_name) ? x.chat_name : !idish(x.user_name) ? x.user_name : ''
+  const label = [plat, kind, who, marks.join('/')].filter(Boolean).join(' · ')
+  return { value: key, label: label || key }
+}
+
 // 新建 / 编辑定时任务对话框。
 // 新建提交 CronAddRequest；编辑仅提交可改字段（session_key 锚点不可改）。
 export default function JobDialog({ open, mode, job, onClose, onSubmit, submitting }) {
@@ -76,7 +104,10 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
           [...new Set(((ag?.agents) || []).map((a) => a.name).filter(Boolean))]
         )
         setSessionOptions(
-          (s?.sessions || []).map((x) => x.session_key).filter(Boolean).filter((v, i, a) => a.indexOf(v) === i)
+          (s?.sessions || [])
+            .map(sessionOption)
+            .filter(Boolean)
+            .filter((o, i, a) => a.findIndex((v) => v.value === o.value) === i)
         )
       } catch {
         /* 忽略：只有下拉候选丢失，手输不受影响 */
@@ -183,7 +214,7 @@ export default function JobDialog({ open, mode, job, onClose, onSubmit, submitti
             <label htmlFor="jd-session">{edit ? '会话锚点（不可改）' : '会话锚点'}{!edit && <span className="req"> *</span>}</label>
             <Combobox ariaLabel="会话锚点" className="mono" value={sessionKey} disabled={edit}
               onChange={setSessionKey} options={sessionOptions} placeholder={SESSION_PLACEHOLDER} />
-            <div className="help">job 触发时的平台会话（platform:chat:user）。可从候选选已有会话，或手输；飞书发 <code>/whoami</code> 可查。</div>
+            <div className="help">下拉仅列出当前「所属项目」下的会话（含平台/类型/活跃标记，选中即填完整 key）；也可手输；飞书发 <code>/whoami</code> 可查。</div>
           </div>
 
           <div className="field">

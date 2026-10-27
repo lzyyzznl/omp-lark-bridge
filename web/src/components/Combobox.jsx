@@ -7,8 +7,10 @@ export default function Combobox({ value, onChange, options = [], placeholder, c
   const [hi, setHi] = useState(0)
   const wrapRef = useRef(null)
 
+  // 选项支持字符串或 {value, label}：value 是提交值，label 是友好展示。
+  const norm = (o) => (typeof o === 'string' ? { value: o, label: o } : o)
   const q = (value || '').toLowerCase()
-  const filtered = options.filter((o) => (o || '').toLowerCase().includes(q))
+  const filtered = options.map(norm).filter((o) => (o.label + ' ' + o.value).toLowerCase().includes(q))
 
   useEffect(() => {
     if (!open) return
@@ -26,7 +28,7 @@ export default function Combobox({ value, onChange, options = [], placeholder, c
     el?.scrollIntoView({ block: 'nearest' })
   }, [hi, open])
 
-  const pick = (o) => { onChange(o); setOpen(false) }
+  const pick = (o) => { onChange(o.value); setOpen(false) }
 
   return (
     <div className="combobox" ref={wrapRef}>
@@ -52,13 +54,20 @@ export default function Combobox({ value, onChange, options = [], placeholder, c
           {filtered.length === 0 && <li className="combobox-empty">{emptyText}</li>}
           {filtered.map((o, i) => (
             <li
-              key={o}
+              key={o.value}
               role="option"
               aria-selected={i === hi}
               className={`combobox-item ${i === hi ? 'combobox-item-hi' : ''}`}
               onMouseEnter={() => setHi(i)}
               onMouseDown={(e) => { e.preventDefault(); pick(o) }}
-            >{o}</li>
+            >
+              {o.label !== o.value ? (
+                <>
+                  <div className="combobox-title">{o.label}</div>
+                  <div className="combobox-sub mono">{o.value}</div>
+                </>
+              ) : o.label}
+            </li>
           ))}
         </ul>
       )}

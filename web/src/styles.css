@@ -467,6 +467,24 @@ textarea.input { resize: vertical; min-height: 72px; }
   font-size: 12px;
   color: var(--ink-dim);
 }
+.combobox-item .combobox-title {
+  font-family: var(--font-ui), sans-serif;
+  font-size: 13px;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combobox-item .combobox-sub {
+  margin-top: 2px;
+  font-size: 11px;
+  opacity: 0.65;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.combobox-item-hi .combobox-title,
+.combobox-item-hi .combobox-sub { color: #fff; }
 
 /* ── 页签导航 ── */
 .tabs { display: flex; gap: 6px; padding: 0 24px; border-bottom: 2px solid var(--ink); margin-bottom: 16px; }
@@ -935,6 +953,8 @@ textarea.input { resize: vertical; min-height: 72px; }
 .runs-err { color: #b91c1c; display: block; max-width: 320px; overflow-wrap: anywhere; }
 .runs-tx { font-size: 11px; color: var(--ink-dim); }
 .runs-ops { white-space: nowrap; }
+.runs-modal .tab-row { margin-bottom: 0; padding: 0 12px; }
+.runs-title { font-weight: 600; overflow-wrap: anywhere; }
 .cron-row-failed td:first-child { box-shadow: inset 3px 0 0 #b91c1c; }
 .dialog-section { margin-top: 14px; padding-top: 10px; border-top: 1.5px solid var(--border); font-weight: 600; font-size: 13px; }
 

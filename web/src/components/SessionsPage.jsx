@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { marked } from 'marked'
 import { api } from '../api.js'
 import { formatTime } from '../lib/time.js'
 import ProjectConfigPanel from './ProjectConfigPanel.jsx'
 import NewProjectDialog from './NewProjectDialog.jsx'
+import OmpTranscript from './OmpTranscript.jsx'
 import { useEsc } from '../hooks/useEsc.js'
 
 const ROLE_LABEL = { user: '你', assistant: 'Harness', tool: '工具', system: '系统' }
@@ -19,13 +19,6 @@ function flattenText(content) {
     .filter(Boolean).join('\n')
 }
 
-function prettyJSON(v) {
-  try {
-    return JSON.stringify(v, null, 2)
-  } catch {
-    return String(v)
-  }
-}
 
 function formatBytes(n) {
   if (!n || n < 1024) return n ? `${n} B` : ''
@@ -33,155 +26,7 @@ function formatBytes(n) {
   return `${(n / 1024 / 1024).toFixed(2)} MB`
 }
 
-function summarizeArgs(args) {
-  if (!args) return ''
-  if (typeof args === 'string') return args.length > 80 ? args.slice(0, 80) + '…' : args
-  if (Array.isArray(args)) return prettyJSON(args).slice(0, 80)
-  const keys = Object.keys(args)
-  if (keys.length === 0) return ''
-  const first = args[keys[0]]
-  const v = typeof first === 'object' ? prettyJSON(first) : String(first)
-  const label = `${keys[0]}=${v}`
-  return label.length > 84 ? label.slice(0, 84) + '…' : label
-}
 
-// 把 role=toolResult 的 message 按 toolCallId 建成查询表，供 toolCall 行配对。
-function indexToolResults(events) {
-  const map = new Map()
-  for (const ev of events) {
-    if (ev.type !== 'message') continue
-    const m = ev.message || {}
-    if (m.role === 'toolResult' && m.toolCallId) {
-      const text = flattenText(m.content)
-      map.set(m.toolCallId, {
-        toolName: m.toolName || '',
-        text,
-        isError: !!m.isError,
-        bytes: text.length,
-      })
-    }
-  }
-  return map
-}
-
-// ── 渲染：一条工具调用（toolCall → toolResult 配对） ──────────────
-// 借鉴 agentsview 的 ToolCallRow：结果状态点 + 工具名 + 意图/参数摘要 + 结果大小，
-// 展开才显示参数与结果全文。连续多个排成一行行，便于扫读。
-
-function ToolCallRow({ call, result, streaming = false }) {
-  if (!call || call.type !== 'toolCall') return null
-  const args = call.arguments
-  const hasArgs = args && (!Array.isArray(args) || args.length > 0) && JSON.stringify(args) !== '{}'
-  const intent = call.intent || (call.name ? '' : '') || summarizeArgs(args)
-  const dot = result ? (result.isError ? 'err' : 'ok') : 'run'
-  // 执行中（无结果）展开显示参数；完成后折叠（可在历史中点开）。
-  const open = streaming && !result
-  return (
-    <details className={`t-call ${result && result.isError ? 't-call-err' : ''}`} open={open}>
-      <summary className="t-call-sum">
-        <span className={`t-call-dot ${dot}`} aria-hidden="true" />
-        <span className="t-call-name">{call.name || 'tool'}</span>
-        {intent ? <span className="t-call-intent">{intent}</span> : null}
-        {result && formatBytes(result.bytes) && (
-          <span className={`t-call-size ${result.isError ? 't-call-size-err' : ''}`}>
-            {result.isError ? '失败 · ' : ''}{formatBytes(result.bytes)}
-          </span>
-        )}
-        {!result && <span className="t-call-size"><span className="t-call-spin" aria-hidden />执行中</span>}
-      </summary>
-      <div className="t-call-body">
-        {hasArgs && (
-          <>
-            <div className="t-call-k">参数</div>
-            <pre className="t-code">{prettyJSON(args)}</pre>
-          </>
-        )}
-        {result && result.text && (
-          <>
-            <div className="t-call-k">{result.toolName ? `结果（${result.toolName}）` : '结果'}</div>
-            <pre className="t-code">{result.text}</pre>
-          </>
-        )}
-      </div>
-    </details>
-  )
-}
-
-// ── 渲染：一条事件 ─────────────────────────────────────────────
-
-function renderEvent(ev, i, toolResults, streaming = false) {
-  if (ev.type === 'message') {
-    const m = ev.message || {}
-    const role = m.role || 'unknown'
-    // toolResult 已被对应的 toolCall 行吸收，不单独重复显示。
-    if (role === 'toolResult') return null
-    const blocks = Array.isArray(m.content) ? m.content : [{ type: 'text', text: String(m.content ?? '') }]
-    return (
-      <div className="t-msg" key={i} data-role={role}>
-        <div className="t-role">{ROLE_LABEL[role] || role}</div>
-        <div className="t-body">
-          {blocks.map((b, bi) => {
-            if (b && b.type === 'text') {
-              return <div className="t-md" key={bi} dangerouslySetInnerHTML={{ __html: marked.parse(b.text || '') }} />
-            }
-            if (b && b.type === 'toolCall') {
-              return <ToolCallRow key={bi} call={b} result={toolResults.get(b.id)} streaming={streaming} />
-            }
-            if (b && b.type === 'thinking') {
-              // 正在流式输出时展开，输出完成后折叠。
-              const live = streaming && b.type === 'thinking'
-              return (
-                <details className="t-tool" key={bi} open={live}>
-                  <summary>🧠 思考{b.summary ? '（摘要）' : ''}</summary>
-                  <pre className="t-code">{b.thinking || prettyJSON(b)}</pre>
-                </details>
-              )
-            }
-            // Claude 风格命名（tool_use / tool_result / thinking）兜底
-            if (b && b.type === 'tool_use') {
-              return <ToolCallRow key={bi} call={{
-                type: 'toolCall', ...b,
-                intent: b.intent || b.name, arguments: b.input ?? b.arguments,
-              }} result={null} streaming={streaming} />
-            }
-
-            if (b && b.type === 'tool_result') {
-              const text = flattenText(b.content)
-              return (
-                <details className="t-call t-call-err" key={bi}>
-                  <summary className="t-call-sum">
-                    <span className={`t-call-dot ${b.is_error ? 'err' : 'ok'}`} />
-                    <span className="t-call-name">tool_result</span>
-                  </summary>
-                  <pre className="t-code">{text || prettyJSON(b)}</pre>
-                </details>
-              )
-            }
-            return (
-              <details className="t-tool" key={bi}>
-                <summary>🧩 {b?.type || 'block'}</summary>
-                <pre className="t-code">{prettyJSON(b)}</pre>
-              </details>
-            )
-          })}
-        </div>
-      </div>
-    )
-  }
-  if (ev.type === 'thinking_level_change') {
-    return <div className="t-meta" key={i}>🧠 思考等级 → <code>{ev.thinkingLevel ?? ev.configured}</code></div>
-  }
-  if (ev.type === 'model_change') {
-    return <div className="t-meta" key={i}>🤖 模型 → <code>{ev.model}</code>{ev.resolvedModelIsFallback ? '（回退默认）' : ''}</div>
-  }
-  if (ev.type === 'session') {
-    return <div className="t-meta" key={i}>💡 会话开始 · cwd <code>{ev.cwd}</code></div>
-  }
-  if (ev.type === 'title' && ev.title) {
-    return <div className="t-meta" key={i}>🏷 {ev.title}</div>
-  }
-  return null
-}
 // ── 页面：会话库（文件夹 → 会话 → 对话） ─────────────────────────
 // 会话文件全局共享，按 transcript 内的 session.cwd 归入文件夹；来源
 // （定时任务 / 对话）只能由 cron 任务的 session_ids 反查得出。
@@ -237,18 +82,11 @@ export default function SessionsPage({ initialTx, onToast }) {
   const [txLoading, setTxLoading] = useState(false)
   const [titleBusy, setTitleBusy] = useState('')
   const [copied, setCopied] = useState({})
-  const [sending, setSending] = useState(false)
-  const [composerText, setComposerText] = useState('')
-  const [modelCtrl, setModelCtrl] = useState({ models: [], current: '' })    // 发送左侧：可用模型 + 当前
-  const [reasonCtrl, setReasonCtrl] = useState({ efforts: [], current: '' })  // 发送左侧：思考强度级别 + 当前
-  const [attachments, setAttachments] = useState([])
-  const [live, setLive] = useState([])
-  const [sendErr, setSendErr] = useState('')
-  const [stopping, setStopping] = useState(false)
-  const [typingTick, setTypingTick] = useState(0)
-  const pendingRef = useRef([])
+  // ompweb 入口地址（可达时才给出跳转）：会话属于 olb 自有 session-dir，
+  // ompweb 看不到这些记录，但能按 cwd 打开同一工作区继续干活。
+  const [ompwebUrl, setOmpwebUrl] = useState('')
+
   const flowRef = useRef(null)
-  const thinkingShownRef = useRef('')
   const [stickBottom, setStickBottom] = useState(true)
   const [configProject, setConfigProject] = useState('')  // 非空 → 打开配置弹窗
   const [newOpen, setNewOpen] = useState(false)
@@ -290,6 +128,12 @@ export default function SessionsPage({ initialTx, onToast }) {
 
   useEffect(() => { loadProjects() }, [loadProjects])
   useEffect(() => { loadLibrary() }, [loadLibrary])
+  // 探测 ompweb 是否在线（只探一次，失败静默：入口按钮保持禁用）。
+  useEffect(() => {
+    let alive = true
+    api.ompWeb().then((st) => { if (alive && st?.reachable) setOmpwebUrl(st.url) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
 
   // 列表实时刷新：只要在会话页，就每 3s 重拉一次（正在写入的会话会显示「实时」）。
   useEffect(() => {
@@ -374,41 +218,6 @@ export default function SessionsPage({ initialTx, onToast }) {
   const currentTx = useMemo(() => (library || []).find((x) => x.id === selectedTx), [library, selectedTx])
   const activeProject = useMemo(() => projectFor(currentTx), [currentTx, projectFor])
 
-  // 进入页面/刷新后本地没有 SSE，sending 只代表"本页发起的这一轮"；会话是否
-  // 仍在跑必须以后端推断的状态为准，否则进行中的会话永远看不到停止按钮。
-  const turnRunning = !!(currentTx && (currentTx.status === 'running' || currentTx.status === 'asking'))
-
-  // 发送旁的下拉：按当前项目引擎读取可切换的模型 / 思考强度与当前值；
-  // agent 不支持（接口报错）时静默隐藏对应控件。
-  useEffect(() => {
-    if (!activeProject) { setModelCtrl({ models: [], current: '' }); setReasonCtrl({ efforts: [], current: '' }); return }
-    let alive = true
-    api.getModels(activeProject)
-      .then((d) => { if (alive) setModelCtrl({ models: (d && d.models) || [], current: (d && d.current) || '' }) })
-      .catch(() => { if (alive) setModelCtrl({ models: [], current: '' }) })
-    api.getReasoning(activeProject)
-      .then((d) => { if (alive) setReasonCtrl({ efforts: (d && d.efforts) || [], current: (d && d.current) || '' }) })
-      .catch(() => { if (alive) setReasonCtrl({ efforts: [], current: '' }) })
-    return () => { alive = false }
-  }, [activeProject])
-
-  const switchModel = useCallback(async (m) => {
-    if (!activeProject || m === modelCtrl.current) return
-    try {
-      await api.setModel(activeProject, m)
-      setModelCtrl((c) => ({ ...c, current: m }))
-      onToast?.('ok', m ? `模型已切换：${m}（下次发送生效）` : '已恢复默认模型（下次发送生效）')
-    } catch (e) { onToast?.('err', e.message || '模型切换失败') }
-  }, [activeProject, modelCtrl.current, onToast])
-
-  const switchReasoning = useCallback(async (level) => {
-    if (!activeProject || level === reasonCtrl.current) return
-    try {
-      await api.setReasoning(activeProject, level)
-      setReasonCtrl((c) => ({ ...c, current: level }))
-      onToast?.('ok', `思考强度已切换：${level}（下次发送生效）`)
-    } catch (e) { onToast?.('err', e.message || '思考强度切换失败') }
-  }, [activeProject, reasonCtrl.current, onToast])
 
   // 从任务执行记录点「查看对话」跳进来：定位到该会话所在文件夹。
   useEffect(() => {
@@ -429,7 +238,7 @@ export default function SessionsPage({ initialTx, onToast }) {
   // 走全局端点，不依赖项目列表，刷新后直接链接也能打开。
   useEffect(() => {
     if (!selectedTx) { setTxDetail(null); return }
-    if (sending) return
+
     let alive = true
     const fetchOne = async () => {
       try {
@@ -442,7 +251,7 @@ export default function SessionsPage({ initialTx, onToast }) {
             && JSON.stringify(prev[prev.length - 1]) === JSON.stringify(arr[arr.length - 1])) return prev
           return arr
         })
-        setLive([])
+
         setTxLoading(false)
       } catch (e) {
         if (alive) { setError(e.message); setTxLoading(false) }
@@ -452,7 +261,7 @@ export default function SessionsPage({ initialTx, onToast }) {
     fetchOne()
     const timer = setInterval(fetchOne, 2000)
     return () => { alive = false; clearInterval(timer) }
-  }, [selectedTx, sending])
+  }, [selectedTx])
 
   const copyTx = useCallback(() => {
     if (!txDetail) return
@@ -499,196 +308,13 @@ export default function SessionsPage({ initialTx, onToast }) {
     }
   }
 
-  // ── 网页继续对话：SSE 事件流（与旧实现一致） ──
-  const pushPending = useCallback((type, text) => {
-    const q2 = pendingRef.current
-    const last = q2[q2.length - 1]
-    if (last && last.type === type) last.text += text
-    else q2.push({ type, text })
-    setTypingTick((t) => t + 1)
-  }, [])
-
-  const appendLive = useCallback((ev) => {
-    if (ev.type === 'text') {
-      if (ev.content) pushPending('text', ev.content)
-      return
-    }
-    if (ev.type === 'thinking') {
-      const full = ev.content || ''
-      if (!full) return
-      let expressed = thinkingShownRef.current
-      for (let k = pendingRef.current.length - 1; k >= 0; k--) {
-        if (pendingRef.current[k].type !== 'thinking') break
-        expressed += pendingRef.current[k].text
-      }
-      let inc = ''
-      if (full.startsWith(expressed)) {
-        inc = full.slice(expressed.length)
-      } else {
-        inc = full
-        thinkingShownRef.current = ''
-        pendingRef.current = pendingRef.current.filter((x) => x.type !== 'thinking')
-      }
-      if (inc) pushPending('thinking', inc)
-      return
-    }
-    if (ev.type === 'tool_use') {
-      setLive((prev) => {
-        const next = prev.slice()
-        next.push({
-          type: 'message',
-          message: { role: 'assistant', content: [{ type: 'toolCall', id: 'live' + next.length, name: ev.tool, arguments: {}, intent: ev.intent || '' }] },
-        })
-        return next
-      })
-    }
-  }, [pushPending])
-
-  const appendChunk = useCallback((type, part) => {
-    if (type === 'thinking') thinkingShownRef.current += part
-    setLive((prev) => {
-      const next = prev.slice()
-      let last = next[next.length - 1]
-      if (!last || last.type !== 'message' || last.message?.role !== 'assistant') {
-        next.push({ type: 'message', message: { role: 'assistant', content: [] } })
-        last = next[next.length - 1]
-      }
-      const blocks = last.message.content || []
-      if (type === 'thinking') {
-        const b = blocks.find((x) => x.type === 'thinking')
-        if (b) b.thinking = (b.thinking || '') + part
-        else blocks.push({ type: 'thinking', thinking: part })
-      } else {
-        const b = blocks[blocks.length - 1]
-        if (b && b.type === 'text') b.text = (b.text || '') + part
-        else blocks.push({ type: 'text', text: part })
-      }
-      return next
-    })
-  }, [])
-
-  useEffect(() => {
-    if (!sending) { pendingRef.current = []; return }
-    if (pendingRef.current.length === 0) return
-    const t = setInterval(() => {
-      const q2 = pendingRef.current
-      const headEv = q2[0]
-      if (!headEv) return
-      const n = Math.min(headEv.text.length, 2)
-      const part = headEv.text.slice(0, n)
-      headEv.text = headEv.text.slice(n)
-      if (!headEv.text) q2.shift()
-      appendChunk(headEv.type, part)
-      setTypingTick((t2) => t2 + 1)
-    }, 25)
-    return () => clearInterval(t)
-  }, [sending, typingTick, appendChunk])
-
-  const onPickFile = useCallback((e) => {
-    const files = Array.from(e.target.files || [])
-    if (files.length === 0) return
-    Promise.all(files.map((f) => new Promise((resolve) => {
-      const fr = new FileReader()
-      fr.onload = () => {
-        const dataUrl = String(fr.result || '')
-        resolve({
-          kind: f.type.startsWith('image/') ? 'image' : 'file',
-          name: f.name,
-          mime: f.type || 'application/octet-stream',
-          b64: dataUrl.split(',')[1] || '',
-        })
-      }
-      fr.readAsDataURL(f)
-    }))).then((list) => setAttachments((prev) => [...prev, ...list]))
-    e.target.value = ''
-  }, [])
-
-  const sendComposer = useCallback(async () => {
-    const text = composerText.trim()
-    if (sending || (!text && attachments.length === 0) || !activeProject) return
-    const blocks = []
-    if (text) blocks.push({ type: 'text', text })
-    attachments.forEach((a) => blocks.push({ type: 'text', text: a.kind === 'image' ? `🖼 ${a.name}` : `📎 ${a.name}` }))
-    if (blocks.length === 0) blocks.push({ type: 'text', text: '' })
-    setTxDetail((prev) => [...(prev || []), { type: 'message', message: { role: 'user', content: blocks } }])
-    setLive([])
-    thinkingShownRef.current = ''
-    setSendErr('')
-    setSending(true)
-    setComposerText('')
-    const sent = attachments
-    setAttachments([])
-
-    try {
-      const res = await api.chatTranscript(activeProject, selectedTx, {
-        message: text,
-        images: sent.filter((a) => a.kind === 'image').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
-        files: sent.filter((a) => a.kind === 'file').map((a) => ({ mime_type: a.mime, filename: a.name, data: a.b64 })),
-      })
-      if (!res.ok || !res.body) throw new Error(`HTTP ${res.status}`)
-      const reader = res.body.getReader()
-      const decoder = new TextDecoder()
-      let buf = ''
-      let newTxId = ''
-      for (;;) {
-        const { done, value } = await reader.read()
-        if (done) break
-        buf += decoder.decode(value, { stream: true })
-        let idx
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const chunk = buf.slice(0, idx)
-          buf = buf.slice(idx + 2)
-          const line = chunk.split('\n').find((l) => l.startsWith('data: '))
-          if (!line) continue
-          let ev
-          try { ev = JSON.parse(line.slice(6)) } catch { continue }
-          if (ev.type === 'done') { newTxId = ev.id || ''; continue }
-          if (ev.type === 'error') { setSendErr(ev.message || 'stream error'); continue }
-          appendLive(ev)
-        }
-      }
-      // omp resume 会 fork 新文件：done 携带新 id 就切换过去。
-      if (newTxId && newTxId !== selectedTx) {
-        setSelectedTx(newTxId)
-        await loadLibrary()
-      }
-    } catch (err) {
-      setSendErr(err.message || '发送失败')
-    } finally {
-      setSending(false)
-      setLive([])
-      pendingRef.current = []
-      thinkingShownRef.current = ''
-    }
-  }, [sending, composerText, attachments, selectedTx, activeProject, appendLive, loadLibrary])
-
-  // 停止本轮对话：请求后端 abort（agent 进程保留），SSE 会以 done 结束并由
-  // sendComposer 的 finally 复位 sending/stopping。
-  const stopTurn = useCallback(async () => {
-    if (!activeProject || !selectedTx) return
-    setStopping(true)
-    try {
-      await api.stopChat(activeProject, selectedTx)
-      // 页面可能是重新进入的（没有本地 SSE 来收 done），先把状态乐观落下去，
-      // 再拉一次列表拿后端权威值。
-      setLibrary((prev) => (prev || []).map((x) => (x.id === selectedTx ? { ...x, status: 'done' } : x)))
-      loadLibrary()
-    } catch (e) {
-      onToast?.('err', e.message || '停止失败')
-    } finally {
-      setStopping(false)
-    }
-  }, [activeProject, selectedTx, loadLibrary, onToast])
-  const histToolResults = useMemo(() => indexToolResults(txDetail || []), [txDetail])
-  const histRendered = useMemo(() => (txDetail || []).map((ev, i) => renderEvent(ev, i, histToolResults, false)), [txDetail, histToolResults])
-  const liveToolResults = useMemo(() => indexToolResults(live), [live])
-  const liveRendered = useMemo(() => live.map((ev, i) => renderEvent(ev, (txDetail?.length || 0) + i, liveToolResults, sending)), [live, liveToolResults, txDetail, sending])
-  const rendered = [...histRendered, ...liveRendered]
-
-  useEffect(() => {
-    const el = flowRef.current
-    if (el && stickBottom && (sending || live.length)) el.scrollTop = el.scrollHeight
-  }, [live, sending, stickBottom])
+  // 只读视图：历史消息即全部内容（网页不再续聊，续聊走 ompweb / 终端 resume）。
+  // ompweb 用 jsonl 里的 session.id（uuid）定位会话；我们的列表 id 是文件名，
+  // 所以从详情事件里取。取不到时退回 cwd 级跳转（同工作区、不同记录）。
+  const ompSessionId = useMemo(
+    () => (txDetail || []).find((e) => e.type === 'session')?.id || '',
+    [txDetail],
+  )
 
   const [scrollOnLoad, setScrollOnLoad] = useState(false)
   useEffect(() => { setScrollOnLoad(!!selectedTx) }, [selectedTx])
@@ -1002,6 +628,19 @@ export default function SessionsPage({ initialTx, onToast }) {
               >
                 {copied[selectedTx] ? '已复制' : '复制终端命令'}
               </button>
+              <button
+                className="btn btn-sm btn-ghost sess-copy"
+                disabled={!ompwebUrl}
+                title="在 ompweb 打开这个会话继续对话（会话记录已同步；拿不到会话 id 时退回按工作区打开）"
+                onClick={() => {
+                  const q = ompSessionId
+                    ? `session=${encodeURIComponent(ompSessionId)}`
+                    : `cwd=${encodeURIComponent(currentTx?.cwd || '')}`
+                  window.open(`${ompwebUrl}/?${q}`, '_blank', 'noopener')
+                }}
+              >
+                在 ompweb 继续 ↗
+              </button>
               <div className="sess-detail-title">{txDetail ? (currentTx?.title || selectedTx) : selectedTx}</div>
               <div className="sess-detail-sub">
                 {currentTx?.job_id
@@ -1016,93 +655,12 @@ export default function SessionsPage({ initialTx, onToast }) {
                 </div>
               )}
             </div>
-            <div className="t-flow">
-              {txLoading && !txDetail && <div className="sess-empty">加载中…</div>}
-              {txDetail && rendered.length === 0 && <div className="sess-empty">此会话没有可渲染的事件</div>}
-              {txDetail && rendered}
-              {sending && (
-                <div className="sess-typing"><span className="sess-spin" aria-hidden />Harness 正在回复…</div>
-              )}
-            </div>
-            <div className="sess-composer">
-              {sendErr && <div className="sess-stream-err">⚠ {sendErr}</div>}
-              {attachments.length > 0 && (
-                <div className="sess-picked">
-                  {attachments.map((a, i) => (
-                    <span key={i}>
-                      {a.kind === 'image' ? '🖼' : '📎'} {a.name}
-                      {!sending && (
-                        <button onClick={() => setAttachments((arr) => arr.filter((_, j) => j !== i))}>×</button>
-                      )}
-                    </span>
-                  ))}
-                </div>
-              )}
-              <textarea
-                className="input"
-                rows={2}
-                placeholder={sending ? 'Harness 正在回复…' : '输入消息继续对话（Enter 发送，Shift+Enter 换行）'}
-                value={composerText}
-                disabled={sending}
-                onChange={(e) => setComposerText(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
-                    e.preventDefault()
-                    sendComposer()
-                  }
-                }}
+            {/* 历史正文：解析与渲染复用 ompweb 的源码副本（src/omp），视觉与它一致。 */}
+            <div className="t-flow t-flow-omp">
+              <OmpTranscript
+                id={selectedTx}
+                live={currentTx?.status === 'running' || currentTx?.status === 'asking'}
               />
-              <div className="sess-composer-actions">
-                <label className="btn btn-sm btn-ghost sess-attach">
-                  附件
-                  <input type="file" multiple hidden onChange={onPickFile} />
-                </label>
-                <span className="sess-streaming">{sending ? '对话中…' : '可继续对话'}</span>
-                {modelCtrl.models.length > 0 && (
-                  <select
-                    className="sess-sel"
-                    value={modelCtrl.current}
-                    disabled={sending}
-                    aria-label="切换模型"
-                    title="切换模型（下次发送生效）"
-                    onChange={(e) => switchModel(e.target.value)}
-                  >
-                    <option value="">默认模型</option>
-                    {modelCtrl.current && !modelCtrl.models.includes(modelCtrl.current) && (
-                      <option value={modelCtrl.current}>{modelCtrl.current}（当前）</option>
-                    )}
-                    {modelCtrl.models.map((m) => <option key={m} value={m}>{m}</option>)}
-                  </select>
-                )}
-                {reasonCtrl.efforts.length > 0 && (
-                  <select
-                    className="sess-sel"
-                    value={reasonCtrl.current}
-                    disabled={sending}
-                    aria-label="切换思考强度"
-                    title="切换思考强度（下次发送生效）"
-                    onChange={(e) => switchReasoning(e.target.value)}
-                  >
-                    <option value="">默认强度</option>
-                    {reasonCtrl.current && !reasonCtrl.efforts.includes(reasonCtrl.current) && (
-                      <option value={reasonCtrl.current}>{reasonCtrl.current}（当前）</option>
-                    )}
-                    {reasonCtrl.efforts.map((l) => <option key={l} value={l}>{l}</option>)}
-                  </select>
-                )}
-                {(sending || turnRunning) && (
-                  <button className="btn btn-sm btn-red" onClick={stopTurn} disabled={stopping}>
-                    {stopping ? '停止中…' : '停止 ⏹'}
-                  </button>
-                )}
-                <button
-                  className="btn btn-sm btn-solid"
-                  onClick={sendComposer}
-                  disabled={sending || (!composerText.trim() && attachments.length === 0)}
-                >
-                  发送 ⏎
-                </button>
-              </div>
             </div>
             {!stickBottom && (
               <button

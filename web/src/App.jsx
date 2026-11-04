@@ -48,6 +48,20 @@ export default function App() {
     const key = Math.random().toString(36).slice(2)
     setToasts((ts) => [...ts.slice(-2), { key, kind, text }])
   }, [])
+  // ompweb 拒绝被 iframe 嵌入（X-Frame-Options: DENY），只能新标签页打开；
+  // 未运行时就地提示启动命令，避免点了没反应。
+  const openOmpWeb = useCallback(async () => {
+    try {
+      const st = await api.ompWeb()
+      if (st.reachable) {
+        window.open(st.url, '_blank', 'noopener')
+      } else {
+        push('err', `ompweb 未运行（${st.url}）。启动：npx @kahme247/ompweb@latest`)
+      }
+    } catch (e) {
+      push('err', `ompweb 探测失败：${e.message || e}`)
+    }
+  }, [push])
   const dismissToast = useCallback((key) => setToasts((ts) => ts.filter((x) => x.key !== key)), [])
 
   const stats = useMemo(() => {
@@ -142,8 +156,9 @@ export default function App() {
         </div>
         <div className="masthead-right">
           <span className="sub">同步 {lastSync ? formatTime(lastSync) : '—'}</span>
-          <button className="btn btn-ghost" style={{ color: 'var(--cream)', borderColor: 'var(--cream)' }} onClick={() => reload()}>刷新</button>
-          <button className="btn btn-ghost" style={{ color: 'var(--cream)', borderColor: 'var(--cream)' }} onClick={() => setSettingsOpen(true)}>设置</button>
+          <button className="btn btn-ghost" onClick={() => reload()}>刷新</button>
+          <button className="btn btn-ghost" onClick={openOmpWeb} title="打开 ompweb（omp 的网页工作台）">ompweb ↗</button>
+          <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}>设置</button>
           {!loading && jobs.length > 0 && (
             <button className="btn btn-green" onClick={() => setDialog({ mode: 'new' })}>+ 新建任务</button>
           )}

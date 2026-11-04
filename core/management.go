@@ -321,6 +321,7 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	mux.HandleFunc(prefix+"/omp-agents/", m.wrap(m.handleOmpAgentByID))
 	mux.HandleFunc(prefix+"/omp-skills", m.wrap(m.handleOmpSkills))
 	mux.HandleFunc(prefix+"/omp-tools", m.wrap(m.handleOmpTools))
+	mux.HandleFunc(prefix+"/ompweb", m.wrap(m.handleOmpWeb))
 	// Hub（多实例中心同步）：server 模式端点。认证走 X-Hub-Secret（见 hub.go），
 	// 与 management token 解耦，因此不包 wrap。
 	if m.hub != nil {
@@ -2593,7 +2594,7 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 		m.stopTranscriptChat(w, e, dir, id)
 		return
 	}
-	m.readTranscript(w, dir, rest)
+	m.readTranscript(w, r, dir, rest)
 }
 
 func (m *ManagementServer) listTranscripts(w http.ResponseWriter, dir string) {
@@ -3015,7 +3016,7 @@ func (m *ManagementServer) handleTranscriptLibrary(w http.ResponseWriter, r *htt
 			mgmtError(w, http.StatusNotFound, "no session directory available yet")
 			return
 		}
-		m.readTranscript(w, dir, sub)
+		m.readTranscript(w, r, dir, sub)
 	}
 }
 
@@ -3112,10 +3113,27 @@ func truncateRune(s string, n int) string {
 	return string(runes[:n]) + "…"
 }
 
-func (m *ManagementServer) readTranscript(w http.ResponseWriter, dir, id string) {
+func (m *ManagementServer) readTranscript(w http.ResponseWriter, r *http.Request, dir, id string) {
 	// id must be a plain base name to keep path traversal out of the session dir.
 	if id != filepath.Base(id) {
 		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
+		return
+	}
+	// ?raw=1：原样返回 jsonl 文本，供网页用 ompweb 的解析器渲染（它需要原始行，
+	// 而不是我们这套精简过的事件模型）。
+	if r.URL.Query().Get("raw") == "1" {
+		body, err := os.ReadFile(filepath.Join(dir, id+".jsonl"))
+		if err != nil {
+			if os.IsNotExist(err) {
+				mgmtError(w, http.StatusNotFound, "transcript not found")
+				return
+			}
+			mgmtError(w, http.StatusInternalServerError, "read transcript: "+err.Error())
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
 		return
 	}
 	events, err := readTranscriptEvents(filepath.Join(dir, id+".jsonl"))
@@ -3839,6 +3857,31 @@ func (m *ManagementServer) handleOmpTools(w http.ResponseWriter, r *http.Request
 		return
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{"tools": OmpTools()})
+}
+
+// handleOmpWeb reports whether a local ompweb instance is reachable so the
+// console can offer a link to it. ompweb sends X-Frame-Options: DENY and
+// frame-ancestors 'none', so it always opens in its own tab rather than being
+// embedded. The address comes from OMPWEB_URL (default: ompweb's own port).
+func (m *ManagementServer) handleOmpWeb(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	url := strings.TrimRight(strings.TrimSpace(os.Getenv("OMPWEB_URL")), "/")
+	if url == "" {
+		url = "http://127.0.0.1:30177"
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
+	defer cancel()
+	reachable := false
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/", nil); err == nil {
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			reachable = resp.StatusCode < 500
+			resp.Body.Close()
+		}
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{"url": url, "reachable": reachable})
 }
 
 // handleOmpSkills serves the skill catalog the default engine's omp resolves

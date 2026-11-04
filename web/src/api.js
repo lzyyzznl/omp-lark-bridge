@@ -65,6 +65,23 @@ async function request(path, { method = 'GET', body } = {}) {
   return data.data
 }
 
+// GET /api/v1/transcripts/{id}?raw=1 → 会话 jsonl 原文。
+// 网页用 ompweb 的解析器渲染历史，它要的是原始行而不是我们精简过的事件模型。
+export async function getTranscriptRaw(id) {
+  const tk = getToken()
+  const headers = tk ? { Authorization: `Bearer ${tk}` } : {}
+  const res = await fetch(`${BASE}/transcripts/${encodeURIComponent(id)}?raw=1`, { headers })
+  if (res.status === 401) {
+    clearToken()
+    const err = new Error('认证失败：token 缺失或错误')
+    err.status = 401
+    throw err
+  }
+  if (!res.ok) throw new Error(`读取会话原文失败：HTTP ${res.status}`)
+  renewToken()
+  return res.text()
+}
+
 export const api = {
   // GET /api/v1/cron → {jobs:[CronJob]}
   list: () => request('/cron'),
@@ -81,12 +98,6 @@ export const api = {
   listProjects: () => request('/projects'),
   // GET /api/v1/projects/{name}/models → {models:[string], current:string}
   getModels: (project) => request(`/projects/${encodeURIComponent(project)}/models`),
-  // POST /api/v1/projects/{name}/model {model} → 运行时切换引擎默认模型（下次会话生效；空值回默认）
-  setModel: (project, model) => request(`/projects/${encodeURIComponent(project)}/model`, { method: 'POST', body: { model } }),
-  // GET /api/v1/projects/{name}/reasoning → {efforts:[string], current:string}
-  getReasoning: (project) => request(`/projects/${encodeURIComponent(project)}/reasoning`),
-  // POST /api/v1/projects/{name}/reasoning {effort} → 运行时切换思考强度（下次会话生效；空值回默认）
-  setReasoning: (project, effort) => request(`/projects/${encodeURIComponent(project)}/reasoning`, { method: 'POST', body: { effort } }),
   // GET /api/v1/projects/{name}/sessions → {sessions:[{id, session_key, ...}], active_keys}
   getSessions: (project) => request(`/projects/${encodeURIComponent(project)}/sessions`),
 
@@ -97,20 +108,6 @@ export const api = {
   // GET /api/v1/transcripts/{id} → 单条会话事件流（不依赖项目，刷新/直链可用）
   libraryTranscript: (id) => request(`/transcripts/${encodeURIComponent(id)}`),
 
-  // POST /projects/{name}/transcripts/{id}/chat → SSE 流式继续对话。
-  // 返回原始 Response（前端读 response.body 流），不是解析后的 JSON。
-  chatTranscript: (project, id, payload) => {
-    const headers = { 'Content-Type': 'application/json' }
-    const tk = getToken()
-    if (tk) headers.Authorization = `Bearer ${tk}`
-    return fetch(`${BASE}/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/chat`, {
-      method: 'POST', headers, body: JSON.stringify(payload),
-    })
-  },
-
-  // POST /projects/{name}/transcripts/{id}/stop → 中止该会话正在运行的一轮
-  // （agent 进程保留；对应 SSE 流会以 done 结束）。无运行中 turn 时返回 409。
-  stopChat: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/stop`, { method: 'POST', body: {} }),
 
   // POST /projects/{name}/transcripts/{id}/title → 用最近对话一键生成会话标题
   regenerateTitle: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/title`, { method: 'POST', body: {} }),
@@ -174,6 +171,8 @@ export const api = {
   listSkills: () => request('/omp-skills'),
   // GET /api/v1/omp-tools → {tools:[{name,description}]}，供 tools 白名单勾选
   listTools: () => request('/omp-tools'),
+  // GET /api/v1/ompweb → {url, reachable}，控制台「ompweb」入口探测
+  ompWeb: () => request('/ompweb'),
   // POST /api/v1/omp-agents/{name}/run {message} → 用专家新建独立会话执行（SSE 流式）。
   runExpert: (name, payload) => {
     const headers = { 'Content-Type': 'application/json' }

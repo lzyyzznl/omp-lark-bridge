@@ -866,6 +866,9 @@ textarea.input { resize: vertical; min-height: 72px; }
   box-shadow: var(--shadow-pop);
   border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
 }
+/* 整张卡片都是入口（点设置抽屉），按钮单独放大方便点。 */
+.proj-card-clickable { cursor: pointer; }
+.proj-card-clickable:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .proj-card-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
 .proj-title { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
 .proj-name {
@@ -897,7 +900,8 @@ textarea.input { resize: vertical; min-height: 72px; }
 }
 .chip-quiet { border-style: dashed; }
 .proj-actions {
-  display: flex; gap: 6px; justify-content: flex-end;
+  display: flex; gap: 8px; justify-content: flex-end;
   margin-top: auto; padding-top: 8px; border-top: 1px dashed var(--border);
 }
+.proj-actions .btn { padding: 9px 16px; font-size: 13.5px; border-radius: var(--radius-sm); }
 .proj-actions .proj-del { color: var(--red); }

@@ -102,7 +102,18 @@ export default function ProjectsPage({ onToast }) {
       ) : (
         <div className="proj-grid">
           {projects.map((p) => (
-            <article key={p.name} className="proj-card">
+            <article
+              key={p.name}
+              className="proj-card proj-card-clickable"
+              role="button"
+              tabIndex={0}
+              title="点击进入项目设置"
+              onClick={(e) => { if (e.target.closest('button, input')) return; setConfigProject(p.name) }}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget) return
+                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setConfigProject(p.name) }
+              }}
+            >
               <div className="proj-card-head">
                 <div className="proj-title">
                   {renaming === p.name ? (
@@ -140,12 +151,12 @@ export default function ProjectsPage({ onToast }) {
               </div>
 
               <div className="proj-actions">
-                <button className="btn btn-sm btn-ghost" onClick={() => setConfigProject(p.name)}>设置</button>
+                <button className="btn btn-ghost" onClick={() => setConfigProject(p.name)}>设置</button>
                 <button
-                  className="btn btn-sm btn-ghost"
+                  className="btn btn-ghost"
                   onClick={() => { setRenaming(p.name); setRenameVal(p.display_name || p.name) }}
                 >重命名</button>
-                <button className="btn btn-sm btn-ghost proj-del" disabled={busy} onClick={() => setDelProj(p.name)}>删除</button>
+                <button className="btn btn-ghost proj-del" disabled={busy} onClick={() => setDelProj(p.name)}>删除</button>
               </div>
             </article>
           ))}

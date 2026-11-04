@@ -5,7 +5,20 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 
 ## [Unreleased]
 
+### Added
+- 会话驱动留槽：`core.SessionDriver`（`SessionStatus`/`SendPrompt`/`StopSession`）与
+  `SessionDriverStatus`，由 `Engine` 实现；`/api/v1/projects/{name}/sessions` 每条会话新增
+  `busy`/`queued` 字段，供 ompweb/APP 判定发送按钮是否可用。
+- 新增 `/cancelqueue`（别名 `/clearqueue`）清空忙时排队消息，回复已清空的条数。
+- 控制台新增「项目管理」页（`ProjectsPage`）：新建/重命名/删除/设置；项目仍是定时任务的挂钩对象。
+
 ### Changed
+- 控制台瘦身：移除「会话查看」「agent 人格」两个 tab（会话查看与 agent 编辑统一到 ompweb），
+  `SessionsPage`/`AgentsPage`/`AgentDialog`/`ExpertRunDialog` 一并删除；后端 `/api/v1/*` 全部保留。
+- 飞书忙时排队提示改为「正在对话中，消息已排队，本轮结束后会自动追加发送」（五语言同步）。
+- 定时任务执行记录的「查看对话」改为直接打开 ompweb 的**那条会话**：后端先把 transcript
+  镜像进 omp 自己的会话库（`~/.omp/agent/sessions/omp-lark-bridge/`，ompiweb 唯一扫描的位置），
+  再返回 `/?session=<id>` 直达链接；看板内的只读会话渲染（含 `web/src/omp` 渲染栈副本）整套删除。
 - 每轮对话固定输出**一张**卡片（Card 2.0 rich），思考、工具调用、工具结果与正文都在同一张卡里原地更新：
   - 写死 `card_mode = "rich"`：`config.EffectiveCardMode` 恒返回 "rich"，引擎默认 `DisplayCfg.CardMode`
     同为 rich，`[display] card_mode` 仅保留解析（值被忽略），不再有 legacy 分片路径。

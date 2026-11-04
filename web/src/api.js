@@ -65,22 +65,6 @@ async function request(path, { method = 'GET', body } = {}) {
   return data.data
 }
 
-// GET /api/v1/transcripts/{id}?raw=1 → 会话 jsonl 原文。
-// 网页用 ompweb 的解析器渲染历史，它要的是原始行而不是我们精简过的事件模型。
-export async function getTranscriptRaw(id) {
-  const tk = getToken()
-  const headers = tk ? { Authorization: `Bearer ${tk}` } : {}
-  const res = await fetch(`${BASE}/transcripts/${encodeURIComponent(id)}?raw=1`, { headers })
-  if (res.status === 401) {
-    clearToken()
-    const err = new Error('认证失败：token 缺失或错误')
-    err.status = 401
-    throw err
-  }
-  if (!res.ok) throw new Error(`读取会话原文失败：HTTP ${res.status}`)
-  renewToken()
-  return res.text()
-}
 
 export const api = {
   // GET /api/v1/cron → {jobs:[CronJob]}
@@ -101,16 +85,6 @@ export const api = {
   // GET /api/v1/projects/{name}/sessions → {sessions:[{id, session_key, ...}], active_keys}
   getSessions: (project) => request(`/projects/${encodeURIComponent(project)}/sessions`),
 
-  // GET /api/v1/projects/{name}/transcripts → {transcripts:[{id,name,size,updated_at}]}
-  listTranscripts: (project) => request(`/projects/${encodeURIComponent(project)}/transcripts`),
-  getTranscript: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}`),
-
-  // GET /api/v1/transcripts/{id} → 单条会话事件流（不依赖项目，刷新/直链可用）
-  libraryTranscript: (id) => request(`/transcripts/${encodeURIComponent(id)}`),
-
-
-  // POST /projects/{name}/transcripts/{id}/title → 用最近对话一键生成会话标题
-  regenerateTitle: (project, id) => request(`/projects/${encodeURIComponent(project)}/transcripts/${encodeURIComponent(id)}/title`, { method: 'POST', body: {} }),
 
   // GET /api/v1/projects/{name} → 项目详情（work_dir/settings/platform_configs...）
   getProject: (project) => request(`/projects/${encodeURIComponent(project)}`),
@@ -128,15 +102,14 @@ export const api = {
     const s = qs.toString()
     return request(`/transcripts${s ? `?${s}` : ''}`)
   },
-  // POST /api/v1/transcripts/archive {ids} → 软删除（隐藏）
-  archiveSessions: (ids) => request('/transcripts/archive', { method: 'POST', body: { ids } }),
-  // POST /api/v1/transcripts/unarchive {ids} → 从归档恢复
-  unarchiveSessions: (ids) => request('/transcripts/unarchive', { method: 'POST', body: { ids } }),
   // GET/PATCH /api/v1/transcripts/settings → 自动归档设置
   archiveSettings: () => request('/transcripts/settings'),
   saveArchiveSettings: (fields) => request('/transcripts/settings', { method: 'PATCH', body: fields }),
   // POST /api/v1/transcripts/run → 立即执行一次自动归档
   runArchive: () => request('/transcripts/run', { method: 'POST' }),
+  // GET /api/v1/transcripts/{id}/ompiweb → {url} 把该会话镜像进 omp 会话库后
+  // 返回 ompweb 的直达链接（ompiweb 只能打开它自己扫描到的会话）。
+  transcriptOmpUrl: (id) => request(`/transcripts/${encodeURIComponent(id)}/ompiweb`),
   // GET /api/v1/cron/{id}/runs → 任务执行历史（含失败记录）
   cronRuns: (id) => request(`/cron/${encodeURIComponent(id)}/runs`),
   // POST /api/v1/projects → 创建项目（服务端生成不可变 ID；name 仅作显示名）
@@ -152,32 +125,6 @@ export const api = {
   // omp agent personas（bundled/user/project）
   // GET /api/v1/omp-agents → {agents:[{name,description,scope,model,tools,source,read_only,project}]}
   listAgents: () => request('/omp-agents'),
-  // GET /api/v1/omp-agents/{name} → {agent:{...content}}
-  getAgent: (name) => request(`/omp-agents/${encodeURIComponent(name)}`),
-  // POST /api/v1/omp-agents {name,description,model,tools,body} → 创建 user agent
-  addAgent: (payload) => request('/omp-agents', { method: 'POST', body: payload }),
-  // PUT /api/v1/omp-agents/{name} {description,model,tools,body} → 更新 user agent
-  updateAgent: (name, payload) => request(`/omp-agents/${encodeURIComponent(name)}`, { method: 'PUT', body: payload }),
-  // DELETE /api/v1/omp-agents/{name}
-  delAgent: (name) => request(`/omp-agents/${encodeURIComponent(name)}`, { method: 'DELETE' }),
-  // POST /api/v1/omp-agents/copy {source,name} → fork 内置/自定义/项目 agent 为自定义
-  copyAgent: (source, name) => request('/omp-agents/copy', { method: 'POST', body: { source, name } }),
-    hubOverview: async () => (await request('/hub/overview')) || null,
-    // 转发「用专家执行」到指定 hub 设备（server 模式 web 用）。
-    hubForwardRun: (device, payload) => request(`/hub/overview/${encodeURIComponent(device)}/run`, { method: 'POST', body: payload }),
-    // 查询转发任务的执行结果。
-    hubResult: (op) => request(`/hub/overview/result/${encodeURIComponent(op)}`),
-  // GET /api/v1/omp-skills → {skills:[{name,description,source}]}，供 autoloadSkills 勾选
-  listSkills: () => request('/omp-skills'),
-  // GET /api/v1/omp-tools → {tools:[{name,description}]}，供 tools 白名单勾选
-  listTools: () => request('/omp-tools'),
   // GET /api/v1/ompweb → {url, reachable}，控制台「ompweb」入口探测
   ompWeb: () => request('/ompweb'),
-  // POST /api/v1/omp-agents/{name}/run {message} → 用专家新建独立会话执行（SSE 流式）。
-  runExpert: (name, payload) => {
-    const headers = { 'Content-Type': 'application/json' }
-    const tk = getToken()
-    if (tk) headers.Authorization = `Bearer ${tk}`
-    return fetch(`${BASE}/omp-agents/${encodeURIComponent(name)}/run`, { method: 'POST', headers, body: JSON.stringify(payload) })
-  },
 }

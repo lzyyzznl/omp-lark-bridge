@@ -640,6 +640,34 @@ type AgentSessionCanceller interface {
 	CancelTurn() error
 }
 
+// SessionDriverStatus is the cross-client view of one session's driving state.
+// ompweb / APP read this through the management API to decide whether the
+// send button stays enabled, or only a stop button is offered.
+type SessionDriverStatus struct {
+	Phase  string // "idle" | "generating"
+	Owner  string // platform name currently driving the turn
+	Queued int    // messages waiting for the current turn to finish
+}
+
+// BusyPolicy selects what a caller does when the session is already busy.
+type BusyPolicy int
+
+const (
+	// BusyReject keeps the caller's send button disabled (web / APP).
+	BusyReject BusyPolicy = iota
+	// BusyQueue appends the message and auto-sends it after the turn (Feishu).
+	BusyQueue
+)
+
+// SessionDriver is the single arbitration point for cross-client session
+// driving. The Engine implements it over its in-memory interactive state;
+// a future unified host can substitute its own implementation.
+type SessionDriver interface {
+	SessionStatus(sessionKey string) SessionDriverStatus
+	SendPrompt(p Platform, msg *Message, policy BusyPolicy) bool
+	StopSession(sessionKey string) bool
+}
+
 // CommandProvider is an optional interface for agents that expose custom slash
 // commands via local files (e.g. .claude/commands/*.md). The engine scans the
 // returned directories for *.md files and registers them as slash commands.

@@ -15877,3 +15877,74 @@ func TestProcessInteractiveEvents_LongAnswerContinuesInNewCard(t *testing.T) {
 		t.Fatalf("continuation card should carry the remaining answer, got %q", sent[0])
 	}
 }
+
+// TestCmdCancelQueue_ClearsPendingMessages guards /cancelqueue: queued
+// messages must be dropped and the reply must report the cleared count.
+func TestCmdCancelQueue_ClearsPendingMessages(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := newTestEngine()
+	key := "test:user1"
+	state := &interactiveState{
+		pendingMessages: []queuedMessage{
+			{content: "a"}, {content: "b"},
+		},
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = state
+	e.interactiveMu.Unlock()
+
+	e.cmdCancelQueue(p, &Message{SessionKey: key, ReplyCtx: "ctx"})
+
+	state.mu.Lock()
+	n := len(state.pendingMessages)
+	state.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("pendingMessages after cancelqueue = %d, want 0", n)
+	}
+	sent := p.getSent()
+	if len(sent) == 0 || !strings.Contains(sent[len(sent)-1], "2") {
+		t.Fatalf("expected a cleared-count reply, got %v", sent)
+	}
+}
+
+func TestCmdCancelQueue_EmptyQueue(t *testing.T) {
+	p := &stubPlatformEngine{n: "test"}
+	e := newTestEngine()
+	key := "test:user1"
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = &interactiveState{}
+	e.interactiveMu.Unlock()
+
+	e.cmdCancelQueue(p, &Message{SessionKey: key, ReplyCtx: "ctx"})
+
+	sent := p.getSent()
+	if len(sent) != 1 || !strings.Contains(sent[0], "No queued messages") {
+		t.Fatalf("expected empty-queue reply, got %v", sent)
+	}
+}
+
+// TestSessionStatus_ReportsQueuedAndOwner guards the management API view used
+// by ompweb/APP to decide whether the send button stays enabled.
+func TestSessionStatus_ReportsQueuedAndOwner(t *testing.T) {
+	e := newTestEngine()
+	key := "test:user1"
+	plat := &stubPlatformEngine{n: "feishu"}
+	state := &interactiveState{
+		platform:        plat,
+		pendingMessages: []queuedMessage{{content: "q1"}},
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates[key] = state
+	e.interactiveMu.Unlock()
+
+	st := e.SessionStatus(key)
+	if st.Queued != 1 {
+		t.Fatalf("Queued = %d, want 1", st.Queued)
+	}
+	if st.Owner != "feishu" {
+		t.Fatalf("Owner = %q, want feishu", st.Owner)
+	}
+	if st.Phase != "idle" {
+		t.Fatalf("Phase = %q, want idle when no turn is locked", st.Phase)
+	}
+}

@@ -6,9 +6,8 @@ import CronTable from './components/CronTable.jsx'
 import JobDialog from './components/JobDialog.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
-import SessionsPage from './components/SessionsPage.jsx'
+import ProjectsPage from './components/ProjectsPage.jsx'
 import CronRunsPanel from './components/CronRunsPanel.jsx'
-import AgentsPage from './components/AgentsPage.jsx'
 import LoginScreen from './components/LoginScreen.jsx'
 import Toast from './components/Toast.jsx'
 export default function App() {
@@ -21,15 +20,14 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   const [busyId, setBusyId] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const TAB_IDS = ['cron', 'sessions', 'agents']
+  const TAB_IDS = ['cron', 'projects']
   const tabFromHash = () => {
     const h = window.location.hash.replace(/^#\/?/, '').split('?')[0]
-    // 项目管理页已并入会话库；旧书签落到会话库。
-    if (h === 'projects') return 'sessions'
+    // 会话查看 / agent 编辑已迁到 ompweb；旧书签落到项目页。
+    if (h === 'sessions' || h === 'agents') return 'projects'
     return TAB_IDS.includes(h) ? h : 'cron'
   }
-  const [tab, setTab] = useState(tabFromHash) // 'cron' | 'sessions' | 'agents'
-  const [sessionsId, setSessionsId] = useState('')  // 待定位的 transcript id
+  const [tab, setTab] = useState(tabFromHash) // 'cron' | 'projects'
   const [runsJob, setRunsJob] = useState(null)
 
   // URL hash 导航：刷新/前进后退都留在当前 tab（#/projects 等）
@@ -60,6 +58,20 @@ export default function App() {
       }
     } catch (e) {
       push('err', `ompweb 探测失败：${e.message || e}`)
+    }
+  }, [push])
+  // 执行记录里的「查看对话」：后端把该会话镜像进 omp 会话库，返回 ompweb 的
+  // 直达链接（?session=<id>），点开就是那条对话本身。
+  const openTranscriptInOmpweb = useCallback(async (id) => {
+    try {
+      const r = await api.transcriptOmpUrl(id)
+      if (!r?.url) {
+        push('err', '拿不到 ompweb 直达链接')
+        return
+      }
+      window.open(r.url, '_blank', 'noopener')
+    } catch (e) {
+      push('err', `打开 ompweb 失败：${e.message || e}`)
     }
   }, [push])
   const dismissToast = useCallback((key) => setToasts((ts) => ts.filter((x) => x.key !== key)), [])
@@ -140,8 +152,7 @@ export default function App() {
 
   const TABS = [
     { id: 'cron', label: '定时任务' },
-    { id: 'sessions', label: '会话查看' },
-    { id: 'agents', label: 'agent 人格' },
+    { id: 'projects', label: '项目管理' },
   ]
   const tabTitle = TABS.find((t) => t.id === tab)?.label || ''
 
@@ -166,7 +177,7 @@ export default function App() {
       </header>
       <nav className="tabs">
         {TABS.map((t) => (
-          <button key={t.id} className={`tab ${tab === t.id ? 'tab-on' : ''}`} onClick={() => { setTab(t.id); window.location.hash = '/' + t.id; if (t.id === 'sessions') setSessionsId('') }}>
+          <button key={t.id} className={`tab ${tab === t.id ? 'tab-on' : ''}`} onClick={() => { setTab(t.id); window.location.hash = '/' + t.id }}>
             {t.label}
           </button>
         ))}
@@ -220,7 +231,7 @@ export default function App() {
                 onEdit={(job) => setDialog({ mode: 'edit', job })}
                 onDelete={(job) => setConfDel(job)}
                 onOpenRuns={(job) => setRunsJob(job)}
-                onViewSession={(id) => { setSessionsId(id); setTab('sessions'); window.location.hash = '/sessions' }}
+                onViewSession={(id) => openTranscriptInOmpweb(id)}
               />
             )}
           </>
@@ -228,9 +239,8 @@ export default function App() {
       </div>
       )}
 
-      {tab === 'sessions' && <SessionsPage initialTx={sessionsId} onToast={push} />}
+      {tab === 'projects' && <ProjectsPage onToast={push} />}
 
-      {tab === 'agents' && <AgentsPage onToast={push} />}
 
       <JobDialog
         open={!!dialog}
@@ -255,7 +265,7 @@ export default function App() {
         job={runsJob}
         onClose={() => setRunsJob(null)}
         onToast={push}
-        onViewTx={(id) => { setSessionsId(id); setTab('sessions'); window.location.hash = '/sessions' }}
+        onViewTx={(id) => openTranscriptInOmpweb(id)}
       />
 
       <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} onSave={saveSettings} />

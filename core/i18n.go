@@ -183,6 +183,8 @@ const (
 	MsgPreviousProcessing        MsgKey = "previous_processing"
 	MsgQueueFull                 MsgKey = "queue_full"
 	MsgMessageQueued             MsgKey = "message_queued"
+	MsgQueueCleared              MsgKey = "queue_cleared"
+	MsgQueueEmpty                MsgKey = "queue_empty"
 	MsgNoToolsAllowed            MsgKey = "no_tools_allowed"
 	MsgCurrentTools              MsgKey = "current_tools"
 	MsgCurrentSession            MsgKey = "current_session"
@@ -765,11 +767,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "⏳ La solicitud anterior aún se está procesando. Use `/ps <mensaje>` para enviar un P.S. a la tarea en curso.",
 	},
 	MsgMessageQueued: {
-		LangEnglish:            "📬 Message received — will process after the current task finishes.",
-		LangChinese:            "📬 消息已收到，将在当前任务完成后处理。",
-		LangTraditionalChinese: "📬 訊息已收到，將在目前任務完成後處理。",
-		LangJapanese:           "📬 メッセージを受信しました。現在のタスク完了後に処理します。",
-		LangSpanish:            "📬 Mensaje recibido — se procesará después de que termine la tarea actual.",
+		LangEnglish:            "📬 Session is busy — your message is queued and will be sent automatically after the current turn finishes.",
+		LangChinese:            "📬 正在对话中，消息已排队，本轮结束后会自动追加发送。",
+		LangTraditionalChinese: "📬 正在對話中，訊息已排隊，本輪結束後會自動追加傳送。",
+		LangJapanese:           "📬 会話中です。メッセージはキューに追加され、現在のターン終了後に自動で送信されます。",
+		LangSpanish:            "📬 Sesión ocupada — tu mensaje está en cola y se enviará automáticamente al terminar el turno actual.",
 	},
 	MsgQueueFull: {
 		LangEnglish:            "📬 Message queue is full (%d pending). Please wait for current tasks to complete.",
@@ -777,6 +779,20 @@ var messages = map[MsgKey]map[Language]string{
 		LangTraditionalChinese: "📬 訊息佇列已滿（%d 則待處理）。請等待目前任務完成。",
 		LangJapanese:           "📬 メッセージキューが満杯です（%d 件待ち）。現在のタスク完了をお待ちください。",
 		LangSpanish:            "📬 La cola de mensajes está llena (%d pendientes). Espere a que las tareas actuales se completen.",
+	},
+	MsgQueueCleared: {
+		LangEnglish:            "🗑 Cleared %d queued message(s).",
+		LangChinese:            "🗑 已清空 %d 条排队消息。",
+		LangTraditionalChinese: "🗑 已清空 %d 則排隊訊息。",
+		LangJapanese:           "🗑 キュー内のメッセージを %d 件クリアしました。",
+		LangSpanish:            "🗑 Se eliminaron %d mensaje(s) en cola.",
+	},
+	MsgQueueEmpty: {
+		LangEnglish:            "No queued messages.",
+		LangChinese:            "没有排队中的消息。",
+		LangTraditionalChinese: "沒有排隊中的訊息。",
+		LangJapanese:           "キューにメッセージはありません。",
+		LangSpanish:            "No hay mensajes en cola.",
 	},
 	MsgNoToolsAllowed: {
 		LangEnglish:            "No tools pre-allowed.\nUsage: `/allow <tool_name>`\nExample: `/allow Bash`",

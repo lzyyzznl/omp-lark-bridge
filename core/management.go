@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -1443,13 +1444,20 @@ func (m *ManagementServer) handleProjectSessions(w http.ResponseWriter, r *http.
 	switch r.Method {
 	case http.MethodGet:
 		activeKeys := make(map[string]string) // sessionKey → platform
+		queuedByKey := make(map[string]int)   // sessionKey → pending queue depth
 		e.interactiveMu.Lock()
 		for key, state := range e.interactiveStates {
+			if state == nil {
+				continue
+			}
 			pName := ""
 			if state.platform != nil {
 				pName = state.platform.Name()
 			}
 			activeKeys[key] = pName
+			state.mu.Lock()
+			queuedByKey[key] = len(state.pendingMessages)
+			state.mu.Unlock()
 		}
 		e.interactiveMu.Unlock()
 
@@ -1488,6 +1496,8 @@ func (m *ManagementServer) handleProjectSessions(w http.ResponseWriter, r *http.
 			sessionKey := idToKey[s.ID]
 			_, live := activeKeys[sessionKey]
 			info["live"] = live
+			info["busy"] = s.Busy()
+			info["queued"] = queuedByKey[sessionKey]
 			if p, ok := activeKeys[sessionKey]; ok {
 				info["platform"] = p
 			} else if len(sessionKey) > 0 {
@@ -2582,6 +2592,10 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 	// 其它含斜杠或非 POST 的 rest 一律交给 readTranscript 走原 400 校验，
 	// 不改变既有路径穿越拒绝行为。
 	id, action, hasAction := strings.Cut(rest, "/")
+	if hasAction && action == "ompiweb" && r.Method == http.MethodGet {
+		m.transcriptOmpWeb(w, dir, id)
+		return
+	}
 	if hasAction && action == "chat" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
 		m.chatWithTranscript(w, r, e, dir, id)
 		return
@@ -2865,6 +2879,20 @@ func (m *ManagementServer) transcriptItems(dir string, query string) []map[strin
 //	POST   /api/v1/transcripts/run        （立即按当前设置执行一次自动归档）
 func (m *ManagementServer) handleTranscriptLibrary(w http.ResponseWriter, r *http.Request) {
 	sub := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/transcripts"), "/")
+	// <id>/ompiweb：把该会话镜像进 omp 的会话库后返回 ompweb 直达链接。
+	if id, ok := strings.CutSuffix(sub, "/ompiweb"); ok && id != "" && !strings.Contains(id, "/") {
+		if r.Method != http.MethodGet {
+			mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+			return
+		}
+		dir := m.transcriptDir()
+		if dir == "" {
+			mgmtError(w, http.StatusNotFound, "no session directory available yet")
+			return
+		}
+		m.transcriptOmpWeb(w, dir, id)
+		return
+	}
 	switch sub {
 	case "":
 		if r.Method != http.MethodGet {
@@ -3868,10 +3896,7 @@ func (m *ManagementServer) handleOmpWeb(w http.ResponseWriter, r *http.Request) 
 		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	url := strings.TrimRight(strings.TrimSpace(os.Getenv("OMPWEB_URL")), "/")
-	if url == "" {
-		url = "http://127.0.0.1:30177"
-	}
+	url := ompWebBase()
 	ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
 	defer cancel()
 	reachable := false
@@ -3882,6 +3907,126 @@ func (m *ManagementServer) handleOmpWeb(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{"url": url, "reachable": reachable})
+}
+
+// ompWebBase is ompweb's address: OMPWEB_URL overrides ompweb's default port.
+func ompWebBase() string {
+	url := strings.TrimRight(strings.TrimSpace(os.Getenv("OMPWEB_URL")), "/")
+	if url == "" {
+		url = "http://127.0.0.1:30177"
+	}
+	return url
+}
+
+// ompSessionsMirrorDir is omp's own session store (the one ompweb enumerates,
+// see lib/omp/paths.ts) with a project dir for mirrored OLB transcripts.
+// ompweb reads <agent dir>/sessions/<project>/*.jsonl, one level deep, so the
+// mirror needs exactly this depth.
+func ompSessionsMirrorDir() string {
+	if dir := strings.TrimSpace(os.Getenv("PI_CODING_AGENT_DIR")); dir != "" {
+		return filepath.Join(dir, "sessions", "omp-lark-bridge")
+	}
+	cfg := strings.TrimSpace(os.Getenv("PI_CONFIG_DIR"))
+	if cfg == "" {
+		cfg = ".omp"
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, cfg, "agent", "sessions", "omp-lark-bridge")
+}
+
+// sessionHeaderID returns the omp session id recorded in a transcript's header
+// line (a leading `title` slot may precede it), which is also ompweb's id.
+func sessionHeaderID(path string) string {
+	f, err := os.Open(path)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64*1024), 1024*1024)
+	for i := 0; i < 8 && sc.Scan(); i++ {
+		var ev struct {
+			Type string `json:"type"`
+			ID   string `json:"id"`
+		}
+		if json.Unmarshal(sc.Bytes(), &ev) != nil {
+			continue
+		}
+		if ev.Type == "session" && ev.ID != "" {
+			return ev.ID
+		}
+	}
+	return ""
+}
+
+// copyFileAtomic writes src to dst through a temp file so a reader never sees a
+// half-copied transcript.
+func copyFileAtomic(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".mirror-*")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+	if _, err := io.Copy(tmp, in); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, dst)
+}
+
+// transcriptOmpWeb mirrors one transcript into omp's own sessions store and
+// returns the ompweb URL that opens it. ompweb can only open sessions it finds
+// under its sessions dir, while OLB keeps transcripts under the data dir, so the
+// file is copied on demand. The copy is the viewer's own file: continuing the
+// chat in ompweb writes the copy, never OLB's original.
+func (m *ManagementServer) transcriptOmpWeb(w http.ResponseWriter, dir, id string) {
+	if id == "" || filepath.Base(id) != id {
+		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
+		return
+	}
+	src := filepath.Join(dir, id+".jsonl")
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		mgmtError(w, http.StatusNotFound, "transcript not found")
+		return
+	}
+	sid := sessionHeaderID(src)
+	if sid == "" {
+		mgmtError(w, http.StatusUnprocessableEntity, "transcript has no session header")
+		return
+	}
+	mirror := ompSessionsMirrorDir()
+	if mirror == "" {
+		mgmtError(w, http.StatusInternalServerError, "cannot resolve omp sessions dir")
+		return
+	}
+	if err := os.MkdirAll(mirror, 0o755); err != nil {
+		mgmtError(w, http.StatusInternalServerError, "create mirror dir: "+err.Error())
+		return
+	}
+	dst := filepath.Join(mirror, sid+".jsonl")
+	if dstInfo, err := os.Stat(dst); err != nil || dstInfo.ModTime().Before(srcInfo.ModTime()) {
+		if err := copyFileAtomic(src, dst); err != nil {
+			mgmtError(w, http.StatusInternalServerError, "mirror transcript: "+err.Error())
+			return
+		}
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{
+		"url":     ompWebBase() + "/?session=" + url.QueryEscape(sid),
+		"session": sid,
+	})
 }
 
 // handleOmpSkills serves the skill catalog the default engine's omp resolves

@@ -6600,6 +6600,7 @@ var builtinCommands = []struct {
 	{[]string{"web"}, "web"},
 	{[]string{"diff"}, "diff"},
 	{[]string{"ps", "btw"}, "ps"},
+	{[]string{"cancelqueue", "clearqueue"}, "cancelqueue"},
 }
 
 func (e *Engine) cmdPs(p Platform, msg *Message, args []string) {
@@ -6792,6 +6793,8 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 		e.cmdStop(p, msg)
 	case "cancel":
 		e.cmdCancel(p, msg)
+	case "cancelqueue":
+		e.cmdCancelQueue(p, msg)
 	case "help":
 		e.cmdHelp(p, msg)
 	case "start":
@@ -9552,6 +9555,7 @@ func helpCardGroups() []helpCardGroup {
 				{command: "/compress", action: "cmd:/compress"},
 				{command: "/stop", action: "act:/stop"},
 				{command: "/ps", action: "cmd:/ps"},
+				{command: "/cancelqueue", action: "cmd:/cancelqueue"},
 			},
 		},
 		{
@@ -10299,6 +10303,70 @@ func (e *Engine) cmdCancel(p Platform, msg *Message) {
 
 	e.reply(p, msg.ReplyCtx, e.i18n.T(MsgSessionCancelled))
 }
+
+// cmdCancelQueue drops messages queued while the current turn is running.
+func (e *Engine) cmdCancelQueue(p Platform, msg *Message) {
+	interactiveKey := e.interactiveKeyForSessionKey(msg.SessionKey)
+	e.interactiveMu.Lock()
+	state, ok := e.interactiveStates[interactiveKey]
+	e.interactiveMu.Unlock()
+	if !ok || state == nil {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQueueEmpty))
+		return
+	}
+	state.mu.Lock()
+	n := len(state.pendingMessages)
+	state.pendingMessages = nil
+	state.mu.Unlock()
+	if n == 0 {
+		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgQueueEmpty))
+		return
+	}
+	e.reply(p, msg.ReplyCtx, e.i18n.Tf(MsgQueueCleared, n))
+}
+
+// SessionStatus implements SessionDriver: exposes the in-memory driving state
+// for the management API without touching the running turn.
+func (e *Engine) SessionStatus(sessionKey string) SessionDriverStatus {
+	st := SessionDriverStatus{Phase: "idle"}
+	if sessionKey == "" {
+		return st
+	}
+	if s := e.sessions.GetOrCreateActive(sessionKey); s != nil && s.Busy() {
+		st.Phase = "generating"
+	}
+	interactiveKey := e.interactiveKeyForSessionKey(sessionKey)
+	e.interactiveMu.Lock()
+	state, ok := e.interactiveStates[interactiveKey]
+	e.interactiveMu.Unlock()
+	if !ok || state == nil {
+		return st
+	}
+	state.mu.Lock()
+	st.Queued = len(state.pendingMessages)
+	if state.platform != nil {
+		st.Owner = state.platform.Name()
+	}
+	state.mu.Unlock()
+	return st
+}
+
+// SendPrompt implements SessionDriver: BusyQueue appends the message to the
+// running turn, BusyReject tells the caller to keep waiting.
+func (e *Engine) SendPrompt(p Platform, msg *Message, policy BusyPolicy) bool {
+	if policy != BusyQueue {
+		return false
+	}
+	return e.queueMessageForBusySession(p, msg, e.interactiveKeyForSessionKey(msg.SessionKey))
+}
+
+// StopSession implements SessionDriver: stop the live turn only, keeping the
+// stored session so the next message can resume it (same as /stop).
+func (e *Engine) StopSession(sessionKey string) bool {
+	return e.stopInteractiveSessionSilently(sessionKey)
+}
+
+var _ SessionDriver = (*Engine)(nil)
 
 func (e *Engine) stopInteractiveSession(sessionKey string, quietPlatform Platform, quietReplyCtx any) bool {
 	return e.stopInteractiveSessionWithOptions(sessionKey, true)

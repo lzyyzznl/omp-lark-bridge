@@ -37,6 +37,10 @@ flowchart LR
     B <-->|JSONL RPC v1<br/>每聊天一会话 · 可恢复| O[omp --mode rpc-ui<br/>yolo 全权限]
 ```
 
+
+> **首次安装？** 看 [INSTALL.md](./INSTALL.md)——面向 agent 的分步手册：跨
+> Linux/macOS/Windows 的编译、扫码、daemon 自启，以及大陆网络镜像、
+
 ## 快速开始
 
 ```bash

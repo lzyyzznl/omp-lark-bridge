@@ -169,6 +169,22 @@ p { margin: 0; }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .btn-sm { padding: 3px 9px; font-size: 12px; box-shadow: none; border-radius: 6px; }
 
+/* ompweb 是控制台的主力出口（会话 / 专家 / 技能都在里面），做成主按钮，
+   点击区比 ghost 按钮大一圈，右上角不好点的问题就没了。 */
+.btn-ompweb {
+  padding: 10px 20px;
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--bg);
+  background: var(--ink);
+  border-color: transparent;
+  border-radius: var(--radius);
+  box-shadow: 0 1px 2px rgba(43, 40, 35, 0.22);
+}
+.btn-ompweb:hover:not(:disabled) { background: var(--accent); box-shadow: 0 2px 6px rgba(176, 62, 34, 0.32); }
+.btn-ompweb .ompweb-arrow { margin-left: 6px; font-size: 1.15em; line-height: 1; }
+
 /* ── 主表格 ── */
 .toolbar {
   display: flex;

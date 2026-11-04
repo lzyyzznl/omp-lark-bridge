@@ -168,7 +168,9 @@ export default function App() {
         <div className="masthead-right">
           <span className="sub">同步 {lastSync ? formatTime(lastSync) : '—'}</span>
           <button className="btn btn-ghost" onClick={() => reload()}>刷新</button>
-          <button className="btn btn-ghost" onClick={openOmpWeb} title="打开 ompweb（omp 的网页工作台）">ompweb ↗</button>
+          <button className="btn btn-ompweb" onClick={openOmpWeb} title="打开 ompweb（omp 的网页工作台：会话、专家、技能）">
+            OMP Web 工作台 <span className="ompweb-arrow">↗</span>
+          </button>
           <button className="btn btn-ghost" onClick={() => setSettingsOpen(true)}>设置</button>
           {!loading && jobs.length > 0 && (
             <button className="btn btn-green" onClick={() => setDialog({ mode: 'new' })}>+ 新建任务</button>

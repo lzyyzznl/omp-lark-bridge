@@ -99,14 +99,6 @@ level = "info" # debug, info, warn, error
 [[projects]]
 name = "my-project"
 
-# admin_from controls who can run privileged commands (/dir, /shell, /restart,
-# /upgrade, /commands addexec, /cron addexec). Not set = blocked for all.
-# admin_from 控制谁能执行特权命令。未设置 = 全部禁止。
-# ⚠️ admin_from = "*" grants ALL allowed users full shell access to the host.
-# 仅在个人单用户部署中使用。
-# 💡 Send /whoami to the bot to get your User ID.
-# admin_from = "*"
-
 [projects.agent]
 type = "omp"
 

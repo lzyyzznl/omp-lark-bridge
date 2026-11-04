@@ -2216,22 +2216,6 @@ func TestMgmt_ProjectPatch_DisabledCommands(t *testing.T) {
 	}
 }
 
-func TestMgmt_ProjectPatch_AdminFrom(t *testing.T) {
-	_, ts, e := testManagementServer(t, "tok")
-	r := mgmtPatch(t, ts.URL+"/api/v1/projects/test-project", "tok", map[string]any{
-		"admin_from": "user123",
-	})
-	if !r.OK {
-		t.Fatalf("patch admin_from failed: %s", r.Error)
-	}
-	e.userRolesMu.RLock()
-	got := e.adminFrom
-	e.userRolesMu.RUnlock()
-	if got != "user123" {
-		t.Fatalf("adminFrom = %q, want user123", got)
-	}
-}
-
 func TestMgmt_ProjectPatch_Language(t *testing.T) {
 	_, ts, e := testManagementServer(t, "tok")
 	for _, lang := range []string{"zh", "ja", "es", "zh-TW", "en"} {

@@ -195,9 +195,6 @@ func runProjectShow(args []string) {
 	if m, _ := proj.Agent.Options["model"].(string); m != "" {
 		fmt.Printf("model:         %s\n", m)
 	}
-	if proj.AdminFrom != "" {
-		fmt.Printf("admin_from:    %s\n", proj.AdminFrom)
-	}
 	if len(proj.DisabledCommands) > 0 {
 		fmt.Printf("disabled_cmds: %s\n", strings.Join(proj.DisabledCommands, ", "))
 	}
@@ -223,7 +220,6 @@ func runProjectSet(args []string) {
 	configFile := fs.String("config", "", "path to config file")
 	workDir := fs.String("work-dir", "", "new agent work dir (empty string clears it)")
 	model := fs.String("model", "", "default model")
-	adminFrom := fs.String("admin-from", "", "admin user id(s), comma separated or *")
 	allowFrom := fs.String("allow-from", "", "allowed user id(s), applied to all feishu platforms")
 	disabledCmds := fs.String("disabled-commands", "", "disabled commands, comma separated")
 	// Go's flag stops at the first non-flag arg, so the positional <name> must
@@ -242,16 +238,13 @@ func runProjectSet(args []string) {
 	set := map[string]bool{}
 	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
 	if len(set) == 0 {
-		fmt.Fprintln(os.Stderr, "Error: no options given (--work-dir / --model / --admin-from / --allow-from / --disabled-commands)")
+		fmt.Fprintln(os.Stderr, "Error: no options given (--work-dir / --model / --allow-from / --disabled-commands)")
 		os.Exit(1)
 	}
 
 	update := config.ProjectSettingsUpdate{}
 	if set["work-dir"] {
 		update.WorkDir = workDir
-	}
-	if set["admin-from"] {
-		update.AdminFrom = adminFrom
 	}
 	if set["disabled-commands"] {
 		parts := splitCSV(*disabledCmds)

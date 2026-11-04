@@ -1492,9 +1492,6 @@ func TestCUJ_D2_DisabledCommandRefused(t *testing.T) {
 
 // CUJ-D3 · admin_from grants privileged-command access — admin gating is
 // also at the per-platform mapping; integration tests cover this path.
-func TestCUJ_D3_AdminFromLinkedToIntegration(t *testing.T) {
-	t.Log("CUJ-D3: covered by release-gate TestCC_SAFETY_02_disabled_commands (admin-only commands path) + AdminFrom config validation")
-}
 
 // CUJ-D4 · banned_words: message containing a banned word is dropped before
 // reaching the agent.

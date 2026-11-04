@@ -117,7 +117,7 @@ export const api = {
 
   // GET /api/v1/projects/{name} → 项目详情（work_dir/settings/platform_configs...）
   getProject: (project) => request(`/projects/${encodeURIComponent(project)}`),
-  // PATCH /api/v1/projects/{name} {field:value,...} → 改项目参数（work_dir/model/admin_from/...）
+  // PATCH /api/v1/projects/{name} {field:value,...} → 改项目参数（work_dir/model/disabled_commands/...）
   patchProject: (project, fields) => request(`/projects/${encodeURIComponent(project)}`, { method: 'PATCH', body: fields }),
   // DELETE /api/v1/projects/{name} → 移除项目
   delProject: (project) => request(`/projects/${encodeURIComponent(project)}`, { method: 'DELETE' }),

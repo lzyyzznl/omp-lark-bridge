@@ -538,7 +538,6 @@ const (
 
 	MsgBannedWordBlocked MsgKey = "banned_word_blocked"
 	MsgCommandDisabled   MsgKey = "command_disabled"
-	MsgAdminRequired     MsgKey = "admin_required"
 	MsgRateLimited       MsgKey = "rate_limited"
 	MsgRetryNothing      MsgKey = "retry_nothing"
 	MsgPsSent            MsgKey = "ps_sent"
@@ -1041,7 +1040,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/restart\n  Restart omp-lark-bridge service\n\n" +
 			"/status\n  Show system status\n\n" +
 			"/version\n  Show omp-lark-bridge version\n\n" +
-			"/whoami\n  Show your User ID (for allow_from / admin_from)\n\n" +
+			"/whoami\n  Show your User ID (for allow_from)\n\n" +
 			"/help\n  Show this help\n\n" +
 			"Tip: Commands support prefix matching, e.g. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
 			"Custom commands: define via `/commands add` or `[[commands]]` in config.toml.\n\n" +
@@ -1084,7 +1083,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/restart\n  重启 omp-lark-bridge 服务\n\n" +
 			"/status\n  查看系统状态\n\n" +
 			"/version\n  查看 omp-lark-bridge 版本\n\n" +
-			"/whoami\n  查看你的 User ID（用于 allow_from / admin_from 配置）\n\n" +
+			"/whoami\n  查看你的 User ID（用于 allow_from 配置）\n\n" +
 			"/help\n  显示此帮助\n\n" +
 			"提示：命令支持前缀匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
 			"自定义命令：通过 `/commands add` 添加，或在 config.toml 中配置 `[[commands]]`。\n\n" +
@@ -1126,7 +1125,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/restart\n  重啟 omp-lark-bridge 服務\n\n" +
 			"/status\n  查看系統狀態\n\n" +
 			"/version\n  查看 omp-lark-bridge 版本\n\n" +
-			"/whoami\n  查看你的 User ID（用於 allow_from / admin_from 設定）\n\n" +
+			"/whoami\n  查看你的 User ID（用於 allow_from 設定）\n\n" +
 			"/help\n  顯示此說明\n\n" +
 			"提示：命令支持前綴匹配，如 `/pro l` = `/provider list`，`/sw 2` = `/switch 2`。\n\n" +
 			"自訂命令：透過 `/commands add` 新增，或在 config.toml 中配置 `[[commands]]`。\n\n" +
@@ -1167,7 +1166,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/restart\n  omp-lark-bridge サービスを再起動\n\n" +
 			"/status\n  システム状態を表示\n\n" +
 			"/version\n  omp-lark-bridge のバージョンを表示\n\n" +
-			"/whoami\n  あなたの User ID を表示（allow_from / admin_from 設定用）\n\n" +
+			"/whoami\n  あなたの User ID を表示（allow_from 設定用）\n\n" +
 			"/help\n  このヘルプを表示\n\n" +
 			"ヒント：コマンドはプレフィックスマッチに対応しています。例: `/pro l` = `/provider list`、`/sw 2` = `/switch 2`。\n\n" +
 			"カスタムコマンド: `/commands add` または config.toml の `[[commands]]` で定義。\n\n" +
@@ -1208,7 +1207,7 @@ var messages = map[MsgKey]map[Language]string{
 			"/restart\n  Reiniciar el servicio omp-lark-bridge\n\n" +
 			"/status\n  Mostrar estado del sistema\n\n" +
 			"/version\n  Mostrar versión de omp-lark-bridge\n\n" +
-			"/whoami\n  Mostrar tu User ID (para allow_from / admin_from)\n\n" +
+			"/whoami\n  Mostrar tu User ID (para allow_from)\n\n" +
 			"/help\n  Mostrar esta ayuda\n\n" +
 			"Consejo: Los comandos admiten coincidencia por prefijo, ej. `/pro l` = `/provider list`, `/sw 2` = `/switch 2`.\n\n" +
 			"Comandos personalizados: use `/commands add` o defina `[[commands]]` en config.toml.\n\n" +
@@ -3481,13 +3480,6 @@ var messages = map[MsgKey]map[Language]string{
 		LangJapanese:           "`/cron list` または `/timer list` で確認・停止・削除できます。",
 		LangSpanish:            "Abre `/cron list` o `/timer list` para revisarla, desactivarla o borrarla.",
 	},
-	MsgAdminRequired: {
-		LangEnglish:            "🔒 Command `%s` requires admin privilege. Set `admin_from` in config to authorize users.",
-		LangChinese:            "🔒 命令 `%s` 需要管理员权限。请在配置中设置 `admin_from` 来授权用户。",
-		LangTraditionalChinese: "🔒 命令 `%s` 需要管理員權限。請在配置中設定 `admin_from` 來授權使用者。",
-		LangJapanese:           "🔒 コマンド `%s` には管理者権限が必要です。設定で `admin_from` を設定してユーザーを承認してください。",
-		LangSpanish:            "🔒 El comando `%s` requiere privilegios de administrador. Configure `admin_from` en la configuración.",
-	},
 	MsgRateLimited: {
 		LangEnglish:            "⏳ You are sending messages too fast. Please wait a moment.",
 		LangChinese:            "⏳ 消息发送过快，请稍后再试。",
@@ -3552,11 +3544,11 @@ var messages = map[MsgKey]map[Language]string{
 		LangSpanish:            "Plataforma",
 	},
 	MsgWhoamiUsage: {
-		LangEnglish:            "💡 Use the `User ID` above for `allow_from` and `admin_from` in your `config.toml`.",
-		LangChinese:            "💡 可将上方 `User ID` 填入 `config.toml` 的 `allow_from` 或 `admin_from` 中。",
-		LangTraditionalChinese: "💡 可將上方 `User ID` 填入 `config.toml` 的 `allow_from` 或 `admin_from` 中。",
-		LangJapanese:           "💡 上記の `User ID` を `config.toml` の `allow_from` や `admin_from` に設定してください。",
-		LangSpanish:            "💡 Usa el `User ID` de arriba para `allow_from` y `admin_from` en tu `config.toml`.",
+		LangEnglish:            "💡 Use the `User ID` above for `allow_from` in your `config.toml`.",
+		LangChinese:            "💡 可将上方 `User ID` 填入 `config.toml` 的 `allow_from` 中。",
+		LangTraditionalChinese: "💡 可將上方 `User ID` 填入 `config.toml` 的 `allow_from` 中。",
+		LangJapanese:           "💡 上記の `User ID` を `config.toml` の `allow_from` に設定してください。",
+		LangSpanish:            "💡 Usa el `User ID` de arriba para `allow_from` en tu `config.toml`.",
 	},
 	MsgRelayNoBinding: {
 		LangEnglish: "No relay binding in this chat.\nUse `/bind <project>` to bind another bot.\nThe <project> is the project name from your config.toml.",

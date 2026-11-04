@@ -247,7 +247,6 @@ func printAllowFromGuidance(appID, appSecret, ownerOpenID string, result *config
 		fmt.Println("💡 allow_from 未设置（所有用户均可使用）。如需限制访问，请：")
 		fmt.Println("   1. 向机器人发送 /whoami 获取你的 User ID")
 		fmt.Println("   2. 在 config.toml 中设置: allow_from = \"<你的User ID>\"")
-		fmt.Println("   同样，admin_from 也可用 /whoami 获取的 ID 来设置。")
 		fmt.Println()
 	}
 }

@@ -2714,138 +2714,6 @@ func TestEngine_DisabledCommandsWildcard(t *testing.T) {
 
 // --- admin_from tests ---
 
-func TestEngine_AdminFrom_DenyByDefault(t *testing.T) {
-	e := newTestEngine()
-	p := &stubPlatformEngine{n: "test"}
-
-	msg := &Message{SessionKey: "test:u1", UserID: "user1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/shell echo hi")
-
-	if len(p.sent) != 1 {
-		t.Fatalf("expected 1 reply, got %d", len(p.sent))
-	}
-	if !strings.Contains(p.sent[0], "admin") {
-		t.Errorf("expected admin required message, got: %s", p.sent[0])
-	}
-}
-
-func TestEngine_AdminFrom_ExplicitUser(t *testing.T) {
-	e := newTestEngine()
-	e.SetAdminFrom("admin1,admin2")
-	p := &stubPlatformEngine{n: "test"}
-
-	if !e.isAdmin("admin1") {
-		t.Error("admin1 should be admin")
-	}
-	if !e.isAdmin("admin2") {
-		t.Error("admin2 should be admin")
-	}
-	if e.isAdmin("user3") {
-		t.Error("user3 should not be admin")
-	}
-
-	// non-admin user tries /shell
-	msg := &Message{SessionKey: "test:u3", UserID: "user3", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/shell echo hi")
-	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "admin") {
-		t.Errorf("non-admin should be blocked from /shell, got: %v", p.sent)
-	}
-}
-
-func TestEngine_AdminFrom_Wildcard(t *testing.T) {
-	e := newTestEngine()
-	e.SetAdminFrom("*")
-
-	if !e.isAdmin("anyone") {
-		t.Error("wildcard admin_from should allow any user")
-	}
-	if !e.isAdmin("12345") {
-		t.Error("wildcard admin_from should allow any user ID")
-	}
-}
-
-func TestEngine_AdminFrom_GatesRestart(t *testing.T) {
-	e := newTestEngine()
-	p := &stubPlatformEngine{n: "test"}
-
-	msg := &Message{SessionKey: "test:u1", UserID: "user1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/restart")
-
-	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "admin") {
-		t.Errorf("non-admin should be blocked from /restart, got: %v", p.sent)
-	}
-}
-
-func TestEngine_AdminFrom_GatesUpgrade(t *testing.T) {
-	e := newTestEngine()
-	p := &stubPlatformEngine{n: "test"}
-
-	msg := &Message{SessionKey: "test:u1", UserID: "user1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/upgrade")
-
-	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "admin") {
-		t.Errorf("non-admin should be blocked from /upgrade, got: %v", p.sent)
-	}
-}
-
-func TestEngine_AdminFrom_AllowsNonPrivileged(t *testing.T) {
-	e := newTestEngine()
-	p := &stubPlatformEngine{n: "test"}
-
-	msg := &Message{SessionKey: "test:u1", UserID: "user1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/help")
-
-	if len(p.sent) == 0 {
-		t.Fatal("expected /help to produce a reply")
-	}
-	if strings.Contains(p.sent[0], "requires admin") {
-		t.Errorf("/help should not require admin, got: %s", p.sent[0])
-	}
-}
-
-func TestEngine_AdminFrom_GatesCommandsAddExec(t *testing.T) {
-	e := newTestEngine()
-	p := &stubPlatformEngine{n: "test"}
-
-	msg := &Message{SessionKey: "test:u1", UserID: "user1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/commands addexec mysh echo hello")
-
-	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "admin") {
-		t.Errorf("non-admin should be blocked from /commands addexec, got: %v", p.sent)
-	}
-}
-
-func TestEngine_AdminFrom_GatesCustomExecCommand(t *testing.T) {
-	e := newTestEngine()
-	e.commands.Add("deploy", "", "", "echo deploying", "", "config")
-	p := &stubPlatformEngine{n: "test"}
-
-	msg := &Message{SessionKey: "test:u1", UserID: "user1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/deploy")
-
-	if len(p.sent) != 1 || !strings.Contains(p.sent[0], "admin") {
-		t.Errorf("non-admin should be blocked from custom exec command, got: %v", p.sent)
-	}
-}
-
-func TestEngine_AdminFrom_AdminCanRunShell(t *testing.T) {
-	e := newTestEngine()
-	e.SetAdminFrom("admin1")
-	p := &stubPlatformEngine{n: "test"}
-
-	msg := &Message{SessionKey: "test:a1", UserID: "admin1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/shell echo hello")
-
-	// Shell runs async in a goroutine; wait for it to complete.
-	time.Sleep(500 * time.Millisecond)
-
-	for _, s := range p.getSent() {
-		if strings.Contains(s, "admin") {
-			t.Errorf("admin user should not be blocked, got: %s", s)
-		}
-	}
-}
-
 // --- role-based ACL tests ---
 
 func TestEngine_RoleBasedACL_AdminCanRunAll(t *testing.T) {
@@ -5141,7 +5009,6 @@ func TestCmdDir_AliasCdStillWorks(t *testing.T) {
 	}
 	agent := &stubWorkDirAgent{workDir: tempDir}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin1")
 
 	e.handleCommand(p, &Message{SessionKey: "test:user1", UserID: "admin1", ReplyCtx: "ctx"}, "/cd next")
 
@@ -5430,26 +5297,6 @@ func TestCmdDir_ExpandsTilde(t *testing.T) {
 		if agent.workDir != tc.wantDir {
 			t.Errorf("input %q: workDir = %q, want %q", tc.input, agent.workDir, tc.wantDir)
 		}
-	}
-}
-
-func TestEngine_AdminFrom_GatesDir(t *testing.T) {
-	p := &stubPlatformEngine{n: "test"}
-	tempDir := t.TempDir()
-	agent := &stubWorkDirAgent{workDir: tempDir}
-	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-
-	msg := &Message{SessionKey: "test:u1", UserID: "user1", ReplyCtx: "ctx"}
-	e.handleCommand(p, msg, "/dir .")
-
-	if len(p.sent) != 1 {
-		t.Fatalf("expected 1 reply, got %d", len(p.sent))
-	}
-	if !strings.Contains(strings.ToLower(p.sent[0]), "admin") {
-		t.Fatalf("expected admin required message, got: %s", p.sent[0])
-	}
-	if agent.workDir != tempDir {
-		t.Fatalf("workDir = %q, want unchanged %q", agent.workDir, tempDir)
 	}
 }
 
@@ -5988,7 +5835,6 @@ func TestCmdDiff_RejectsDashTarget(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
 	msg := &Message{SessionKey: "test:user1", ReplyCtx: "ctx", UserID: "admin1"}
-	e.SetAdminFrom("admin1")
 
 	e.handleCommand(p, msg, "/diff --output=/tmp/evil")
 
@@ -8138,46 +7984,6 @@ func TestCmdCronExec_TriggersJob(t *testing.T) {
 			}
 			t.Fatalf("timed out waiting for run output, sent=%v", platform.getSent())
 		})
-	}
-}
-
-func TestCmdCronExec_BlocksShellJobForNonAdmin(t *testing.T) {
-	store, err := NewCronStore(t.TempDir())
-	if err != nil {
-		t.Fatal(err)
-	}
-	scheduler := NewCronScheduler(store)
-	p := &stubPlatformEngine{n: "plain"}
-	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin1")
-	e.cronScheduler = scheduler
-	scheduler.RegisterEngine("test", e)
-
-	job := &CronJob{
-		ID:          "shell-from-chat",
-		Project:     "test",
-		SessionKey:  "plain:user1",
-		CronExpr:    "0 6 * * *",
-		Exec:        "echo should-not-run",
-		Description: "Shell from chat",
-		Enabled:     true,
-		CreatedAt:   time.Now(),
-	}
-	if err := store.Add(job); err != nil {
-		t.Fatal(err)
-	}
-
-	msg := &Message{SessionKey: "plain:user1", UserID: "user1", ReplyCtx: "ctx"}
-	e.cmdCron(p, msg, []string{"trigger", job.ID})
-
-	if len(p.sent) != 1 {
-		t.Fatalf("sent = %d, want 1", len(p.sent))
-	}
-	if !strings.Contains(strings.ToLower(p.sent[0]), "admin") {
-		t.Fatalf("reply = %q, want admin required", p.sent[0])
-	}
-	if strings.Contains(p.sent[0], "triggered") {
-		t.Fatalf("reply = %q, should not trigger shell cron", p.sent[0])
 	}
 }
 
@@ -10978,35 +10784,9 @@ func TestEventIdleTimeout_DisabledWhenZero(t *testing.T) {
 
 // --- 3. /shell command ---
 
-func TestCmdShell_BlockedWithoutAdmin(t *testing.T) {
-	p := &stubPlatformEngine{n: "test"}
-	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-
-	msg := &Message{
-		SessionKey: "test:ch:user1",
-		Content:    "/shell ls -la",
-		ReplyCtx:   "ctx",
-		UserID:     "user1",
-		Platform:   "test",
-	}
-	e.handleCommand(p, msg, msg.Content)
-
-	sent := p.getSent()
-	foundAdmin := false
-	for _, s := range sent {
-		if strings.Contains(s, e.i18n.T(MsgAdminRequired)[:10]) || strings.Contains(s, "admin") {
-			foundAdmin = true
-		}
-	}
-	if !foundAdmin {
-		t.Fatalf("expected admin required reply, got %v", sent)
-	}
-}
-
 func TestCmdShell_AllowedForAdmin(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin-user")
 
 	msg := &Message{
 		SessionKey: "test:ch:admin-user",
@@ -11035,7 +10815,6 @@ func TestCmdShell_AllowedForAdmin(t *testing.T) {
 func TestCmdShell_EmptyCommand_ShowsUsage(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin")
 
 	// Call cmdShell directly with empty command to test usage path.
 	msg := &Message{
@@ -11413,31 +11192,6 @@ func TestRunShellWithProgress_NonexistentCommand(t *testing.T) {
 
 // --- /diff command tests ---
 
-func TestCmdDiff_BlockedWithoutAdmin(t *testing.T) {
-	p := &stubPlatformEngine{n: "test"}
-	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-
-	msg := &Message{
-		SessionKey: "test:ch:user1",
-		Content:    "/diff main",
-		ReplyCtx:   "ctx",
-		UserID:     "user1",
-		Platform:   "test",
-	}
-	e.handleCommand(p, msg, msg.Content)
-
-	sent := p.getSent()
-	foundAdmin := false
-	for _, s := range sent {
-		if strings.Contains(s, "admin") || strings.Contains(s, e.i18n.T(MsgAdminRequired)[:10]) {
-			foundAdmin = true
-		}
-	}
-	if !foundAdmin {
-		t.Fatalf("expected admin required reply, got %v", sent)
-	}
-}
-
 func TestCmdDiff_EmptyDiff(t *testing.T) {
 	// Create a temp git repo with no changes
 	dir := t.TempDir()
@@ -11458,7 +11212,6 @@ func TestCmdDiff_EmptyDiff(t *testing.T) {
 	agent := &stubWorkDirAgent{workDir: dir}
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin")
 
 	msg := &Message{
 		SessionKey: "test:ch:admin",
@@ -11528,7 +11281,6 @@ func TestCmdDiff_PlainTextFallback(t *testing.T) {
 	agent := &stubWorkDirAgent{workDir: dir}
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin")
 
 	msg := &Message{
 		SessionKey: "test:ch:admin",
@@ -11596,7 +11348,6 @@ func TestCmdDiff_FileSenderPath(t *testing.T) {
 	agent := &stubWorkDirAgent{workDir: dir}
 	mp := &stubMediaPlatform{stubPlatformEngine: stubPlatformEngine{n: "test"}}
 	e := NewEngine("test", agent, []Platform{mp}, "", LangEnglish)
-	e.SetAdminFrom("admin")
 
 	msg := &Message{
 		SessionKey: "test:ch:admin",
@@ -11645,7 +11396,6 @@ func TestCmdDiff_FileSenderPath(t *testing.T) {
 func TestCmdShow_EmptyReference_ShowsUsage(t *testing.T) {
 	p := &stubPlatformEngine{n: "test"}
 	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin")
 
 	msg := &Message{
 		SessionKey: "test:ch:admin",
@@ -11669,7 +11419,6 @@ func TestCmdShow_MultiWorkspaceUsesBoundWorkDirForRelativeReference(t *testing.T
 		return &namedStubModelModeAgent{name: agentName}, nil
 	})
 	e := NewEngine("test", &namedStubModelModeAgent{name: agentName}, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin")
 
 	baseDir := t.TempDir()
 	bindStore := filepath.Join(t.TempDir(), "bindings.json")
@@ -11712,31 +11461,11 @@ func TestCmdShow_MultiWorkspaceUsesBoundWorkDirForRelativeReference(t *testing.T
 	}
 }
 
-func TestHandleCommand_ShowRequiresAdmin(t *testing.T) {
-	p := &stubPlatformEngine{n: "test"}
-	e := NewEngine("test", &stubAgent{}, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin")
-
-	msg := &Message{
-		SessionKey: "test:ch:user1",
-		Content:    "/show foo.txt",
-		ReplyCtx:   "ctx",
-		UserID:     "user1",
-		Platform:   "test",
-	}
-	e.handleCommand(p, msg, msg.Content)
-
-	sent := p.getSent()
-	if len(sent) != 1 || !strings.Contains(strings.ToLower(sent[0]), "admin") {
-		t.Fatalf("sent = %v, want admin required message", sent)
-	}
-}
-
 func TestCmdShow_OutputRemainsRawWhenReferencesEnabled(t *testing.T) {
 	p := &stubPlatformEngine{n: "feishu"}
 	agent := &stubWorkDirAgent{workDir: t.TempDir()}
 	e := NewEngine("test", agent, []Platform{p}, "", LangEnglish)
-	e.SetAdminFrom("admin")
+
 	e.references = normalizeReferenceRenderCfg(ReferenceRenderCfg{
 		NormalizeAgents: []string{"all"},
 		RenderPlatforms: []string{"all"},

@@ -558,9 +558,6 @@ func main() {
 			engine.SetDisabledCommands(proj.DisabledCommands)
 		}
 
-		// Wire admin allowlist for privileged commands
-		engine.SetAdminFrom(proj.AdminFrom)
-
 		// Wire per-user role-based policies
 		if proj.Users != nil {
 			engine.SetUserRoles(buildUserRoleManager(proj.Users))
@@ -1194,7 +1191,6 @@ func main() {
 			return config.SaveProjectSettings(name, config.ProjectSettingsUpdate{
 				DisplayName:          u.DisplayName,
 				Language:             u.Language,
-				AdminFrom:            u.AdminFrom,
 				DisabledCommands:     u.DisabledCommands,
 				WorkDir:              u.WorkDir,
 				Mode:                 u.Mode,
@@ -1994,9 +1990,6 @@ func reloadConfig(configPath, projName string, engine *core.Engine) (*core.Confi
 
 	// Reload disabled commands
 	engine.SetDisabledCommands(proj.DisabledCommands)
-
-	// Reload admin allowlist
-	engine.SetAdminFrom(proj.AdminFrom)
 
 	// Reload per-user role-based policies
 	if proj.Users != nil {

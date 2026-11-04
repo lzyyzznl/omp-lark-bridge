@@ -37,7 +37,6 @@ export default function ProjectConfigPanel({ project, onToast, onDeleted, onSave
     display_name: d.display_name || '',
     work_dir: d.work_dir || '',
     model: d.model || '',
-    admin_from: d.settings?.admin_from || '',
     disabled_commands: (d.settings?.disabled_commands || []).join(', '),
     allow_from: (d.platform_configs || [])[0]?.allow_from || '',
   })
@@ -116,7 +115,6 @@ export default function ProjectConfigPanel({ project, onToast, onDeleted, onSave
       if ((draft.display_name || '').trim() !== (base.display_name || '')) fields.display_name = (draft.display_name || '').trim()
       if ((draft.work_dir || '').trim() !== (base.work_dir || '')) fields.work_dir = draft.work_dir
       if ((draft.model || '').trim() !== (base.model || '')) fields.model = draft.model
-      if ((draft.admin_from || '').trim() !== (base.admin_from || '')) fields.admin_from = draft.admin_from
       if (JSON.stringify(execCmds) !== JSON.stringify(baseCmds)) fields.disabled_commands = execCmds
       if ((draft.allow_from || '') !== (base.allow_from || '')) fields.platform_allow_from = { feishu: draft.allow_from }
       if (Object.keys(fields).length === 0) {
@@ -341,10 +339,6 @@ export default function ProjectConfigPanel({ project, onToast, onDeleted, onSave
           </div>
         )
       })}
-      <div className="field">
-        <label>管理员（admin_from）</label>
-        <input className="input mono" value={draft?.admin_from || ''} onChange={(e) => setDraft({ ...draft, admin_from: e.target.value })} placeholder="* = 不限制特权命令；user id 逗号分隔；留空 = 禁用特权命令" spellCheck={false} />
-      </div>
       <div className="field">
         <label>允许使用用户（allow_from，应用到 feishu 平台）</label>
         <input className="input mono" value={draft?.allow_from || ''} onChange={(e) => setDraft({ ...draft, allow_from: e.target.value })} placeholder="留空=所有用户可用；或 user id 逗号分隔" spellCheck={false} />

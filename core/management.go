@@ -28,7 +28,6 @@ import (
 type ProjectSettingsUpdate struct {
 	DisplayName          *string
 	Language             *string
-	AdminFrom            *string
 	DisabledCommands     []string
 	WorkDir              *string
 	Mode                 *string
@@ -827,7 +826,6 @@ func (m *ManagementServer) handleProjectConfigDetail(w http.ResponseWriter, r *h
 			Mode              *string           `json:"mode"`
 			AgentType         *string           `json:"agent_type"`
 			Language          *string           `json:"language"`
-			AdminFrom         *string           `json:"admin_from"`
 			DisabledCommands  []string          `json:"disabled_commands"`
 			Model             *string           `json:"model"`
 			PlatformAllowFrom map[string]string `json:"platform_allow_from"`
@@ -853,7 +851,6 @@ func (m *ManagementServer) handleProjectConfigDetail(w http.ResponseWriter, r *h
 		if err := m.saveProjectSettings(projName, ProjectSettingsUpdate{
 			DisplayName:       body.DisplayName,
 			Language:          body.Language,
-			AdminFrom:         body.AdminFrom,
 			DisabledCommands:  body.DisabledCommands,
 			WorkDir:           body.WorkDir,
 			Mode:              body.Mode,
@@ -868,7 +865,7 @@ func (m *ManagementServer) handleProjectConfigDetail(w http.ResponseWriter, r *h
 		}
 		// 纯展示名变更立即生效（列表每次从 config 读），无需重启。
 		onlyName := body.WorkDir == nil && body.Mode == nil && body.AgentType == nil &&
-			body.Language == nil && body.AdminFrom == nil && len(body.DisabledCommands) == 0 &&
+			body.Language == nil && len(body.DisabledCommands) == 0 &&
 			body.Model == nil && len(body.PlatformAllowFrom) == 0 && len(body.PlatformAppID) == 0 &&
 			len(body.PlatformAppSecret) == 0
 		resp := map[string]any{"message": "settings updated"}
@@ -1088,13 +1085,8 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			}
 		}
 
-		e.userRolesMu.RLock()
-		adminFrom := e.adminFrom
-		e.userRolesMu.RUnlock()
-
 		data["settings"] = map[string]any{
 			"language":          string(e.i18n.CurrentLang()),
-			"admin_from":        adminFrom,
 			"disabled_commands": e.GetDisabledCommands(),
 		}
 
@@ -1124,7 +1116,6 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 	if r.Method == http.MethodPatch {
 		var body struct {
 			Language             *string           `json:"language"`
-			AdminFrom            *string           `json:"admin_from"`
 			DisabledCommands     []string          `json:"disabled_commands"`
 			WorkDir              *string           `json:"work_dir"`
 			Mode                 *string           `json:"mode"`
@@ -1165,9 +1156,6 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			case "es":
 				e.i18n.SetLang(LangSpanish)
 			}
-		}
-		if body.AdminFrom != nil {
-			e.SetAdminFrom(*body.AdminFrom)
 		}
 		if body.DisabledCommands != nil {
 			e.SetDisabledCommands(body.DisabledCommands)
@@ -1221,7 +1209,6 @@ func (m *ManagementServer) handleProjectDetail(w http.ResponseWriter, r *http.Re
 			patch := ProjectSettingsUpdate{
 				DisplayName:          body.DisplayName,
 				Language:             body.Language,
-				AdminFrom:            body.AdminFrom,
 				DisabledCommands:     body.DisabledCommands,
 				WorkDir:              body.WorkDir,
 				Mode:                 body.Mode,

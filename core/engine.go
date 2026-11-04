@@ -382,14 +382,14 @@ type Engine struct {
 	displaySaveFunc  func(mode *string, thinkingMessages *bool, thinkingMaxLen, toolMaxLen *int, toolMessages *bool) error
 	configReloadFunc func() (*ConfigReloadResult, error)
 
-	hooks              *HookManager
-	cronScheduler      *CronScheduler
+	hooks         *HookManager
+	cronScheduler *CronScheduler
 	// cronSpawnJobs records cron jobs currently executing, keyed by every
 	// session key the run may identify itself with (job.SessionKey and the
 	// resolved run key), so the shared agent-spawn path can immediately attach
 	// the in-flight transcript to the job and its running entry.
-	cronSpawnMu   sync.Mutex
-	cronSpawnJobs map[string]*CronJob
+	cronSpawnMu        sync.Mutex
+	cronSpawnJobs      map[string]*CronJob
 	timerScheduler     *TimerScheduler
 	heartbeatScheduler *HeartbeatScheduler
 
@@ -411,9 +411,8 @@ type Engine struct {
 	bannedMu    sync.RWMutex
 
 	disabledCmds map[string]bool
-	adminFrom    string           // comma-separated user IDs for privileged commands; "*" = all allowed users; "" = deny
 	userRoles    *UserRoleManager // nil = legacy mode (no per-user policies)
-	userRolesMu  sync.RWMutex     // protects userRoles, disabledCmds, and adminFrom
+	userRolesMu  sync.RWMutex     // protects userRoles and disabledCmds
 
 	rateLimiter      *RateLimiter
 	outgoingRL       *OutgoingRateLimiter
@@ -1269,89 +1268,6 @@ func (e *Engine) SetUserRoles(urm *UserRoleManager) {
 	e.userRoles = urm
 }
 
-// SetAdminFrom sets the admin allowlist for privileged commands.
-// "*" means all users who pass allow_from are admins.
-// Empty string means privileged commands are denied for everyone.
-func (e *Engine) SetAdminFrom(adminFrom string) {
-	e.userRolesMu.Lock()
-	e.adminFrom = strings.TrimSpace(adminFrom)
-	af := e.adminFrom
-	shellDisabled := e.disabledCmds["shell"]
-	e.userRolesMu.Unlock()
-	if af == "" && !shellDisabled {
-		slog.Warn("admin_from is not set — privileged commands (/shell, /show, /dir, /restart, /upgrade) are blocked. "+
-			"Set admin_from in config to enable them, or use disabled_commands to hide them.",
-			"project", e.name)
-	}
-}
-
-// privilegedCommands are commands that require admin_from authorization.
-var privilegedCommands = map[string]bool{
-	"shell":   true,
-	"show":    true,
-	"dir":     true,
-	"restart": true,
-	"upgrade": true,
-	"web":     true,
-	"diff":    true,
-}
-
-// isPrivilegedCommandInvocation extends the privilegedCommands map to
-// also gate specific destructive subcommands. Currently:
-//
-//   - /commands addexec ...    — registers a custom shell-exec command
-//   - /cron    addexec ...     — schedules a recurring shell-exec
-//
-// Both effectively create new admin-only commands at runtime; if a
-// non-admin can call addexec, they can install arbitrary shell commands
-// for any future user to trigger. Sibling subcommands (list, add, del,
-// etc.) remain non-privileged.
-//
-// Returns true when the cmdID itself is in privilegedCommands, or when
-// the (cmdID, args[0]) pair matches one of the explicitly-gated
-// subcommands above.
-func isPrivilegedCommandInvocation(cmdID string, args []string) bool {
-	if privilegedCommands[cmdID] {
-		return true
-	}
-	if len(args) == 0 {
-		return false
-	}
-	sub := strings.ToLower(args[0])
-	switch cmdID {
-	case "commands":
-		return matchSubCommand(sub, []string{
-			"list", "add", "addexec", "del", "delete", "rm", "remove",
-		}) == "addexec"
-	case "cron":
-		return matchSubCommand(sub, []string{
-			"add", "addexec", "list", "del", "delete", "rm", "remove", "enable", "disable", "mute", "unmute", "setup",
-		}) == "addexec"
-	default:
-		return false
-	}
-}
-
-// isAdmin checks whether the given user ID is authorized for privileged commands.
-// Unlike AllowList, empty adminFrom means deny-all (fail-closed).
-func (e *Engine) isAdmin(userID string) bool {
-	e.userRolesMu.RLock()
-	af := e.adminFrom
-	e.userRolesMu.RUnlock()
-	if af == "" {
-		return false
-	}
-	if af == "*" {
-		return true
-	}
-	for _, id := range strings.Split(af, ",") {
-		if strings.EqualFold(strings.TrimSpace(id), userID) {
-			return true
-		}
-	}
-	return false
-}
-
 // SetBannedWords replaces the banned words list.
 func (e *Engine) SetBannedWords(words []string) {
 	e.bannedMu.Lock()
@@ -1606,8 +1522,6 @@ func (e *Engine) ExecuteCronJob(job *CronJob) error {
 		e.trackCronJob(job, runSessionKey)
 	}
 	defer e.untrackCronJob(job)
-
-
 
 	// Wrap platform to discard all outgoing messages when muted or result-only.
 	// Result-only still delivers the final answer once after execution (below),
@@ -3252,10 +3166,6 @@ func (e *Engine) handleMessage(p Platform, msg *Message) {
 			}
 			if disabledCmds["shell"] {
 				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "!"))
-				return
-			}
-			if !e.isAdmin(msg.UserID) {
-				e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "!"))
 				return
 			}
 			slog.Info("audit: command_executed",
@@ -6824,14 +6734,6 @@ func (e *Engine) handleCommand(p Platform, msg *Message, raw string) bool {
 			"user_id", msg.UserID, "platform", msg.Platform,
 			"project", e.name, "command", cmdID, "reason", "disabled")
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCommandDisabled), "/"+cmdID))
-		return true
-	}
-
-	if cmdID != "" && isPrivilegedCommandInvocation(cmdID, args) && !e.isAdmin(msg.UserID) {
-		slog.Info("audit: command_blocked",
-			"user_id", msg.UserID, "platform", msg.Platform,
-			"project", e.name, "command", cmdID, "reason", "unauthorized")
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/"+cmdID))
 		return true
 	}
 
@@ -14179,11 +14081,6 @@ func (e *Engine) cmdCronAdd(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) cmdCronAddExec(p Platform, msg *Message, args []string) {
-	if !e.isAdmin(msg.UserID) {
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/cron addexec"))
-		return
-	}
-
 	// /cron addexec [--new-session|--reuse] <min> <hour> <day> <month> <weekday> <shell command...>
 	args, sessionMode := parseCronSessionFlags(args)
 	if len(args) < 6 {
@@ -14289,10 +14186,6 @@ func (e *Engine) cmdCronExec(p Platform, msg *Message, args []string) {
 	job := e.cronScheduler.store.Get(id)
 	if job == nil {
 		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgCronNotFound), id))
-		return
-	}
-	if job.IsShellJob() && !e.isAdmin(msg.UserID) {
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/cron exec"))
 		return
 	}
 	if err := e.cronScheduler.RunJobNow(id); err != nil {
@@ -14452,11 +14345,6 @@ func (e *Engine) cmdTimerAdd(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) cmdTimerAddExec(p Platform, msg *Message, args []string) {
-	if !e.isAdmin(msg.UserID) {
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/timer addexec"))
-		return
-	}
-
 	// /timer addexec <delay_or_time> <shell command...>
 	if len(args) < 2 {
 		e.reply(p, msg.ReplyCtx, e.i18n.T(MsgTimerAddExecUsage))
@@ -14772,10 +14660,6 @@ func (e *Engine) renderHeartbeatCard() *Card {
 // ──────────────────────────────────────────────────────────────
 
 func (e *Engine) executeCustomCommand(p Platform, msg *Message, cmd *CustomCommand, args []string) {
-	if cmd.Exec != "" && !e.isAdmin(msg.UserID) {
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/"+cmd.Name))
-		return
-	}
 	// If this is an exec command, run shell command directly
 	if cmd.Exec != "" {
 		go e.executeShellCommand(p, msg, cmd, args)
@@ -14930,10 +14814,6 @@ func (e *Engine) cmdCommandsAdd(p Platform, msg *Message, args []string) {
 }
 
 func (e *Engine) cmdCommandsAddExec(p Platform, msg *Message, args []string) {
-	if !e.isAdmin(msg.UserID) {
-		e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgAdminRequired), "/commands addexec"))
-		return
-	}
 	// /commands addexec <name> <shell command...>
 	// /commands addexec --work-dir <dir> <name> <shell command...>
 	if len(args) < 2 {

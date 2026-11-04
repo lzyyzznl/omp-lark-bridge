@@ -788,3 +788,27 @@ func TestSend_DelegatesFirstPrompt(t *testing.T) {
 		t.Errorf("second prompt = %q, want unchanged %q", prompts[1], "another task")
 	}
 }
+
+// TestWithSkillAllowlist pins the --skills injection helper: an empty allowlist
+// must leave spawn args untouched (all skills), a non-empty one must append the
+// flag without mutating the caller's slice.
+func TestWithSkillAllowlist(t *testing.T) {
+	base := []string{"--mode", "rpc-ui", "--cwd", "/tmp"}
+	baseCopy := append([]string{}, base...)
+
+	if got := withSkillAllowlist(base, ""); !reflect.DeepEqual(got, base) {
+		t.Errorf("empty allowlist = %v, want unchanged %v", got, base)
+	}
+	if !reflect.DeepEqual(base, baseCopy) {
+		t.Errorf("empty allowlist mutated caller's args: %v", base)
+	}
+
+	got := withSkillAllowlist(base, "gh,edw-zmail")
+	want := append(append([]string{}, base...), "--skills", "gh,edw-zmail")
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("args = %v, want %v", got, want)
+	}
+	if !reflect.DeepEqual(base, baseCopy) {
+		t.Errorf("non-empty allowlist mutated caller's args: %v", base)
+	}
+}

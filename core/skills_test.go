@@ -178,3 +178,26 @@ func TestSkillProviderError_ReturnsEmptyList(t *testing.T) {
 		t.Errorf("provider failure must degrade to empty list, got: %v", p.sent)
 	}
 }
+func TestParseOmpSkillList(t *testing.T) {
+	out := []byte(`{"skills":[
+		{"name":"edw-zmail","description":"查邮件","source":"user","hide":false},
+		{"name":"hidden-skill","description":"隐藏","source":"project","hide":true}
+	]}`)
+	skills, err := ParseOmpSkillList(out)
+	if err != nil {
+		t.Fatalf("ParseOmpSkillList: %v", err)
+	}
+	if len(skills) != 2 {
+		t.Fatalf("len = %d, want 2", len(skills))
+	}
+	if skills[0].Name != "edw-zmail" || skills[0].Source != "user" || skills[0].Hide {
+		t.Errorf("skill[0] = %+v", skills[0])
+	}
+	if !skills[1].Hide {
+		t.Errorf("skill[1] should be hidden: %+v", skills[1])
+	}
+
+	if _, err := ParseOmpSkillList([]byte("{bad")); err == nil {
+		t.Error("malformed output must return an error")
+	}
+}

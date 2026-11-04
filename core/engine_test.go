@@ -6737,6 +6737,53 @@ func TestHandlePendingPermission_AskUserQuestion_SkipsPermFlow(t *testing.T) {
 	}
 }
 
+// TestHandlePendingPermission_AskUserQuestion_ButtonCallbackNoTextConfirm
+// pins the fix/askq-double-confirm behavior: button callbacks carry the
+// "askq:" prefix and the Feishu platform already confirms in-place with a
+// card, so the engine must NOT emit a second text confirmation. Omitting the
+// skip would produce one answer rendered twice (in-place card + text reply).
+func TestHandlePendingPermission_AskUserQuestion_ButtonCallbackNoTextConfirm(t *testing.T) {
+	e := newTestEngine()
+	p := &stubPlatformEngine{n: "test"}
+	rec := &recordingAgentSession{}
+
+	state := &interactiveState{
+		agentSession: rec,
+		platform:     p,
+		replyCtx:     "ctx",
+		pending: &pendingPermission{
+			RequestID: "req-1",
+			ToolName:  "AskUserQuestion",
+			ToolInput: map[string]any{"questions": []any{}},
+			Questions: testQuestions(),
+			Resolved:  make(chan struct{}),
+		},
+	}
+	e.interactiveMu.Lock()
+	e.interactiveStates["test:chat:user1"] = state
+	e.interactiveMu.Unlock()
+
+	handled := e.handlePendingPermission(p, &Message{
+		SessionKey: "test:chat:user1",
+		UserID:     "user1",
+		Content:    "askq:0:1",
+		ReplyCtx:   "ctx",
+	}, "askq:0:1", "test:chat:user1")
+	if !handled {
+		t.Fatal("expected handled=true")
+	}
+	if rec.calls != 1 {
+		t.Fatalf("expected 1 RespondPermission call, got %d", rec.calls)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, s := range p.sent {
+		if strings.Contains(s, "✅") {
+			t.Fatalf("askq button should not emit text confirmation, got %q", s)
+		}
+	}
+}
+
 // TestHandlePendingPermission_ExtensionConfirm_AllowIsPermissionAllow is a
 // regression test for the fcb1beae regression: extension_confirm events
 // (forwarded by the pi session for ctx.ui.confirm, used by extensions like

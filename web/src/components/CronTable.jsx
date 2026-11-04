@@ -66,8 +66,8 @@ export default function CronTable({ jobs, now, busy, onRun, onToggleEnable, onTo
                       {j.mute ? '取消静音' : '静音'}
                     </button>
                     <button className="btn btn-sm" disabled={busy === j.id} onClick={() => onEdit(j)}>编辑</button>
-                    <button className="btn btn-sm" title="执行记录：查看会话 / 失败原因 / 一键重跑" onClick={() => onOpenRuns(j)}>
-                    记录{j.fail_streak > 0 ? ' ⚠' : ''}
+                    <button className="btn btn-sm" title="任务详情：查看执行记录 / 历史对话 / 一键重跑" onClick={() => onOpenRuns(j)}>
+                    详情{j.fail_streak > 0 ? ' ⚠' : ''}
                   </button>
                     <button className="btn btn-sm btn-red" disabled={busy === j.id} onClick={() => onDelete(j)}>删除</button>
                   </div>

@@ -138,6 +138,54 @@ go test ./...      # 快速验证
 make release-publish   # 全平台产物发布到 GitHub Release(新机器 install.sh 自动拉取)
 ```
 
+## Hub:多实例中心同步
+
+把多台 olb 实例连成一个"蜂群":通过一个中心 **hub**,任意一台都能看到全网
+设备目录(只读 agents/会话),并把「用专家执行」转发给指定设备执行。适合
+家里柱机、公司工位机、云服务器并存时集中调度。
+
+### 两种模式
+
+- **server**:作为中心,接收各设备周期性注册;web 看板「hub 全网设备」区块
+  列出全设备,并支持转发专家执行(执行结果异步回传,web 会轮询显示)。
+- **client**:作为设备,向 `server_url` 注册并上报本机 agents/会话目录,周期
+  拉取 server 转发的任务在本机执行并回传结果。全程**客户端主动出站**,
+  无需入站端口 —— 所以天然适合 NAT / Cloudflare Tunnel 之后。
+
+### 配置
+
+见 `config.example.toml` 的 `[hub]` 段。关键字段:
+
+```toml
+[hub]
+enabled = true
+mode = "server"        # 本机为 server;其他机为 "client"
+secret = "用下面命令生成的长随机串"   # server/client 必须一致
+# client 专属:
+server_url = "https://hub.example.com"   # 中心地址(不带结尾斜杠)
+device_token = "device-001"              # 设备唯一标识
+device_name = "机房柱机"                 # 显示名,默认主机名
+sync_interval_mins = 1                   # 上报/轮询间隔,默认 1 分钟
+```
+
+生成密钥(server 与所有设备共用同一个值):
+
+```bash
+openssl rand -hex 32
+```
+
+> 注意:ssh 内网转发或直接暴露时,请保证 `server_url` 与各设备可达;
+> `X-Hub-Secret` 是共享密钥,泄露即等于任何能访问 hub 端点的人可投递任务。
+
+### 通过 Cloudflare 暴露 hub
+
+- **client 模式**:对 `server_url` 只有出站连接,直接放 Cloudflare Tunnel
+  (`cloudflared tunnel --url http://127.0.0.1:31990`)即可,无需任何入站端口。
+- **server 模式需被外部设备访问**:不要直接公网开放 `31990`(management token
+  随之裸露)。建议 Cloudflare **Tunnel + Access**(Zero Trust)只放行 `/api/v1/hub/*`
+  给已知内网 IP,或干脆让各设备以 client 模式连一个内网 hub,由内网 hub 反向连
+  Cloudflare 暴露到公网。生产环境务必启用 HTTPS 并定期轮换 hub secret。
+
 ## 授权
 
 MIT License,见 [LICENSE](./LICENSE);派生声明见 [NOTICE](./NOTICE)。本项目

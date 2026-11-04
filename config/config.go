@@ -114,6 +114,7 @@ type Config struct {
 	Bridge             BridgeConfig            `toml:"bridge"`
 	Management         ManagementConfig        `toml:"management"`
 	Archive            ArchiveConfig           `toml:"archive"` // session library auto-archiving
+	Hub                HubConfig               `toml:"hub"`     // multi-instance hub (see HubConfig)
 	Hooks              []HookConfig            `toml:"hooks"`
 	IdleTimeoutMins    *int                    `toml:"idle_timeout_mins,omitempty"`  // max minutes between consecutive agent events; 0 = no timeout; default 120
 	MaxTurnTimeMins    *int                    `toml:"max_turn_time_mins,omitempty"` // absolute wall-clock cap per turn in minutes; 0 = disabled (default)
@@ -251,6 +252,21 @@ type ManagementConfig struct {
 	Port        int      `toml:"port,omitempty"`         // listen port; default DefaultManagementPort (31990)
 	Token       string   `toml:"token,omitempty"`        // shared secret for authentication; required
 	CORSOrigins []string `toml:"cors_origins,omitempty"` // allowed CORS origins; empty = no CORS
+}
+
+// HubConfig controls multi-instance coordination through a central hub. A hub
+// lets one instance (mode="server") aggregate the others' agent catalogs and
+// session libraries, and forward run/edit requests to them; clients
+// (mode="client") register themselves and pull forwarded ops on an interval
+// (no inbound connection needed, so clients can sit behind NAT/Cloudflare).
+type HubConfig struct {
+	Enabled       *bool  `toml:"enabled"`                      // default false
+	Mode          string `toml:"mode,omitempty"`               // "server" | "client"; empty disables
+	Secret        string `toml:"secret,omitempty"`             // shared secret; required for both modes
+	DeviceToken   string `toml:"device_token,omitempty"`       // client identity; required in client mode
+	DeviceName    string `toml:"device_name,omitempty"`        // friendly name; default = hostname
+	ServerURL     string `toml:"server_url,omitempty"`         // client: http(s)://hub-host (no trailing slash)
+	SyncIntervalM int    `toml:"sync_interval_mins,omitempty"` // client keepalive/poll interval; default 1
 }
 
 // Display mode constants.

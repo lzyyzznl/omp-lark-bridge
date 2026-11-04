@@ -67,6 +67,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   留给人手重启，绝不保留"job 内 End→Run"这种会自杀的路径。副产物：助手输出落
   `%TEMP%\omp-lark-bridge-restart.log`。仅在计划任务守护模式下生效
   （`CC_LOG_FILE` 存在），前台运行仍明确报错，避免误停任务。
+- AskUserQuestion 交互不再出现「双重确认」：按钮回调（`askq:` 前缀）由飞书
+  `onCardAction` 原位替换确认卡，引擎不再对按钮回调额外 `e.reply` 一条 `✅ 问题: **答案**`
+  文本（同一答案在界面里渲染两次，顺序错乱）。纯文本回答仍保留文字确认。
+- 飞书卡片按钮回调（`perm:` / `askq:` / `cmd:`）的 dispatch 改走
+  `messageQueueFor(sessionKey)` 串行队列：原先裸 `go dispatchCoreMessage` 与普通消息
+  的队列无同步关系，用户点按钮后紧接发文本时可能乱序到达引擎。
 
 ### Fixed（审计修复·调度/飞书/并发/竞态）
 - timer fire 时**同步标记并落盘** `Fired`（结果后置 `SetResult` 记录）：修复重启 /

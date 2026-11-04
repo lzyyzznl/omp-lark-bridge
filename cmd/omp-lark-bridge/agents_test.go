@@ -85,9 +85,20 @@ func TestAgentsCommandLifecycle(t *testing.T) {
 // discover the full command surface (`agents` mirrors the web 人格 page).
 func TestPrintAgentsUsage_DocumentsSubcommands(t *testing.T) {
 	out := captureStdout(t, printAgentsUsage)
-	for _, want := range []string{"agents list", "agents show", "agents new", "agents edit", "agents del", "--thinking", "--spawns"} {
+	for _, want := range []string{"agents list", "agents show", "agents new", "agents edit", "agents del", "agents tools", "agents skills", "--thinking", "--skills", "--knowledge", "--prewalk", "--advisor"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("printAgentsUsage missing %q; got:\n%s", want, out)
+		}
+	}
+}
+
+// TestAgentsTools_ListAllowlist guards `agents tools`: it must print the same
+// allowlist the web agent editor offers, as the source for `--tools` values.
+func TestAgentsTools_ListAllowlist(t *testing.T) {
+	out := captureStdout(t, func() { runAgentsTools(nil) })
+	for _, want := range []string{"read", "bash", "web_search", "memory_reflect", "--tools"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("agents tools output missing %q:\n%s", want, out)
 		}
 	}
 }

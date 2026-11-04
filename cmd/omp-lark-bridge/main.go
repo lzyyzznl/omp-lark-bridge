@@ -1349,6 +1349,22 @@ func main() {
 				time.Sleep(24 * time.Hour)
 			}
 		}()
+		// Hub（多实例中心同步）：server 模式注册 /hub/* 端点（必须在 Start 前）；
+		// client 模式启动周期上报 + 转发执行循环。
+		if cfg.Hub.Enabled != nil && *cfg.Hub.Enabled && cfg.Hub.Mode != "" {
+			if err := mgmtSrv.EnableHub(
+				cfg.Hub.Secret,
+				strings.EqualFold(cfg.Hub.Mode, "server"),
+				core.HubClientOptions{
+					ServerURL:     cfg.Hub.ServerURL,
+					DeviceToken:   cfg.Hub.DeviceToken,
+					DeviceName:    cfg.Hub.DeviceName,
+					SyncIntervalM: cfg.Hub.SyncIntervalM,
+				},
+			); err != nil {
+				slog.Error("hub: enable failed", "mode", cfg.Hub.Mode, "error", err)
+			}
+		}
 		mgmtSrv.Start()
 	}
 

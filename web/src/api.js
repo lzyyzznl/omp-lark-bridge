@@ -163,4 +163,22 @@ export const api = {
   updateAgent: (name, payload) => request(`/omp-agents/${encodeURIComponent(name)}`, { method: 'PUT', body: payload }),
   // DELETE /api/v1/omp-agents/{name}
   delAgent: (name) => request(`/omp-agents/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+  // POST /api/v1/omp-agents/copy {source,name} → fork 内置/自定义/项目 agent 为自定义
+  copyAgent: (source, name) => request('/omp-agents/copy', { method: 'POST', body: { source, name } }),
+    hubOverview: async () => (await request('/hub/overview')) || null,
+    // 转发「用专家执行」到指定 hub 设备（server 模式 web 用）。
+    hubForwardRun: (device, payload) => request(`/hub/overview/${encodeURIComponent(device)}/run`, { method: 'POST', body: payload }),
+    // 查询转发任务的执行结果。
+    hubResult: (op) => request(`/hub/overview/result/${encodeURIComponent(op)}`),
+  // GET /api/v1/omp-skills → {skills:[{name,description,source}]}，供 autoloadSkills 勾选
+  listSkills: () => request('/omp-skills'),
+  // GET /api/v1/omp-tools → {tools:[{name,description}]}，供 tools 白名单勾选
+  listTools: () => request('/omp-tools'),
+  // POST /api/v1/omp-agents/{name}/run {message} → 用专家新建独立会话执行（SSE 流式）。
+  runExpert: (name, payload) => {
+    const headers = { 'Content-Type': 'application/json' }
+    const tk = getToken()
+    if (tk) headers.Authorization = `Bearer ${tk}`
+    return fetch(`${BASE}/omp-agents/${encodeURIComponent(name)}/run`, { method: 'POST', headers, body: JSON.stringify(payload) })
+  },
 }

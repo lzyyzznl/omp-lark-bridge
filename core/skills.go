@@ -2,12 +2,62 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
 )
+
+// ompSkillListJSON mirrors `omp skill list --json`'s output shape; the daemon's
+// SkillProvider (agent/omp) and the CLI share this parser so both see the same
+// catalog.
+type ompSkillListJSON struct {
+	Skills []struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Source      string `json:"source"`
+		Hide        bool   `json:"hide"`
+	} `json:"skills"`
+}
+
+// ParseOmpSkillList converts `omp skill list --json` output (from the daemon's
+// SkillProvider or the CLI) into core Skills.
+func ParseOmpSkillList(out []byte) ([]Skill, error) {
+	var res ompSkillListJSON
+	if err := json.Unmarshal(out, &res); err != nil {
+		return nil, fmt.Errorf("parse omp skill list: %w", err)
+	}
+	skills := make([]Skill, 0, len(res.Skills))
+	for _, s := range res.Skills {
+		skills = append(skills, Skill{
+			Name:        s.Name,
+			Description: s.Description,
+			Source:      s.Source,
+			Hide:        s.Hide,
+		})
+	}
+	return skills, nil
+}
+
+// OmpSkillList lists the skills omp resolves for a session started in dir via
+// `omp skill list --json` — the same discovery the running daemon's
+// SkillProvider uses, used by `omp-lark-bridge agents skills`.
+func OmpSkillList(dir string) ([]Skill, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "omp", "skill", "list", "--json")
+	cmd.Dir = dir
+	cmd.Env = append([]string{"PI_NO_TITLE=1"}, os.Environ()...)
+	out, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("omp skill list: %w", err)
+	}
+	return ParseOmpSkillList(out)
+}
 
 // skillCacheTTL bounds how long the engine reuses the agent's skill list so
 // resolving a skill slash command doesn't hit the agent's discovery (omp spawn)

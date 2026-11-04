@@ -3594,7 +3594,11 @@ found:
 		// More questions remaining — advance to next and send new card
 		if curIdx+1 < len(pending.Questions) {
 			pending.CurrentQuestion = curIdx + 1
-			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
+			// Button callbacks already confirm in-place (askq: prefix);
+			// only free-text answers get a text confirmation.
+			if !strings.HasPrefix(content, "askq:") {
+				e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
+			}
 			e.sendAskQuestionPrompt(p, msg.ReplyCtx, pending.Questions, curIdx+1)
 			return true
 		}
@@ -3608,7 +3612,7 @@ found:
 		}); err != nil {
 			slog.Error("failed to send AskUserQuestion response", "error", err)
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf(e.i18n.T(MsgError), err))
-		} else {
+		} else if !strings.HasPrefix(content, "askq:") {
 			e.reply(p, msg.ReplyCtx, fmt.Sprintf("✅ %s: **%s**", q.Question, answer))
 		}
 

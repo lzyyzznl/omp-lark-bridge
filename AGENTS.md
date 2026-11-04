@@ -256,6 +256,11 @@ Available tags: `no_acp`, `no_claudecode`, `no_codex`, `no_copilot`, `no_cursor`
 6. **i18n complete**: all new user-facing strings have translations for all languages.
 7. **No secrets in code**: no API keys, tokens, or credentials in source files.
 
+## 功能完成后的默认部署
+
+- 完成一个功能后，如无特别说明，默认自动执行「重新编译 + 重启部署」：本仓库即 `make build` + `omp-lark-bridge daemon restart`，并验证新版本已生效（如对比服务返回的 web 资源版本）。
+- 仅当用户明确表示暂不部署 / 另行安排时，才跳过；跳过时必须在交付说明里写明「未重新编译 / 未重启部署」及原因。
+
 ## Adding a New Platform
 
 1. Create `platform/newplatform/newplatform.go`

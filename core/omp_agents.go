@@ -34,8 +34,72 @@ type OmpAgentInfo struct {
 	// Project is the project's display name for project-scope agents ("" else).
 	Project string `json:"project,omitempty"`
 
+	// Extended fields the UI/CLI now manage. Output/Knowledge hold raw
+	// multi-line blocks (YAML schema / markdown); Skills is autoloadSkills CSV.
+	Output        string `json:"output,omitempty"`
+	Skills        string `json:"skills,omitempty"`
+	Prewalk       string `json:"prewalk,omitempty"` // "" | "true" | "false" | model pattern
+	Advisor       string `json:"advisor,omitempty"` // "" | "true" | "false" | model pattern
+	Blocking      bool   `json:"blocking,omitempty"`
+	Structured    bool   `json:"structured,omitempty"`
+	ReadSummarize bool   `json:"read_summarize,omitempty"`
+	Knowledge     string `json:"knowledge,omitempty"`
+
 	path    string // absolute file path for user/project agents ("" for bundled)
 	content string // full markdown when the item was produced by a detail read
+}
+
+// CronSkillsApplier is an optional interface agents implement to receive the
+// skill allowlist for a one-shot delegated session (web "用专家执行"). The
+// value is consumed by the next StartSession, like CronAgentApplier; "" clears
+// the pin and means "no allowlist" (the session keeps all skills).
+type CronSkillsApplier interface {
+	ApplyCronSkills(skillsCSV string)
+}
+
+// OmpAgentSkills returns the skill allowlist (autoloadSkills frontmatter) for a
+// named agent across the bundled and user scopes; projectWorkdirs extends it to
+// project-scope agents. "" means the agent pins no skills — the spawned session
+// keeps every discovered skill (matches the editor's "未勾选 = 全部" choice).
+func OmpAgentSkills(projectWorkdirs map[string]string, name string) string {
+	for _, a := range DiscoverOmpAgents(projectWorkdirs) {
+		if a.Name != name || a.Skills == "" {
+			continue
+		}
+		// Normalize to compact CSV: the stored autoloadSkills may keep spaces
+		// (rendered for the editor), but omp's --skills flag wants comma-separated
+		// globs with no stray whitespace (e.g. "git-*,docker").
+		var parts []string
+		for _, p := range strings.Split(a.Skills, ",") {
+			if p = strings.TrimSpace(p); p != "" {
+				parts = append(parts, p)
+			}
+		}
+		return strings.Join(parts, ",")
+	}
+	return ""
+}
+
+// OmpAgentFields is the full editable model of an omp agent persona, written to
+// `~/.omp/agent/agents/<name>.md` via RenderAgentMarkdown. `Knowledge` is an
+// olb-managed background doc stored in frontmatter (omp ignores unknown keys);
+// `Output`/`Skills`/`Prewalk`/`Advisor` map to omp's own frontmatter keys.
+type OmpAgentFields struct {
+	Name          string // required, [A-Za-z0-9_-]{1,64}
+	Description   string
+	Model         string // @role or provider/model; comma list for multiple
+	Tools         string // comma-separated allowlist; "" = omp defaults
+	ThinkingLevel string // off|minimal|low|medium|high|xhigh|max|auto; "" = inherit
+	Spawns        string // comma-separated; "*" = any subagent
+	Skills        string // comma-separated autoloadSkills
+	Output        string // raw nested-YAML schema block
+	Prewalk       string // "" | "true" | "false" | model pattern
+	Advisor       string // "" | "true" | "false" | model pattern
+	Blocking      bool
+	Structured    bool
+	ReadSummarize bool
+	Knowledge     string // background/knowledge doc injected before body
+	Body          string // instruction prompt body
 }
 
 // IsEditableAgentScope reports whether the scope may be written/deleted through
@@ -207,6 +271,14 @@ func readAgentDir(dir, scope, source, project string) []*OmpAgentInfo {
 			Tools:         meta["tools"],
 			ThinkingLevel: meta["thinkingLevel"],
 			Spawns:        meta["spawns"],
+			Skills:        meta["autoloadSkills"],
+			Output:        meta["output"],
+			Prewalk:       meta["prewalk"],
+			Advisor:       meta["advisor"],
+			Blocking:      meta["blocking"] == "true",
+			Structured:    meta["structured"] == "true",
+			ReadSummarize: meta["readSummarize"] == "true",
+			Knowledge:     meta["knowledge"],
 			Scope:         scope,
 			Source:        source,
 			Project:       project,
@@ -239,33 +311,59 @@ func ParseAgentMarkdown(content string) (map[string]string, string) {
 	fm := rest[:end]
 	body = strings.TrimSpace(rest[end+len("\n---"):])
 	lines := strings.Split(fm, "\n")
-	for i, line := range lines {
+	for i := 0; i < len(lines); i++ {
+		line := lines[i]
 		key, val, ok := strings.Cut(line, ":")
 		if !ok {
 			continue
 		}
 		key = strings.TrimSpace(key)
-		val = strings.Trim(strings.TrimSpace(val), `"'`)
 		if key == "" {
 			continue
 		}
-		// A bare `spawns:` key carries a YAML list on the following lines
-		// (`spawns:\n  - scout`); flatten it to a comma-separated string so the
-		// UI can round-trip it.
-		if key == "spawns" && val == "" {
-			var items []string
-			for j := i + 1; j < len(lines); j++ {
-				item, isItem := strings.CutPrefix(strings.TrimSpace(lines[j]), "- ")
-				if !isItem {
+		val = strings.TrimSpace(val)
+		// A leaf value is `key: value` (maybe quoted). A bare key, or a
+		// literal marker (`|`/`|-`), followed by indented lines is either a
+		// YAML list (`  - item`) or a nested block (`output:`/`knowledge:`).
+		if (val == "" || val == "|" || val == "|-") && i+1 < len(lines) && strings.HasPrefix(lines[i+1], "  ") {
+			var listItems []string
+			var block []string
+			isList := false
+			j := i + 1
+			for ; j < len(lines); j++ {
+				next := lines[j]
+				if next == "" {
+					continue // tolerate blank lines inside the block
+				}
+				if !strings.HasPrefix(next, "  ") {
 					break
 				}
-				if it := strings.TrimSpace(item); it != "" {
-					items = append(items, it)
+				t := strings.TrimSpace(next)
+				if strings.HasPrefix(t, "- ") {
+					isList = true
+					if it := strings.TrimSpace(strings.TrimPrefix(t, "- ")); it != "" {
+						listItems = append(listItems, it)
+					}
+					continue
 				}
+				if isList {
+					break // first non-item line ends the list
+				}
+				// Nested YAML object or literal block: keep every line minus
+				// the shared 2-space indent so relative structure survives.
+				block = append(block, strings.TrimPrefix(next, "  "))
 			}
-			meta[key] = strings.Join(items, ",")
+			if isList {
+				meta[key] = strings.Join(listItems, ",")
+			} else if len(block) > 0 {
+				meta[key] = strings.TrimSpace(strings.Join(block, "\n"))
+			}
+			i = j - 1
 			continue
 		}
+		// Plain leaf value; strip surrounding quotes (omp's own dumps quote
+		// descriptions that contain colons).
+		val = strings.Trim(strings.TrimSpace(val), `"'`)
 		meta[key] = val
 	}
 	return meta, body
@@ -273,29 +371,73 @@ func ParseAgentMarkdown(content string) (map[string]string, string) {
 
 // renderAgentMarkdown builds the user-editable markdown file from the frontmatter
 // fields the UI manages plus the instruction body.
-func RenderAgentMarkdown(name, description, model, tools, thinkingLevel, spawns, body string) string {
+func RenderAgentMarkdown(f *OmpAgentFields) string {
 	var b strings.Builder
 	b.WriteString("---\n")
-	b.WriteString("name: " + name + "\n")
-	if description != "" {
-		b.WriteString("description: " + description + "\n")
+	b.WriteString("name: " + f.Name + "\n")
+	if f.Description != "" {
+		b.WriteString("description: " + f.Description + "\n")
 	}
-	if model != "" {
-		b.WriteString("model: " + model + "\n")
+	if f.Model != "" {
+		b.WriteString("model: " + f.Model + "\n")
 	}
-	if tools != "" {
-		b.WriteString("tools: " + tools + "\n")
+	if f.Tools != "" {
+		b.WriteString("tools: " + f.Tools + "\n")
 	}
-	if thinkingLevel != "" {
-		b.WriteString("thinkingLevel: " + thinkingLevel + "\n")
+	if f.ThinkingLevel != "" {
+		b.WriteString("thinkingLevel: " + f.ThinkingLevel + "\n")
 	}
-	if s := renderSpawns(spawns); s != "" {
+	if f.Skills != "" {
+		b.WriteString("autoloadSkills: " + f.Skills + "\n")
+	}
+	if f.Blocking {
+		b.WriteString("blocking: true\n")
+	}
+	if f.Structured {
+		b.WriteString("structured: true\n")
+	}
+	if f.ReadSummarize {
+		b.WriteString("readSummarize: true\n")
+	}
+	if s := renderSpawns(f.Spawns); s != "" {
 		b.WriteString(s + "\n")
 	}
-	b.WriteString("---\n\n")
-	b.WriteString(strings.TrimSpace(body))
-	b.WriteString("\n")
+	if f.Prewalk != "" {
+		b.WriteString("prewalk: " + f.Prewalk + "\n")
+	}
+	if f.Advisor != "" {
+		b.WriteString("advisor: " + f.Advisor + "\n")
+	}
+	if strings.TrimSpace(f.Output) != "" {
+		writeYAMLBlock(&b, "output", f.Output)
+	}
+	if strings.TrimSpace(f.Knowledge) != "" {
+		writeLiteralBlock(&b, "knowledge", f.Knowledge)
+	}
+	b.WriteString("---\n")
+	if body := strings.TrimSpace(f.Body); body != "" {
+		b.WriteString("\n" + body + "\n")
+	}
 	return b.String()
+}
+
+// writeYAMLBlock writes a multi-line value as an indented YAML object under key
+// (used for the nested `output` schema): each line keeps its relative indent,
+// shifted 2 spaces so it nests under the key.
+func writeYAMLBlock(b *strings.Builder, key, value string) {
+	b.WriteString(key + ":\n")
+	for _, ln := range strings.Split(strings.TrimSuffix(strings.TrimSpace(value), "\n"), "\n") {
+		b.WriteString("  " + ln + "\n")
+	}
+}
+
+// writeLiteralBlock writes a markdown value as a YAML literal block (`|`),
+// preserving blank lines. Used for `knowledge`, an omp-ignored field.
+func writeLiteralBlock(b *strings.Builder, key, value string) {
+	b.WriteString(key + ": |\n")
+	for _, ln := range strings.Split(strings.TrimSuffix(value, "\n"), "\n") {
+		b.WriteString("  " + ln + "\n")
+	}
 }
 
 // renderSpawns serializes a comma-separated spawns list back to YAML: a single
@@ -365,54 +507,112 @@ func (m *ManagementServer) projectWorkdirs() map[string]string {
 
 // createUserAgent writes a new custom agent into the user scope
 // (`~/.omp/agent/agents/<name>.md`) and refuses to overwrite an existing file.
-func CreateUserAgent(name, description, model, tools, thinkingLevel, spawns, body string) (*OmpAgentInfo, error) {
-	if !ValidAgentName(name) {
-		return nil, fmt.Errorf("invalid agent name %q (want [A-Za-z0-9_-]{1,64})", name)
+// agentInfoFrom builds the API-facing summary for a user-scope agent written by
+// CreateUserAgent/UpdateUserAgent.
+func agentInfoFrom(f *OmpAgentFields, path, content string) *OmpAgentInfo {
+	return &OmpAgentInfo{
+		Name:          f.Name,
+		Description:   f.Description,
+		Model:         f.Model,
+		Tools:         f.Tools,
+		ThinkingLevel: f.ThinkingLevel,
+		Spawns:        f.Spawns,
+		Skills:        f.Skills,
+		Output:        f.Output,
+		Prewalk:       f.Prewalk,
+		Advisor:       f.Advisor,
+		Blocking:      f.Blocking,
+		Structured:    f.Structured,
+		ReadSummarize: f.ReadSummarize,
+		Knowledge:     f.Knowledge,
+		Scope:         "user",
+		Source:        path,
+		path:          path,
+		content:       content,
+	}
+}
+
+// createUserAgent writes a new custom agent into the user scope
+// (`~/.omp/agent/agents/<name>.md`) and refuses to overwrite an existing file.
+func CreateUserAgent(f *OmpAgentFields) (*OmpAgentInfo, error) {
+	if !ValidAgentName(f.Name) {
+		return nil, fmt.Errorf("invalid agent name %q (want [A-Za-z0-9_-]{1,64})", f.Name)
 	}
 	dir, err := userAgentDir()
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, name+".md")
+	path := filepath.Join(dir, f.Name+".md")
 	if _, err := os.Stat(path); err == nil {
-		return nil, fmt.Errorf("an agent named %q already exists (user scope); edit it instead", name)
+		return nil, fmt.Errorf("an agent named %q already exists (user scope); edit it instead", f.Name)
 	}
-	content := RenderAgentMarkdown(name, description, model, tools, thinkingLevel, spawns, body)
+	content := RenderAgentMarkdown(f)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return nil, fmt.Errorf("write agent %s: %w", path, err)
 	}
-	info := &OmpAgentInfo{
-		Name: name, Description: description, Model: model, Tools: tools,
-		ThinkingLevel: thinkingLevel, Spawns: spawns,
-		Scope: "user", Source: path, path: path, content: content,
-	}
-	return info, nil
+	return agentInfoFrom(f, path, content), nil
 }
 
 // updateUserAgent replaces the user-scope file for name. The name itself never
 // changes through an update (rename = delete + create).
-func UpdateUserAgent(name, description, model, tools, thinkingLevel, spawns, body string) (*OmpAgentInfo, error) {
-	if !ValidAgentName(name) {
-		return nil, fmt.Errorf("invalid agent name %q (want [A-Za-z0-9_-]{1,64})", name)
+func UpdateUserAgent(f *OmpAgentFields) (*OmpAgentInfo, error) {
+	if !ValidAgentName(f.Name) {
+		return nil, fmt.Errorf("invalid agent name %q (want [A-Za-z0-9_-]{1,64})", f.Name)
 	}
 	dir, err := userAgentDir()
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, name+".md")
+	path := filepath.Join(dir, f.Name+".md")
 	if _, err := os.Stat(path); err != nil {
-		return nil, fmt.Errorf("agent %q not found in user scope", name)
+		return nil, fmt.Errorf("agent %q not found in user scope", f.Name)
 	}
-	content := RenderAgentMarkdown(name, description, model, tools, thinkingLevel, spawns, body)
+	content := RenderAgentMarkdown(f)
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		return nil, fmt.Errorf("write agent %s: %w", path, err)
 	}
-	info := &OmpAgentInfo{
-		Name: name, Description: description, Model: model, Tools: tools,
-		ThinkingLevel: thinkingLevel, Spawns: spawns,
-		Scope: "user", Source: path, path: path, content: content,
+	return agentInfoFrom(f, path, content), nil
+}
+
+// CopyUserAgent forks any visible agent (bundled/user/project) into a new
+// user-scope definition under a fresh name, preserving every frontmatter field
+// and the instruction body.
+func CopyUserAgent(projectWorkdirs map[string]string, sourceName, newName string) (*OmpAgentInfo, error) {
+	if !ValidAgentName(newName) {
+		return nil, fmt.Errorf("invalid agent name %q (want [A-Za-z0-9_-]{1,64})", newName)
 	}
-	return info, nil
+	var src *OmpAgentInfo
+	for _, a := range DiscoverOmpAgents(projectWorkdirs) {
+		if a.Name == sourceName {
+			src = a
+			break
+		}
+	}
+	if src == nil {
+		return nil, fmt.Errorf("source agent %q not found", sourceName)
+	}
+	content, err := ReadAgentDetail(src)
+	if err != nil {
+		return nil, fmt.Errorf("read source agent %q: %w", sourceName, err)
+	}
+	meta, body := ParseAgentMarkdown(content)
+	return CreateUserAgent(&OmpAgentFields{
+		Name:          newName,
+		Description:   meta["description"],
+		Model:         meta["model"],
+		Tools:         meta["tools"],
+		ThinkingLevel: meta["thinkingLevel"],
+		Spawns:        meta["spawns"],
+		Skills:        meta["autoloadSkills"],
+		Output:        meta["output"],
+		Prewalk:       meta["prewalk"],
+		Advisor:       meta["advisor"],
+		Blocking:      meta["blocking"] == "true",
+		Structured:    meta["structured"] == "true",
+		ReadSummarize: meta["readSummarize"] == "true",
+		Knowledge:     meta["knowledge"],
+		Body:          body,
+	})
 }
 
 // deleteUserAgent removes the user-scope definition for name.

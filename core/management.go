@@ -77,6 +77,9 @@ type ManagementServer struct {
 	timerScheduler     *TimerScheduler
 	heartbeatScheduler *HeartbeatScheduler
 	bridgeServer       *BridgeServer
+	// hub 是多实例中心同步状态（见 hub.go）；nil 表示未启用。server 模式持有
+	// 设备注册表 + outbox；client 模式持有同步循环与远端目录快照。
+	hub *hubData
 
 	setupFeishuSave      func(req FeishuSetupSaveRequest) error
 	setupWeixinSave      func(req WeixinSetupSaveRequest) error
@@ -316,6 +319,19 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 	// omp agent personas (bundled/user/project catalog + user-scope CRUD)
 	mux.HandleFunc(prefix+"/omp-agents", m.wrap(m.handleOmpAgents))
 	mux.HandleFunc(prefix+"/omp-agents/", m.wrap(m.handleOmpAgentByID))
+	mux.HandleFunc(prefix+"/omp-skills", m.wrap(m.handleOmpSkills))
+	mux.HandleFunc(prefix+"/omp-tools", m.wrap(m.handleOmpTools))
+	// Hub（多实例中心同步）：server 模式端点。认证走 X-Hub-Secret（见 hub.go），
+	// 与 management token 解耦，因此不包 wrap。
+	if m.hub != nil {
+		mux.HandleFunc(prefix+"/hub/register", m.handleHubRegister)
+		mux.HandleFunc(prefix+"/hub/devices", m.handleHubDevices)
+		mux.HandleFunc(prefix+"/hub/result", m.handleHubResult)
+		mux.HandleFunc(prefix+"/hub/", m.handleHubDeviceRoutes)
+		// web 看板用的视图/转发端点：走 management token（包 wrap）。
+		mux.HandleFunc(prefix+"/hub/overview", m.wrap(m.handleHubOverview))
+		mux.HandleFunc(prefix+"/hub/overview/", m.wrap(m.handleHubOverviewRoutes))
+	}
 
 	// Projects
 	mux.HandleFunc(prefix+"/projects", m.wrap(m.handleProjects))
@@ -3503,6 +3519,9 @@ func (m *ManagementServer) stopTranscriptChat(w http.ResponseWriter, e *Engine, 
 // belong to finished jobs — and the session is closed when the turn ends. The
 // agent persists the turn into the transcript file itself, so the web UI
 // re-reads the transcript for the authoritative history afterwards.
+// chatWithTranscript continues an existing transcript in an SSE stream (web
+// "继续对话"). The turn resumes the transcript's .jsonl; on completion omp
+// forks it to a new file, and the done event carries that id.
 func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Request, e *Engine, dir, id string) {
 	if id != filepath.Base(id) {
 		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
@@ -3513,35 +3532,58 @@ func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Req
 		mgmtError(w, http.StatusNotFound, "transcript not found")
 		return
 	}
+	msg, images, files, err := decodeChatBody(r)
+	if err != nil {
+		mgmtError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	m.streamTranscriptTurn(w, r, e, dir, id, sessionFile, msg, images, files, nil)
+}
+
+// decodeChatBody parses the shared web-chat request body (message + optional
+// image/file attachments) used by both "continue transcript" and "run with
+// expert".
+func decodeChatBody(r *http.Request) (string, []ImageAttachment, []FileAttachment, error) {
 	var body struct {
 		Message string           `json:"message"`
 		Images  []chatAttachment `json:"images"`
 		Files   []chatAttachment `json:"files"`
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 96<<20)).Decode(&body); err != nil {
-		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
+		return "", nil, nil, fmt.Errorf("invalid JSON: %w", err)
 	}
 	var images []ImageAttachment
 	var files []FileAttachment
 	if err := decodeChatAttachments(body.Images, &images, nil); err != nil {
-		mgmtError(w, http.StatusBadRequest, err.Error())
-		return
+		return "", nil, nil, err
 	}
 	if err := decodeChatAttachments(body.Files, nil, &files); err != nil {
-		mgmtError(w, http.StatusBadRequest, err.Error())
-		return
+		return "", nil, nil, err
 	}
 	msg := strings.TrimSpace(body.Message)
 	if msg == "" && len(images) == 0 && len(files) == 0 {
-		mgmtError(w, http.StatusBadRequest, "message or attachment is required")
-		return
+		return "", nil, nil, errors.New("message or attachment is required")
 	}
+	return msg, images, files, nil
+}
 
+// streamTranscriptTurn runs one web chat turn against a transcript session and
+// streams the events as SSE. sessionFile is what the agent's StartSession sees:
+// it may not exist yet, in which case omp's planEnterSession falls back to a
+// brand-new session — that is how "run with expert" creates an isolated
+// conversation without touching any existing transcript. prepare, when non-nil,
+// is invoked just before StartSession to apply a one-shot override (e.g. expert
+// delegation) and returns a cleanup function called when the turn ends.
+func (m *ManagementServer) streamTranscriptTurn(w http.ResponseWriter, r *http.Request, e *Engine, dir, id, sessionFile, msg string, images []ImageAttachment, files []FileAttachment, prepare func() func()) {
 	// 同一时刻只允许一个网页对话：两个并发 turn 同时 resume 同一份 .jsonl，
 	// 会在 omp 写文件时产生竞态。// ponytail: 全局锁；若需并行聊天再按会话粒度加锁。
 	m.chatMu.Lock()
 	defer m.chatMu.Unlock()
+
+	if prepare != nil {
+		cleanup := prepare()
+		defer cleanup()
+	}
 
 	// 关闭页面不等于停对话：请求上下文断开后仍要把这一轮跑完并写进 transcript，
 	// 重开页面从 transcript 看到完整结果。// ponytail: 30 分钟兜底防进程泄漏。
@@ -3629,6 +3671,71 @@ func (m *ManagementServer) chatWithTranscript(w http.ResponseWriter, r *http.Req
 	sse(map[string]any{"type": "error", "error": "session ended unexpectedly"})
 }
 
+// runWithAgent creates a brand-new isolated session delegated to the named
+// specialist and streams the turn's events (reusing the transcript-chat SSE
+// format) — the backend for the web "用专家执行" action. The placeholder
+// session file does not exist, so omp starts a fresh session; the done event
+// carries the real forked session id the web can resume later.
+func (m *ManagementServer) runWithAgent(w http.ResponseWriter, r *http.Request, agentName string) {
+	msg, images, files, err := decodeChatBody(r)
+	if err != nil {
+		mgmtError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	e := m.firstEngine()
+	if e == nil || e.agent == nil {
+		mgmtError(w, http.StatusServiceUnavailable, "no usable engine")
+		return
+	}
+	applier, ok := e.agent.(CronAgentApplier)
+	if !ok {
+		mgmtError(w, http.StatusNotImplemented, "this agent does not support expert delegation")
+		return
+	}
+	dirProv, ok := e.agent.(SessionDirProvider)
+	if !ok || dirProv.SessionDir() == "" {
+		mgmtError(w, http.StatusNotImplemented, "agent does not expose session transcripts")
+		return
+	}
+	dir := dirProv.SessionDir()
+	id := "expert-" + strconv.FormatInt(time.Now().UnixNano(), 36)
+	prepare := func() func() {
+		applier.ApplyCronAgent(agentName)
+		// Skill allowlist: mirrored into the one-shot session's --skills so the
+		// expert's session (and the subagent it spawns) sees only its pinned
+		// skills — "勾选技能 = 仅这些". Empty (agent pinned none) keeps all
+		// skills. Bundled + user scopes resolve without project workdirs; a
+		// project-scope agent falls back to "no allowlist" (all skills).
+		if skillsApplier, ok := e.agent.(CronSkillsApplier); ok {
+			if skills := OmpAgentSkills(nil, agentName); skills != "" {
+				skillsApplier.ApplyCronSkills(skills)
+			}
+		}
+		return func() {
+			applier.ApplyCronAgent("")
+			if skillsApplier, ok := e.agent.(CronSkillsApplier); ok {
+				skillsApplier.ApplyCronSkills("")
+			}
+		}
+	}
+	m.streamTranscriptTurn(w, r, e, dir, id, filepath.Join(dir, id+".jsonl"), msg, images, files, prepare)
+}
+
+// firstEngine returns the first engine that has an agent attached, for shared
+// endpoints that act on "the default workspace". // ponytail: engines is a map,
+// so iteration order is arbitrary; this only matters when several workspaces
+// are configured, in which case callers should pass an explicit project.
+func (m *ManagementServer) firstEngine() *Engine {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	for _, e := range m.engines {
+		if e != nil && e.agent != nil {
+			return e
+		}
+	}
+	return nil
+}
+
 // ── omp agent personas (catalog + user-scope CRUD) ─────────────────────────
 
 // OmpAgentWriteRequest is the JSON body for POST/PUT on the omp-agents API.
@@ -3642,7 +3749,141 @@ type OmpAgentWriteRequest struct {
 	Tools         string `json:"tools"`
 	ThinkingLevel string `json:"thinking_level"`
 	Spawns        string `json:"spawns"`
+	Skills        string `json:"skills"`
+	Output        string `json:"output"`
+	Prewalk       string `json:"prewalk"`
+	Advisor       string `json:"advisor"`
+	Blocking      bool   `json:"blocking"`
+	Structured    bool   `json:"structured"`
+	ReadSummarize bool   `json:"read_summarize"`
+	Knowledge     string `json:"knowledge"`
 	Body          string `json:"body"`
+}
+
+// fields maps the JSON write body onto the editable agent model. Output and
+// Knowledge are free-form blocks and are deliberately not trimmed.
+func (r OmpAgentWriteRequest) fields(name string) *OmpAgentFields {
+	return &OmpAgentFields{
+		Name:          name,
+		Description:   strings.TrimSpace(r.Description),
+		Model:         strings.TrimSpace(r.Model),
+		Tools:         strings.TrimSpace(r.Tools),
+		ThinkingLevel: strings.TrimSpace(r.ThinkingLevel),
+		Spawns:        strings.TrimSpace(r.Spawns),
+		Skills:        strings.TrimSpace(r.Skills),
+		Output:        r.Output,
+		Prewalk:       strings.TrimSpace(r.Prewalk),
+		Advisor:       strings.TrimSpace(r.Advisor),
+		Blocking:      r.Blocking,
+		Structured:    r.Structured,
+		ReadSummarize: r.ReadSummarize,
+		Knowledge:     r.Knowledge,
+		Body:          r.Body,
+	}
+}
+
+// OmpAgentCopyRequest is the JSON body for POST /api/v1/omp-agents/copy:
+// fork a visible agent (bundled/user/project) as a new user-scope agent.
+type OmpAgentCopyRequest struct {
+	Source string `json:"source"`
+	Name   string `json:"name"`
+}
+
+// OmpToolItem describes one omp built-in tool offered as an allowlist choice.
+type OmpToolItem struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// OmpToolsCatalog is the known omp built-in tool set for the agent editor's
+// allowlist (and CLI `agents tools`). Names use omp's underscore convention
+// (per bundled agents, e.g. ast_grep / web_search).
+var ompToolsCatalog = []OmpToolItem{
+	{"read", "读文件"},
+	{"write", "写文件"},
+	{"edit", "精准修改文件"},
+	{"bash", "执行 shell 命令"},
+	{"glob", "按文件名模式搜索"},
+	{"find", "查找文件"},
+	{"grep", "按正则搜索内容"},
+	{"ast_grep", "结构化代码搜索"},
+	{"ast_edit", "结构化代码编辑"},
+	{"lsp", "代码智能：跳转/引用/类型提示"},
+	{"web_search", "联网搜索"},
+	{"eval", "运行 Python / JS 代码"},
+	{"task", "派生子代理干活"},
+	{"wait", "等待子代理结果"},
+	{"todo", "维护任务清单"},
+	{"ask", "向用户提问确认"},
+	{"think", "深度思考"},
+	{"fetch", "抓取网页内容"},
+	{"gh", "GitHub 命令行"},
+	{"debug", "调试运行中的进程"},
+	{"learn", "把经验写入记忆"},
+	{"memory_recall", "搜索长期记忆"},
+	{"memory_retain", "保存长期记忆"},
+	{"memory_reflect", "综合长期记忆作答"},
+}
+
+// OmpTools returns a copy of the tool allowlist catalog (shared by the web
+// agent editor and the CLI so both offer the same choices).
+func OmpTools() []OmpToolItem {
+	return append([]OmpToolItem(nil), ompToolsCatalog...)
+}
+
+// handleOmpTools serves the tool allowlist catalog the agent editor uses for
+// white-list-style choices (GET /api/v1/omp-tools).
+func (m *ManagementServer) handleOmpTools(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{"tools": OmpTools()})
+}
+
+// handleOmpSkills serves the skill catalog the default engine's omp resolves
+// (via `omp skill list`), so the agent editor can offer autoloadSkills choices.
+// The first engine whose agent implements SkillProvider wins — the same
+// "default workspace" assumption the REST API uses elsewhere.
+func (m *ManagementServer) handleOmpSkills(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	type skillItem struct {
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		Source      string `json:"source"`
+	}
+	skills := []skillItem{}
+	m.mu.RLock()
+	for _, e := range m.engines {
+		if e == nil || e.agent == nil {
+			continue
+		}
+		p, ok := e.agent.(SkillProvider)
+		if !ok {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+		list, err := p.ListSkills(ctx)
+		cancel()
+		if err != nil {
+			slog.Warn("omp skills: list failed", "error", err)
+			break
+		}
+		seen := map[string]bool{}
+		for _, s := range list {
+			if seen[s.Name] {
+				continue
+			}
+			seen[s.Name] = true
+			skills = append(skills, skillItem{Name: s.Name, Description: s.Description, Source: s.Source})
+		}
+		break
+	}
+	m.mu.RUnlock()
+	mgmtJSON(w, http.StatusOK, map[string]any{"skills": skills})
 }
 
 // handleOmpAgents serves GET (catalog) and POST (create user agent).
@@ -3666,7 +3907,7 @@ func (m *ManagementServer) handleOmpAgents(w http.ResponseWriter, r *http.Reques
 			mgmtError(w, http.StatusBadRequest, "invalid agent name (want [A-Za-z0-9_-]{1,64})")
 			return
 		}
-		info, err := CreateUserAgent(name, strings.TrimSpace(req.Description), strings.TrimSpace(req.Model), strings.TrimSpace(req.Tools), strings.TrimSpace(req.ThinkingLevel), strings.TrimSpace(req.Spawns), req.Body)
+		info, err := CreateUserAgent(req.fields(name))
 		if err != nil {
 			mgmtError(w, http.StatusBadRequest, err.Error())
 			return
@@ -3684,11 +3925,40 @@ func (m *ManagementServer) handleOmpAgents(w http.ResponseWriter, r *http.Reques
 func (m *ManagementServer) handleOmpAgentByID(w http.ResponseWriter, r *http.Request) {
 	rest := strings.TrimPrefix(r.URL.Path, "/api/v1/omp-agents/")
 	rest = strings.Trim(rest, "/")
+	// POST /api/v1/omp-agents/{name}/run — 用指定专家（内置/自定义/项目均可）
+	// 新建一个独立会话执行任务：首条 prompt 注入专家委托（delegationTemplate），
+	// 结果 SSE 流式返回，done 事件带 fork 后的新会话 id 供 web 继续续聊。
+	if name, action, has := strings.Cut(rest, "/"); has && action == "run" && r.Method == http.MethodPost && name != "" {
+		m.runWithAgent(w, r, name)
+		return
+	}
 	if rest == "" || strings.Contains(rest, "/") {
 		mgmtError(w, http.StatusBadRequest, "agent name required")
 		return
 	}
 	name := rest
+
+	// POST /api/v1/omp-agents/copy — fork any visible agent (bundled/user/
+	// project) as a new user-scope agent in one step.
+	if name == "copy" && r.Method == http.MethodPost {
+		var req OmpAgentCopyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+			return
+		}
+		newName := strings.TrimSpace(req.Name)
+		if !ValidAgentName(newName) {
+			mgmtError(w, http.StatusBadRequest, "invalid agent name (want [A-Za-z0-9_-]{1,64})")
+			return
+		}
+		info, err := CopyUserAgent(m.projectWorkdirs(), strings.TrimSpace(req.Source), newName)
+		if err != nil {
+			mgmtError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		mgmtJSON(w, http.StatusOK, map[string]any{"agent": info})
+		return
+	}
 
 	switch r.Method {
 	case http.MethodGet:
@@ -3708,6 +3978,10 @@ func (m *ManagementServer) handleOmpAgentByID(w http.ResponseWriter, r *http.Req
 				"read_only": a.ReadOnly, "description": a.Description,
 				"model": a.Model, "tools": a.Tools,
 				"thinking_level": a.ThinkingLevel, "spawns": a.Spawns,
+				"skills": a.Skills, "output": a.Output,
+				"prewalk": a.Prewalk, "advisor": a.Advisor,
+				"blocking": a.Blocking, "structured": a.Structured,
+				"read_summarize": a.ReadSummarize, "knowledge": a.Knowledge,
 				"content": content,
 			},
 		})
@@ -3723,7 +3997,7 @@ func (m *ManagementServer) handleOmpAgentByID(w http.ResponseWriter, r *http.Req
 			mgmtError(w, http.StatusNotFound, "agent not editable through this API: "+name)
 			return
 		}
-		info, err := UpdateUserAgent(name, strings.TrimSpace(req.Description), strings.TrimSpace(req.Model), strings.TrimSpace(req.Tools), strings.TrimSpace(req.ThinkingLevel), strings.TrimSpace(req.Spawns), req.Body)
+		info, err := UpdateUserAgent(req.fields(a.Name))
 		if err != nil {
 			mgmtError(w, http.StatusBadRequest, err.Error())
 			return

@@ -2,7 +2,6 @@ package omp
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,16 +13,6 @@ import (
 // skillCacheTTL bounds how long the `omp skill list` result is reused, so
 // resolving a skill slash command doesn't spawn an omp process per message.
 const skillCacheTTL = 60 * time.Second
-
-// skillListResult mirrors `omp skill list --json`'s output shape.
-type skillListResult struct {
-	Skills []struct {
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		Source      string `json:"source"`
-		Hide        bool   `json:"hide"`
-	} `json:"skills"`
-}
 
 // ListSkills implements core.SkillProvider via the omp protocol:
 // `omp skill list <cwd> --json` reports exactly the skills a session in the
@@ -72,22 +61,5 @@ func (a *Agent) loadSkills(ctx context.Context, bin string, extraArgs []string, 
 	if err != nil {
 		return nil, fmt.Errorf("omp: skill list: %w", err)
 	}
-	return parseSkillList(out)
-}
-
-func parseSkillList(out []byte) ([]core.Skill, error) {
-	var res skillListResult
-	if err := json.Unmarshal(out, &res); err != nil {
-		return nil, fmt.Errorf("omp: parse skill list: %w", err)
-	}
-	skills := make([]core.Skill, 0, len(res.Skills))
-	for _, s := range res.Skills {
-		skills = append(skills, core.Skill{
-			Name:        s.Name,
-			Description: s.Description,
-			Source:      s.Source,
-			Hide:        s.Hide,
-		})
-	}
-	return skills, nil
+	return core.ParseOmpSkillList(out)
 }

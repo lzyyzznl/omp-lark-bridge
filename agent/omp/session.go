@@ -134,11 +134,11 @@ func sanitizeSessionName(sessionID string) string {
 	return defaultSessionName
 }
 
-func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, delegatedAgent, goal, ccDataDir, sessionID string, env []string, systemPrompt string) (*ompSession, error) {
+func newOmpSession(ctx context.Context, bin string, extraArgs []string, workDir, model, thinking, delegatedAgent, goal, skillsAllowlist, ccDataDir, sessionID string, env []string, systemPrompt string) (*ompSession, error) {
 	// spawnOmpProcess derives its own cancellable context (the returned session
 	// owns it via ompSession.cancel), so this function needs no extra layer.
 	// On enter failure we cancel that process context to tear the child down.
-	s, err := spawnOmpProcess(ctx, bin, extraArgs, workDir, ccDataDir, env, systemPrompt)
+	s, err := spawnOmpProcess(ctx, bin, extraArgs, workDir, ccDataDir, env, systemPrompt, skillsAllowlist)
 	if err != nil {
 		return nil, err
 	}
@@ -1220,9 +1220,9 @@ type ompAskQuestion struct {
 
 // ompPendingAsk is an open extension UI dialog awaiting the user's card answer.
 type ompPendingAsk struct {
-	kind      string     // "ask" (answers payload) or "select" (value payload)
+	kind      string // "ask" (answers payload) or "select" (value payload)
 	questions []ompAskQuestion
-	created   time.Time  // when the dialog opened; drives askTTL expiry
+	created   time.Time // when the dialog opened; drives askTTL expiry
 }
 
 func emitSafe(ch chan core.Event, ev core.Event) {
@@ -1290,6 +1290,17 @@ func buildSpawnArgs(sessionDir, workDir string, extraArgs []string, systemPrompt
 	return args
 }
 
+// withSkillAllowlist appends omp's `--skills` glob filter (a comma-separated
+// skill allowlist) to the spawn args. Empty allowlist returns extraArgs
+// untouched, meaning "all skills" (the no-allowlist behavior). Never mutates
+// the caller's slice.
+func withSkillAllowlist(extraArgs []string, skills string) []string {
+	if skills == "" {
+		return extraArgs
+	}
+	return append(append([]string{}, extraArgs...), "--skills", skills)
+}
+
 // prependSelfDirToPath puts the omp-lark-bridge bridge's own directory at the front
 // of PATH in childEnv, so the agent shell can resolve `omp-lark-bridge` even when
 // the bridge was started from a non-PATH location (the single binary provides
@@ -1323,9 +1334,14 @@ func prependSelfDirToPath(childEnv []string, sep string) []string {
 // handshake. It does NOT begin/resume any conversation: live sessions call
 // enterSession next, while query-only callers (model discovery) just send a
 // command and tear the process down.
-func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string, systemPrompt string) (*ompSession, error) {
+func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string, systemPrompt string, skillsAllowlist string) (*ompSession, error) {
 	sctx, cancel := context.WithCancel(ctx)
 
+	// A pinned skill allowlist (expert editor's "勾选技能") becomes omp's
+	// `--skills` glob filter: the session — and the delegated subagent it spawns
+	// for the expert, which inherits the session's discovered skills — sees only
+	// the pinned set. Empty allowlist keeps every discovered skill.
+	extraArgs = withSkillAllowlist(extraArgs, skillsAllowlist)
 	// The store directory is a stable container for every conversation of this
 	// project. Per-conversation identity is carried by the session *file* path
 	// (see enterSession), so the directory must NOT be derived from the agent
@@ -1410,7 +1426,7 @@ func spawnOmpProcess(ctx context.Context, bin string, extraArgs []string, workDi
 // callers can fall back to the configured model.
 func discoverLoadedModels(ctx context.Context, bin string, extraArgs []string, workDir, ccDataDir string, env []string) []core.ModelOption {
 	sctx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env, "")
+	s, err := spawnOmpProcess(sctx, bin, extraArgs, workDir, ccDataDir, env, "", "")
 	if err != nil {
 		cancel()
 		slog.Warn("omp: model discovery spawn failed", "error", err)

@@ -902,15 +902,17 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 		}
 
 		rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
-		go p.dispatchCoreMessage(&core.Message{
-			SessionKey:           sessionKey,
-			Platform:             p.platformName,
-			UserID:               userID,
-			UserName:             p.resolveUserName(userID),
-			ChatName:             p.resolveChatName(chatID),
-			Content:              responseText,
-			ReplyCtx:             rctx,
-			IsPermissionResponse: true,
+		p.messageQueueFor(sessionKey).submit(func() {
+			p.dispatchCoreMessage(&core.Message{
+				SessionKey:           sessionKey,
+				Platform:             p.platformName,
+				UserID:               userID,
+				UserName:             p.resolveUserName(userID),
+				ChatName:             p.resolveChatName(chatID),
+				Content:              responseText,
+				ReplyCtx:             rctx,
+				IsPermissionResponse: true,
+			})
 		})
 
 		permLabel, _ := event.Event.Action.Value["perm_label"].(string)
@@ -934,14 +936,16 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	// askq: — AskUserQuestion option selected, forward as user message
 	if strings.HasPrefix(actionVal, "askq:") {
 		rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
-		go p.dispatchCoreMessage(&core.Message{
-			SessionKey: sessionKey,
-			Platform:   p.platformName,
-			UserID:     userID,
-			UserName:   p.resolveUserName(userID),
-			ChatName:   p.resolveChatName(chatID),
-			Content:    actionVal,
-			ReplyCtx:   rctx,
+		p.messageQueueFor(sessionKey).submit(func() {
+			p.dispatchCoreMessage(&core.Message{
+				SessionKey: sessionKey,
+				Platform:   p.platformName,
+				UserID:     userID,
+				UserName:   p.resolveUserName(userID),
+				ChatName:   p.resolveChatName(chatID),
+				Content:    actionVal,
+				ReplyCtx:   rctx,
+			})
 		})
 
 		answerLabel, _ := event.Event.Action.Value["askq_label"].(string)
@@ -969,14 +973,16 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 
 		slog.Info(p.tag()+": card action dispatched as command", "cmd", cmdText, "user", userID)
 
-		go p.dispatchCoreMessage(&core.Message{
-			SessionKey: sessionKey,
-			Platform:   p.platformName,
-			UserID:     userID,
-			UserName:   p.resolveUserName(userID),
-			ChatName:   p.resolveChatName(chatID),
-			Content:    cmdText,
-			ReplyCtx:   rctx,
+		p.messageQueueFor(sessionKey).submit(func() {
+			p.dispatchCoreMessage(&core.Message{
+				SessionKey: sessionKey,
+				Platform:   p.platformName,
+				UserID:     userID,
+				UserName:   p.resolveUserName(userID),
+				ChatName:   p.resolveChatName(chatID),
+				Content:    cmdText,
+				ReplyCtx:   rctx,
+			})
 		})
 
 		if ac, ok := event.Event.Action.Value["after_click"].(map[string]any); ok {

@@ -4070,3 +4070,237 @@ func TestTitleBackfill_OnlyDoneSessionsWithoutTitle(t *testing.T) {
 		t.Errorf("regenerated without new content: %q", got)
 	}
 }
+
+// expertRunAgent extends chatTranscriptAgent with ApplyCronAgent recording so
+// runWithAgent's one-shot delegation can be observed (set before the turn,
+// reset by the cleanup after it).
+type expertRunAgent struct {
+	chatTranscriptAgent
+	applied       string
+	applyCalls    int
+	appliedSkills string
+	skillsCalls   int
+}
+
+func (a *expertRunAgent) ApplyCronAgent(name string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.applied = name
+	a.applyCalls++
+}
+
+// ApplyCronSkills records the skill allowlist runWithAgent queues alongside the
+// delegated agent for the next session's --skills flag.
+func (a *expertRunAgent) ApplyCronSkills(skillsCsv string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.appliedSkills = skillsCsv
+	a.skillsCalls++
+}
+
+func TestMgmt_OmpAgents_RunWithExpert(t *testing.T) {
+	dir := t.TempDir()
+	agent := &expertRunAgent{chatTranscriptAgent: chatTranscriptAgent{stubTranscriptAgent: stubTranscriptAgent{dir: dir}}}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/omp-agents/", mgmt.wrap(mgmt.handleOmpAgentByID))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{"message": "检查一下代码"})
+	respCh := make(chan string, 1)
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/api/v1/omp-agents/scout/run", "application/json", bytes.NewReader(body))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			errCh <- fmt.Errorf("status %d: %s", resp.StatusCode, b)
+			return
+		}
+		respCh <- string(b)
+	}()
+
+	sess := waitChatSession(t, &agent.chatTranscriptAgent)
+	agent.mu.Lock()
+	applied, calls := agent.applied, agent.applyCalls
+	agent.mu.Unlock()
+	if applied != "scout" || calls < 1 {
+		t.Errorf("delegation applied before turn = %q (%d calls), want scout", applied, calls)
+	}
+	// The placeholder file must not exist: that is what makes omp fall back to a
+	// brand-new isolated session instead of resuming an existing transcript.
+	if !strings.HasPrefix(filepath.Base(sess.resumeID), "expert-") {
+		t.Errorf("session id = %q, want expert-* placeholder", sess.resumeID)
+	}
+	if _, err := os.Stat(sess.resumeID); !os.IsNotExist(err) {
+		t.Errorf("placeholder session file should not exist, got %v", err)
+	}
+
+	go func() {
+		sess.events <- Event{Type: EventText, Content: "专家回复"}
+		sess.events <- Event{Type: EventResult, Content: "done", Done: true}
+	}()
+
+	select {
+	case b := <-respCh:
+		if !strings.Contains(b, "专家回复") {
+			t.Errorf("SSE missing text event: %s", b)
+		}
+		if !strings.Contains(b, `"type":"done"`) {
+			t.Errorf("SSE missing done event: %s", b)
+		}
+	case err := <-errCh:
+		t.Fatalf("runWithAgent POST: %v", err)
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for runWithAgent turn")
+	}
+
+	// One-shot override must be reset after the turn so it cannot leak into the
+	// next session the engine starts (e.g. the user's normal chat).
+	agent.mu.Lock()
+	callsAfter, appliedAfter := agent.applyCalls, agent.applied
+	agent.mu.Unlock()
+	if callsAfter < calls+1 {
+		t.Errorf("expected cleanup ApplyCronAgent call, calls=%d before=%d", callsAfter, calls)
+	}
+	if appliedAfter != "" {
+		t.Errorf("one-shot override not cleared after turn, still %q", appliedAfter)
+	}
+}
+
+// TestMgmt_OmpAgents_Run_AppliesSkillAllowlist proves the expert's pinned
+// skills are queued into the one-shot session (ApplyCronSkills before the turn)
+// and cleared after it, so the white-listed --skills list never leaks into the
+// user's next normal chat.
+func TestMgmt_OmpAgents_Run_AppliesSkillAllowlist(t *testing.T) {
+	home := t.TempDir()
+	agentsDir := filepath.Join(home, ".omp", "agent", "agents")
+	if err := os.MkdirAll(agentsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(agentsDir, "qa-runner.md"),
+		[]byte("---\nname: qa-runner\ndescription: Runs QA checks.\nautoloadSkills: gh, edw-zmail\n---\nRun the checks."), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if got := OmpAgentSkills(nil, "qa-runner"); got != "gh,edw-zmail" {
+		t.Fatalf("allowlist lookup = %q, want normalized gh,edw-zmail", got)
+	}
+	dir := t.TempDir()
+	agent := &expertRunAgent{chatTranscriptAgent: chatTranscriptAgent{stubTranscriptAgent: stubTranscriptAgent{dir: dir}}}
+	e := NewEngine("test-project", agent, nil, "", LangEnglish)
+	e.sessions = NewSessionManager("")
+	mgmt := NewManagementServer(0, "", nil)
+	mgmt.RegisterEngine("test-project", e)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/omp-agents/", mgmt.wrap(mgmt.handleOmpAgentByID))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	body, _ := json.Marshal(map[string]any{"message": "跑一下"})
+	errCh := make(chan error, 1)
+	go func() {
+		resp, err := http.Post(ts.URL+"/api/v1/omp-agents/qa-runner/run", "application/json", bytes.NewReader(body))
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			b, _ := io.ReadAll(resp.Body)
+			errCh <- fmt.Errorf("status %d: %s", resp.StatusCode, b)
+			return
+		}
+		_, _ = io.Copy(io.Discard, resp.Body) // drain the SSE stream until done
+		errCh <- nil
+	}()
+
+	sess := waitChatSession(t, &agent.chatTranscriptAgent)
+	agent.mu.Lock()
+	applied, skills, skillsCalls := agent.applied, agent.appliedSkills, agent.skillsCalls
+	agent.mu.Unlock()
+	if applied != "qa-runner" {
+		t.Errorf("delegated agent = %q, want qa-runner", applied)
+	}
+	if skills != "gh,edw-zmail" || skillsCalls < 1 {
+		t.Errorf("skills allowlist before turn = %q (%d calls), want gh,edw-zmail", skills, skillsCalls)
+	}
+
+	go func() {
+		sess.events <- Event{Type: EventResult, Content: "done", Done: true}
+	}()
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runWithAgent POST: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for run turn")
+	}
+
+	agent.mu.Lock()
+	skillsAfter, callsAfter := agent.appliedSkills, agent.skillsCalls
+	agent.mu.Unlock()
+	if callsAfter < skillsCalls+1 {
+		t.Errorf("expected cleanup ApplyCronSkills call, calls=%d before=%d", callsAfter, skillsCalls)
+	}
+	if skillsAfter != "" {
+		t.Errorf("skills allowlist not cleared after turn, still %q", skillsAfter)
+	}
+}
+func TestMgmt_OmpTools_Catalog(t *testing.T) {
+	mgmt := NewManagementServer(0, "", nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/omp-tools", mgmt.wrap(mgmt.handleOmpTools))
+	ts := httptest.NewServer(mux)
+	defer ts.Close()
+
+	r := mgmtGet(t, ts.URL+"/api/v1/omp-tools", "")
+	if r.OK == false || r.Error != "" {
+		t.Fatalf("GET failed: ok=%v err=%q", r.OK, r.Error)
+	}
+	var resp struct {
+		Tools []OmpToolItem `json:"tools"`
+	}
+	if err := json.Unmarshal(r.Data, &resp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(resp.Tools) == 0 {
+		t.Fatal("工具目录为空")
+	}
+	names := map[string]bool{}
+	for _, tool := range resp.Tools {
+		if tool.Name == "" || tool.Description == "" {
+			t.Errorf("工具缺 name/description: %+v", tool)
+		}
+		if names[tool.Name] {
+			t.Errorf("工具名重复: %s", tool.Name)
+		}
+		names[tool.Name] = true
+	}
+	// 编辑器勾选面板依赖的关键工具必须存在
+	for _, want := range []string{"read", "write", "edit", "bash", "glob", "find", "grep", "web_search", "task"} {
+		if !names[want] {
+			t.Errorf("缺少工具 %s", want)
+		}
+	}
+
+	// 非 GET → 405
+	if respRaw, err := http.Post(ts.URL+"/api/v1/omp-tools", "application/json", nil); err != nil {
+		t.Fatalf("POST: %v", err)
+	} else {
+		defer respRaw.Body.Close()
+		if respRaw.StatusCode != http.StatusMethodNotAllowed {
+			t.Errorf("POST status = %d, want 405", respRaw.StatusCode)
+		}
+	}
+}

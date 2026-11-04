@@ -63,6 +63,7 @@ type Agent struct {
 	pendingThinking string
 	pendingAgent    string // delegated subagent for the next cron-run session
 	pendingGoal     string // goal-mode objective for the next cron-run session (goal_mode: on)
+	pendingSkills   string // skill allowlist (--skills) for the next delegated session
 
 	// modelsCache caches the get_available_models discovery result so a web
 	// dropdown doesn't spawn an omp process on every page load.
@@ -227,6 +228,19 @@ func (a *Agent) ApplyCronAgent(agent string) {
 	}
 }
 
+// ApplyCronSkills implements core.CronSkillsApplier. The allowlist is turned
+// into omp's `--skills` spawn flag on the next StartSession, filtering the
+// session's (and its delegated subagent's) skill list down to the pinned set —
+// the expert editor's "勾选技能 = 仅这些" white-list behavior.
+func (a *Agent) ApplyCronSkills(skillsCSV string) {
+	a.overrideMu.Lock()
+	defer a.overrideMu.Unlock()
+	a.pendingSkills = skillsCSV
+	if skillsCSV != "" {
+		slog.Info("omp: skill allowlist queued", "skills", skillsCSV)
+	}
+}
+
 // ApplyCronGoal implements core.CronGoalApplier. It stores a one-shot goal-mode
 // objective that StartSession consumes for the next session it creates. omp
 // rejects the `--goal` launch flag in rpc-ui mode, so the session issues the
@@ -374,13 +388,14 @@ func (a *Agent) StartSession(ctx context.Context, sessionID string) (core.AgentS
 	thinking := a.thinkingForNextSession(a.pendingThinking)
 	agent := a.pendingAgent
 	goal := a.pendingGoal
+	skills := a.pendingSkills // skill allowlist for the session's --skills flag
 	if a.pendingModel != "" {
 		model = a.pendingModel
 	}
-	a.pendingModel, a.pendingThinking, a.pendingAgent, a.pendingGoal = "", "", "", ""
+	a.pendingModel, a.pendingThinking, a.pendingAgent, a.pendingGoal, a.pendingSkills = "", "", "", "", ""
 	a.overrideMu.Unlock()
 
-	s, err := newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, agent, goal, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
+	s, err := newOmpSession(ctx, cmd, extraArgs, workDir, model, thinking, agent, goal, skills, ccDataDir, sessionID, extraEnv, appendSystemPrompt)
 	if err == nil {
 		// A live session is the moment a /model open becomes likely; warm the
 		// list now so the card does not have to spawn omp inside its 3s budget.

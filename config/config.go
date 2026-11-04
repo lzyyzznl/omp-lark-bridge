@@ -113,6 +113,7 @@ type Config struct {
 	Webhook            WebhookConfig           `toml:"webhook"`
 	Bridge             BridgeConfig            `toml:"bridge"`
 	Management         ManagementConfig        `toml:"management"`
+	OmpWeb             OmpWebConfig            `toml:"ompweb"`  // bundled ompweb child process
 	Archive            ArchiveConfig           `toml:"archive"` // session library auto-archiving
 	Hub                HubConfig               `toml:"hub"`     // multi-instance hub (see HubConfig)
 	Hooks              []HookConfig            `toml:"hooks"`
@@ -252,6 +253,19 @@ type ManagementConfig struct {
 	Port        int      `toml:"port,omitempty"`         // listen port; default DefaultManagementPort (31990)
 	Token       string   `toml:"token,omitempty"`        // shared secret for authentication; required
 	CORSOrigins []string `toml:"cors_origins,omitempty"` // allowed CORS origins; empty = no CORS
+}
+
+// DefaultOmpWebPort is ompweb's default listen port.
+const DefaultOmpWebPort = 30177
+
+// OmpWebConfig controls the bundled ompweb child process. ompweb is a hard
+// dependency: the bridge starts it alongside the service and supervises it for
+// the process lifetime, so the web workspace is always reachable from the
+// console without a manual `npx`.
+type OmpWebConfig struct {
+	Enabled *bool  `toml:"enabled"`        // nil = enabled by default; explicit false disables
+	Port    int    `toml:"port,omitempty"` // listen port; default DefaultOmpWebPort (30177)
+	Bin     string `toml:"bin,omitempty"`  // ompweb executable; empty = resolve from PATH, then npx fallback
 }
 
 // HubConfig controls multi-instance coordination through a central hub. A hub

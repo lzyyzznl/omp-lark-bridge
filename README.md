@@ -62,6 +62,11 @@ cp config.example.toml config.toml    # 填 app_id / app_secret / work_dir
   `31990`，`config.toml` 的 `[management]` 段可改，如 `port` / `token` / `host`）。
   看板提供定时任务、会话、文件浏览与 REST API（`/api/v1/*`），进入需填 `token`
   （默认 `"1"`，建议改掉）。`[management] enabled = false` 可关闭。
+- **ompweb Web 工作台随服务强绑定**：`daemon install` 会确保 ompweb 已装
+  （缺失时 `npm install -g @kahme247/ompweb`）并让 `omp-lark-bridge.service`
+  `Wants/After` `ompweb.service`，由 systemd 与 OLB 一起拉起
+  （`http://localhost:30177/`）。看板右上角「ompweb ↗」直达，会话可在 ompweb
+  继续。`[ompweb] enabled = false` 可关闭（不推荐）。
 
 ## 在聊天框里能玩什么
 

@@ -194,6 +194,12 @@ func (m *systemdManager) buildUnit(cfg Config) string {
 	sb.WriteString("[Unit]\n")
 	sb.WriteString("Description=omp-lark-bridge - AI Agent Chat Bridge\n")
 	sb.WriteString("After=network-online.target\n")
+	if cfg.OmpwebEnabled {
+		// Start the web workspace alongside this service and make sure it is
+		// up first; ompweb owns its own unit, this only orders the two.
+		sb.WriteString("Wants=ompweb.service\n")
+		sb.WriteString("After=ompweb.service\n")
+	}
 	sb.WriteString("Wants=network-online.target\n\n")
 
 	sb.WriteString("[Service]\n")

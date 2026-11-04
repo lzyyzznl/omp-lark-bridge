@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lzyyzznl/omp-lark-bridge/config"
 	"github.com/lzyyzznl/omp-lark-bridge/daemon"
 )
 
@@ -72,6 +73,24 @@ func daemonInstall(args []string) {
 	if st != nil && st.Installed && !force {
 		fmt.Fprintf(os.Stderr, "Service already installed. Use --force to reinstall.\n")
 		os.Exit(1)
+	}
+
+	// ompweb is a hard dependency: ensure the CLI and its unit exist, then
+	// order the service unit so systemd starts it alongside the bridge.
+	var ompwebCfg config.OmpWebConfig
+	if loaded, err := config.LoadPermissive(configPath); err == nil {
+		ompwebCfg = loaded.OmpWeb
+	}
+	ompwebEnabled := ompwebCfg.Enabled == nil || *ompwebCfg.Enabled
+	cfg.OmpwebEnabled = ompwebEnabled
+	if ompwebEnabled {
+		if err := ensureOmpwebInstalled(ompwebCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+			os.Exit(1)
+		}
+		if err := ensureOmpwebService(ompwebCfg); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: ompweb service: %v\n", err)
+		}
 	}
 
 	if err := mgr.Install(cfg); err != nil {

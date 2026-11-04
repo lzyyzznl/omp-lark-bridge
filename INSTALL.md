@@ -180,14 +180,35 @@ token = "1"         # 进入看板要填的 token，建议改成自己的后重�
 
 验证：`curl -s -o /dev/null -w "%{http_code}" http://localhost:31990/` 应返回 200。
 
-### 5.5 验收（跑通才算装完）
+### 5.5 Web 工作台 ompweb（强依赖，随服务一起拉起）
+
+ompweb（omp 的网页工作台，默认 `http://127.0.0.1:30177`）是 **硬依赖**：
+装 OLB 就等于装它，且随 OLB 服务一起启动。
+
+- `daemon install` 会先确保 `ompweb` 可用：PATH 里没有就自动
+  `npm install -g @kahme247/ompweb`，失败则安装中止（不降级）。
+- 它同时确保 `ompweb.service` 存在（已有则 `enable --now`；没有则调用
+  `ompweb systemd install`），并在 `omp-lark-bridge.service` 里写入
+  `Wants=ompweb.service` + `After=ompweb.service`，由 systemd 与 OLB 一起拉起。
+- ompweb 仍作为独立服务运行（保留其 `BindPaths` 会话挂载与自动更新），
+  OLB 只负责依赖编排，不再进程内另起一份。
+- 前置：Node.js **>= 24**（ompweb 的 npm engines 要求）。
+- 配置在 `config.toml` 的 `[ompweb]` 段（`enabled` / `port` / `bin`）；
+  `enabled = false` 时不写依赖、不拉起。
+
+验证：`curl -s -o /dev/null -w "%{http_code}" http://localhost:30177/` 应返回 200；看板右上角「ompweb ↗」可直接打开。
+
+> 说明：unit 依赖编排目前**完整支持 systemd**（Linux）；macOS/Windows 下仍会确保 ompweb CLI 已安装，但「随服务一起拉起」需对应平台的 launchd/schtasks 编排（暂未内置）。
+
+### 5.6 验收（跑通才算装完）
 
 
 1. `./omp-lark-bridge daemon status` → Running
 2. 日志出现 `platform ready` / `omp-lark-bridge is running`
 3. 在飞书里 ping bot（发 `/help`）能收到卡片
 4. 后台看板可开：`curl -s -o /dev/null -w "%{http_code}" http://localhost:31990/` → `200`；浏览器打开 `http://localhost:31990/` 填 token `1` 能进看板
-5. 特权命令默认全开（本仓库已硬编码为全权限，无 admin 开关）：`/shell` `/show` `/dir` `/restart` `/upgrade` 对通过 `allow_from` 的用户可用；`allow_from` 未设 = 对所有人开放。
+5. ompweb 随服务拉起：`curl -s -o /dev/null -w "%{http_code}" http://localhost:30177/` → `200`；看板「ompweb ↗」可打开
+6. 特权命令默认全开（本仓库已硬编码为全权限，无 admin 开关）：`/shell` `/show` `/dir` `/restart` `/upgrade` 对通过 `allow_from` 的用户可用；`allow_from` 未设 = 对所有人开放。
 
 > ⚠️ 默认 `allow_from` 未设 = **企业内任何飞书用户都能对这台机器执行 shell**。若担心，配好之后设 `allow_from = ["<你的 open_id>"]`（用户对 bot 发 `/whoami` 拿 open_id）。
 
@@ -205,6 +226,7 @@ token = "1"         # 进入看板要填的 token，建议改成自己的后重�
 | 扫码 | `omp-lark-bridge.exe feishu setup --project <name>` |
 | 自启 | `omp-lark-bridge.exe daemon install --work-dir C:\path\to\repo` |
 | 打开后台看板 | `start http://localhost:31990/`（填默认 token `1`） |
+| 打开 ompweb 工作台 | `start http://localhost:30177/`（随服务自动拉起） |
 
 ---
 

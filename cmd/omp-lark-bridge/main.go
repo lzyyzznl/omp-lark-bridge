@@ -1412,6 +1412,15 @@ func main() {
 		apiSrv.Start()
 	}
 
+	// Point the console's "ompweb ↗" entry at the configured address. On
+	// systemd platforms the daemon unit starts ompweb.service alongside this
+	// one (Wants/After); on Windows the bridge spawns and supervises it itself.
+	var ompwebSup ompwebStopper
+	if cfg.OmpWeb.Enabled == nil || *cfg.OmpWeb.Enabled {
+		os.Setenv("OMPWEB_URL", ompwebURL(cfg.OmpWeb))
+		ompwebSup = startOmpwebSupervisor(cfg.OmpWeb)
+	}
+
 	slog.Info("omp-lark-bridge is running", "projects", len(engines))
 
 	// After startup, check if we were restarted and queue the success
@@ -1464,6 +1473,9 @@ func main() {
 	}
 	if logCloser != nil {
 		logCloser.Close()
+	}
+	if ompwebSup != nil {
+		ompwebSup.Stop()
 	}
 	instanceLock.Release()
 

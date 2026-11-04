@@ -28,6 +28,9 @@ type Config struct {
 	LogMaxBackups int
 	EnvPATH       string            // capture user's PATH so agents are accessible
 	EnvExtra      map[string]string // selected environment variables needed by the service runtime
+	// OmpwebEnabled makes the service unit depend on ompweb.service
+	// (Wants/After) so the web workspace starts alongside the bridge.
+	OmpwebEnabled bool
 	// NoCaptureSecrets, when true, restricts the install-time env capture
 	// to proxy-related variables only and skips both the config.toml ${ENV}
 	// placeholder scan and any extension discoverers registered via

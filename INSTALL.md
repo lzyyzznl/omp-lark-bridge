@@ -161,12 +161,33 @@ cp config.example.toml config.toml
 - 装完 daemon 后**二进制被改名加锁**？不会；但**更新二进制前先 `daemon stop`**（Windows 计划任务不会锁文件，但为干净起见停一下）。
 - 常见症状：`daemon status` 显示 Running 但 bot 无响应 → 看日志 `tail -f ~/.omp-lark-bridge/logs/omp-lark-bridge.log`，等 `bot identified` / `engine started` 出现才算真正就绪。
 
-### 5.4 验收（跑通才算装完）
+### 5.4 后台管理看板（默认开启）
+
+服务启动后**默认**在 `http://localhost:31990/` 提供内置 Web 看板（定时任务、
+会话、文件浏览 + `REST /api/v1/*`）。它由 `config.toml` 的 `[management]`
+段控制：
+
+```toml
+[management]
+enabled = true      # 默认开启；显式 false 才关闭
+port = 31990        # 默认端口
+token = "1"         # 进入看板要填的 token，建议改成自己的后重启
+# host = "127.0.0.1"  # 不设 = 监听所有网卡；只在本地访问就设为 127.0.0.1
+```
+
+> ⚠️ 默认 `enabled=true` + `token="1"` + 全部网卡监听：若机器可达局域网，别人
+> 也能看到看板登录页。**只在本机用就设 `host = "127.0.0.1"` 并改掉 token。**
+
+验证：`curl -s -o /dev/null -w "%{http_code}" http://localhost:31990/` 应返回 200。
+
+### 5.5 验收（跑通才算装完）
+
 
 1. `./omp-lark-bridge daemon status` → Running
 2. 日志出现 `platform ready` / `omp-lark-bridge is running`
 3. 在飞书里 ping bot（发 `/help`）能收到卡片
-4. 特权命令默认全开（本仓库已硬编码为全权限，无 admin 开关）：`/shell` `/show` `/dir` `/restart` `/upgrade` 对通过 `allow_from` 的用户可用；`allow_from` 未设 = 对所有人开放。
+4. 后台看板可开：`curl -s -o /dev/null -w "%{http_code}" http://localhost:31990/` → `200`；浏览器打开 `http://localhost:31990/` 填 token `1` 能进看板
+5. 特权命令默认全开（本仓库已硬编码为全权限，无 admin 开关）：`/shell` `/show` `/dir` `/restart` `/upgrade` 对通过 `allow_from` 的用户可用；`allow_from` 未设 = 对所有人开放。
 
 > ⚠️ 默认 `allow_from` 未设 = **企业内任何飞书用户都能对这台机器执行 shell**。若担心，配好之后设 `allow_from = ["<你的 open_id>"]`（用户对 bot 发 `/whoami` 拿 open_id）。
 
@@ -183,6 +204,7 @@ cp config.example.toml config.toml
 | 二进制绝对路径调用 | `C:\path\to\omp-lark-bridge.exe ...`（别用 `.\` 在非标准 shell） |
 | 扫码 | `omp-lark-bridge.exe feishu setup --project <name>` |
 | 自启 | `omp-lark-bridge.exe daemon install --work-dir C:\path\to\repo` |
+| 打开后台看板 | `start http://localhost:31990/`（填默认 token `1`） |
 
 ---
 

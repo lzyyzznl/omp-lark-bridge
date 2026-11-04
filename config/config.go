@@ -246,7 +246,7 @@ const DefaultManagementPort = 31990
 
 // ManagementConfig controls the HTTP Management API for external tools.
 type ManagementConfig struct {
-	Enabled     *bool    `toml:"enabled"`                // default false
+	Enabled     *bool    `toml:"enabled"`                // nil = enabled by default; explicit false disables
 	Host        string   `toml:"host,omitempty"`         // bind address; empty = all interfaces, e.g. "127.0.0.1" for loopback only
 	Port        int      `toml:"port,omitempty"`         // listen port; default DefaultManagementPort (31990)
 	Token       string   `toml:"token,omitempty"`        // shared secret for authentication; required
@@ -4147,7 +4147,7 @@ func EnableWebAdmin(mgmtToken, bridgeToken string) (*WebSetupResult, error) {
 		return nil, fmt.Errorf("parse config: %w", err)
 	}
 
-	mgmtEnabled := cfg.Management.Enabled != nil && *cfg.Management.Enabled
+	mgmtEnabled := cfg.Management.Enabled == nil || *cfg.Management.Enabled
 	bridgeEnabled := cfg.Bridge.Enabled != nil && *cfg.Bridge.Enabled
 
 	if mgmtEnabled && bridgeEnabled {

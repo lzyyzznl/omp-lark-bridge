@@ -57,7 +57,11 @@ cp config.example.toml config.toml    # 填 app_id / app_secret / work_dir
 ```
 
 > 还没装二进制?技能目录自带一键安装:`bash install.sh` 自动下载匹配
-> 平台(linux/darwin × amd64/arm64)的 Release 预编译产物并注册进 PATH —— 新机器秒装。
+
+- **后台管理看板默认开启**：服务启动后自带 `http://localhost:31990/`（默认端口
+  `31990`，`config.toml` 的 `[management]` 段可改，如 `port` / `token` / `host`）。
+  看板提供定时任务、会话、文件浏览与 REST API（`/api/v1/*`），进入需填 `token`
+  （默认 `"1"`，建议改掉）。`[management] enabled = false` 可关闭。
 
 ## 在聊天框里能玩什么
 

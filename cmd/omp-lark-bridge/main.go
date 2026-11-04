@@ -965,7 +965,7 @@ func main() {
 			return result.ManagementPort, result.ManagementToken, !result.AlreadyEnabled, nil
 		})
 		engine.SetWebStatusFunc(func() string {
-			if cfg.Management.Enabled == nil || !*cfg.Management.Enabled {
+			if cfg.Management.Enabled != nil && !*cfg.Management.Enabled {
 				return ""
 			}
 			port := cfg.Management.Port
@@ -1108,7 +1108,7 @@ func main() {
 
 	// Start management API server if enabled
 	var mgmtSrv *core.ManagementServer
-	if cfg.Management.Enabled != nil && *cfg.Management.Enabled {
+	if cfg.Management.Enabled == nil || *cfg.Management.Enabled {
 		port := cfg.Management.Port
 		if port <= 0 {
 			port = config.DefaultManagementPort

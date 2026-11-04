@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -232,6 +234,34 @@ func runFeishuSetup(args []string, requestedMode string) {
 	printBotMenuGuidance(saveResult.PlatformType)
 
 	fmt.Println("提醒：扫码新建通常会自动预配权限与事件订阅；请在开放平台核验发布状态与可用范围。")
+	openManagementDashboard()
+}
+
+// openManagementDashboard opens the management web dashboard in the default
+// browser. The dashboard listens on 127.0.0.1 by default only when the bridge
+// is running; if it is not up yet the browser just shows a connection-refused
+// page, which is fine for the interactive setup flow. Failure to open is a
+// soft error (e.g. headless server) and is only logged to stderr.
+func openManagementDashboard() {
+	port := config.DefaultManagementPort
+	if cfg, err := config.LoadPermissive(config.ConfigPath); err == nil && cfg.Management.Port > 0 {
+		port = cfg.Management.Port
+	}
+	url := fmt.Sprintf("http://localhost:%d/", port)
+	fmt.Printf("\n📋 后台管理看板（默认端口 %d）：%s\n", port, url)
+
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	if err := cmd.Start(); err != nil {
+		fmt.Fprintf(os.Stderr, "  （无法自动打开浏览器：%v，请手动访问上述地址）\n", err)
+	}
 }
 
 func printAllowFromGuidance(appID, appSecret, ownerOpenID string, result *config.FeishuCredentialUpdateResult) {

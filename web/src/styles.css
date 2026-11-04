@@ -84,7 +84,8 @@ p { margin: 0; }
 .masthead-right { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 
 /* ── 布局容器 ── */
-.shell { padding: 28px; max-width: 1280px; margin: 0 auto; }
+/* 两个 tab 共用同一个版心：同宽、同样的左右留白，不随页面铺满整屏。 */
+.shell, .projects-page { max-width: 1360px; margin: 0 auto; padding: 22px 20px 40px; }
 .section-title {
   font-size: 12px;
   font-weight: 600;
@@ -838,7 +839,6 @@ textarea.input { resize: vertical; min-height: 72px; }
 .lib-status-row.st-asking { color: var(--accent); }
 
 /* ── 项目管理页 ── */
-.projects-page { padding: 24px 28px 40px; }
 .projects-head {
   display: flex; align-items: flex-end; justify-content: space-between;
   gap: 16px; flex-wrap: wrap; margin-bottom: 18px;

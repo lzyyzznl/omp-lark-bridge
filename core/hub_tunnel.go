@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -79,7 +80,8 @@ type hubDevicesFile struct {
 type hubClientState struct {
 	ServerURL   string `json:"server_url"`
 	Secret      string `json:"secret"`
-	DeviceToken string `json:"device_token"`
+	DeviceID    string `json:"device_id,omitempty"`
+	DeviceToken string `json:"device_token,omitempty"` // legacy reader/writer
 	DeviceName  string `json:"device_name"`
 	WebURL      string `json:"web_url"`
 }
@@ -219,8 +221,10 @@ func (m *ManagementServer) handleHubPairNew(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	var body struct {
-		DeviceToken string `json:"device_token"`
-		Name        string `json:"name"`
+		DeviceID    string `json:"device_id"`
+		DeviceToken string `json:"device_token"` // legacy alias
+		DeviceName  string `json:"device_name"`
+		Name        string `json:"name"` // legacy alias
 		Host        string `json:"host"`
 		Force       bool   `json:"force"`
 	}
@@ -228,9 +232,34 @@ func (m *ManagementServer) handleHubPairNew(w http.ResponseWriter, r *http.Reque
 		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	token := strings.TrimSpace(body.DeviceToken)
+	token := strings.TrimSpace(body.DeviceID)
+	if token == "" {
+		token = strings.TrimSpace(body.DeviceToken)
+	}
+	autoID := token == ""
+	if autoID {
+		for range 10 {
+			candidate, genErr := newHubDeviceID()
+			if genErr != nil {
+				mgmtError(w, http.StatusInternalServerError, "generate device_id: "+genErr.Error())
+				return
+			}
+			h := m.hub
+			h.mu.Lock()
+			_, exists := h.paired[candidate]
+			h.mu.Unlock()
+			if !exists {
+				token = candidate
+				break
+			}
+		}
+		if token == "" {
+			mgmtError(w, http.StatusInternalServerError, "could not allocate device_id")
+			return
+		}
+	}
 	if !validHubToken(token) {
-		mgmtError(w, http.StatusBadRequest, "device_token must be 1-64 chars of [A-Za-z0-9_-]")
+		mgmtError(w, http.StatusBadRequest, "device_id must be 1-64 chars of [A-Za-z0-9_-]")
 		return
 	}
 	host := ""
@@ -248,7 +277,10 @@ func (m *ManagementServer) handleHubPairNew(w http.ResponseWriter, r *http.Reque
 			return
 		}
 	}
-	name := strings.TrimSpace(body.Name)
+	name := strings.TrimSpace(body.DeviceName)
+	if name == "" {
+		name = strings.TrimSpace(body.Name)
+	}
 	if name == "" {
 		name = token
 	}
@@ -257,7 +289,7 @@ func (m *ManagementServer) handleHubPairNew(w http.ResponseWriter, r *http.Reque
 	h.mu.Lock()
 	if _, exists := h.paired[token]; exists && !body.Force {
 		h.mu.Unlock()
-		mgmtError(w, http.StatusConflict, "device_token is already paired; pass force=true to replace it")
+		mgmtError(w, http.StatusConflict, "device_id is already paired; pass force=true to replace it")
 		return
 	}
 	code := ""
@@ -289,11 +321,13 @@ func (m *ManagementServer) handleHubPairNew(w http.ResponseWriter, r *http.Reque
 	h.mu.Unlock()
 
 	base := publicHubBaseURL(r)
-	command := fmt.Sprintf("omp-lark-bridge hub pair %s %s --name %s", base, code, shellQuote(name))
+	command := fmt.Sprintf("omp-lark-bridge hub pair %s %s --device-name %s", base, code, shellQuote(name))
 	mgmtJSON(w, http.StatusOK, map[string]any{
 		"code":         code,
-		"device_token": token,
-		"name":         name,
+		"device_id":    token,
+		"device_name":  name,
+		"device_token": token, // legacy clients
+		"name":         name,  // legacy clients
 		"host":         host,
 		"web_url":      "https://" + host,
 		"expires_at":   pc.Expires,
@@ -313,8 +347,9 @@ func (m *ManagementServer) handleHubPairClaim(w http.ResponseWriter, r *http.Req
 		return
 	}
 	var body struct {
-		Code string `json:"code"`
-		Name string `json:"name"`
+		Code       string `json:"code"`
+		DeviceName string `json:"device_name"`
+		Name       string `json:"name"` // legacy alias
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
 		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -339,7 +374,10 @@ func (m *ManagementServer) handleHubPairClaim(w http.ResponseWriter, r *http.Req
 		mgmtError(w, http.StatusGone, "pairing code expired")
 		return
 	}
-	name := strings.TrimSpace(body.Name)
+	name := strings.TrimSpace(body.DeviceName)
+	if name == "" {
+		name = strings.TrimSpace(body.Name)
+	}
 	if name == "" {
 		name = pc.Name
 	}
@@ -370,8 +408,10 @@ func (m *ManagementServer) handleHubPairClaim(w http.ResponseWriter, r *http.Req
 	h.mu.Unlock()
 
 	mgmtJSON(w, http.StatusOK, map[string]any{
-		"device_token": pc.Token,
-		"name":         name,
+		"device_id":    pc.Token,
+		"device_name":  name,
+		"device_token": pc.Token, // legacy clients
+		"name":         name,     // legacy clients
 		"secret":       secret,
 		"host":         pc.Host,
 		"web_url":      rec.WebURL,
@@ -432,8 +472,9 @@ func (m *ManagementServer) handleHubPairJoin(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	var body struct {
-		Code string `json:"code"`
-		Name string `json:"name"`
+		Code       string `json:"code"`
+		DeviceName string `json:"device_name"`
+		Name       string `json:"name"` // legacy alias
 	}
 	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
 		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
@@ -465,7 +506,11 @@ func (m *ManagementServer) handleHubPairJoin(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	payload, _ := json.Marshal(map[string]string{"code": code, "name": strings.TrimSpace(body.Name)})
+	deviceName := strings.TrimSpace(body.DeviceName)
+	if deviceName == "" {
+		deviceName = strings.TrimSpace(body.Name)
+	}
+	payload, _ := json.Marshal(map[string]string{"code": code, "device_name": deviceName})
 	req, err := http.NewRequest(http.MethodPost, serverURL+"/api/v1/hub/pair/claim", bytes.NewReader(payload))
 	if err != nil {
 		mgmtError(w, http.StatusBadGateway, "build claim request: "+err.Error())
@@ -512,6 +557,7 @@ func (m *ManagementServer) handleHubPairJoin(w http.ResponseWriter, r *http.Requ
 	st := hubClientState{
 		ServerURL:   serverURL,
 		Secret:      out.Secret,
+		DeviceID:    out.DeviceToken,
 		DeviceToken: out.DeviceToken,
 		DeviceName:  out.Name,
 		WebURL:      normalizeHubWebURL(out.WebURL),
@@ -602,7 +648,8 @@ func (m *ManagementServer) handleHubNodeUpdate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	var body struct {
-		Name           *string `json:"name"`
+		DeviceName     *string `json:"device_name"`
+		Name           *string `json:"name"` // legacy alias
 		Secret         *string `json:"secret"`
 		LoginCode      *string `json:"login_code"`
 		ClearLoginCode bool    `json:"clear_login_code"`
@@ -611,7 +658,11 @@ func (m *ManagementServer) handleHubNodeUpdate(w http.ResponseWriter, r *http.Re
 		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
 		return
 	}
-	if body.Name == nil && body.Secret == nil && body.LoginCode == nil && !body.ClearLoginCode {
+	nameField := body.DeviceName
+	if nameField == nil {
+		nameField = body.Name
+	}
+	if nameField == nil && body.Secret == nil && body.LoginCode == nil && !body.ClearLoginCode {
 		mgmtError(w, http.StatusBadRequest, "no fields to update")
 		return
 	}
@@ -628,8 +679,8 @@ func (m *ManagementServer) handleHubNodeUpdate(w http.ResponseWriter, r *http.Re
 		return
 	}
 	secretRotated := false
-	if body.Name != nil {
-		name := strings.TrimSpace(*body.Name)
+	if nameField != nil {
+		name := strings.TrimSpace(*nameField)
 		if name == "" {
 			name = device
 		}
@@ -764,9 +815,126 @@ func (m *ManagementServer) hubHostToken(host string) string {
 	return h.hostIndex[host]
 }
 
+// recordHubAccess aggregates relay observations by node+IP. The current lock
+// state is overlaid when the center reads the records, so unlocking shows up
+// immediately without mutating history.
+func (m *ManagementServer) recordHubAccess(token, host, ip, path string, status int) {
+	h := m.hub
+	if h == nil || token == "" || ip == "" {
+		return
+	}
+	now := time.Now()
+	if path == "" {
+		path = "/"
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.access == nil {
+		h.access = map[string]*HubAccessRecord{}
+	}
+	key := token + "|" + ip
+	rec := h.access[key]
+	if rec == nil {
+		rec = &HubAccessRecord{Device: token, Host: host, IP: ip, FirstSeen: now}
+		h.access[key] = rec
+	}
+	rec.Count++
+	rec.LastSeen = now
+	rec.LastPath = path
+	rec.LastStatus = status
+	if len(h.access) > 2000 {
+		var oldestKey string
+		var oldest time.Time
+		for k, v := range h.access {
+			if oldestKey == "" || v.LastSeen.Before(oldest) {
+				oldestKey, oldest = k, v.LastSeen
+			}
+		}
+		if oldestKey != "" {
+			delete(h.access, oldestKey)
+		}
+	}
+}
+
+// handleHubAccess returns recent relays for the center console. Center only:
+// clients get 409, so they cannot enumerate other nodes' access history.
+func (m *ManagementServer) handleHubAccess(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if !m.requireHubServer(w) {
+		return
+	}
+	device := strings.TrimSpace(r.URL.Query().Get("device"))
+	if device != "" && !validHubToken(device) {
+		mgmtError(w, http.StatusBadRequest, "invalid device_id")
+		return
+	}
+	h := m.hub
+	h.mu.Lock()
+	records := make([]HubAccessRecord, 0, len(h.access))
+	for _, rec := range h.access {
+		if device != "" && rec.Device != device {
+			continue
+		}
+		records = append(records, *rec)
+	}
+	h.mu.Unlock()
+	now := time.Now()
+	for i := range records {
+		records[i].LockedUntil = time.Time{}
+		if retry := m.lockout().lockedFor(authKey(records[i].IP, "relay")); retry > 0 {
+			records[i].LockedUntil = now.Add(retry)
+		}
+	}
+	sort.Slice(records, func(i, j int) bool { return records[i].LastSeen.After(records[j].LastSeen) })
+	mgmtJSON(w, http.StatusOK, map[string]any{"records": records})
+}
+
+// handleHubAccessUnlock is the center-only manual escape hatch. It clears both
+// relay and management lock scopes for the IP; the same endpoint is the SSH
+// fallback via http://127.0.0.1:31990.
+func (m *ManagementServer) handleHubAccessUnlock(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		mgmtError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	if !m.requireHubServer(w) {
+		return
+	}
+	var body struct {
+		IP     string `json:"ip"`
+		Device string `json:"device_id"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 16<<10)).Decode(&body); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	ip := strings.TrimSpace(body.IP)
+	if net.ParseIP(ip) == nil {
+		mgmtError(w, http.StatusBadRequest, "ip is required")
+		return
+	}
+	m.lockout().unlockIP(ip)
+	slog.Info("hub: access ip unlocked", "ip", ip, "device", body.Device)
+	mgmtJSON(w, http.StatusOK, map[string]any{"unlocked": true, "ip": ip})
+}
+
 // hubLoginAllowed enforces the optional center-side login code for a node.
 // The code is stored as a hash; browsers use it as the HTTP Basic password.
 // An empty hash preserves the previous direct-access behavior.
+func (m *ManagementServer) hubLoginRequired(token string) bool {
+	h := m.hub
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	rec := h.paired[token]
+	return rec != nil && rec.LoginCodeHash != ""
+}
+
 func (m *ManagementServer) hubLoginAllowed(req *http.Request, token string) bool {
 	h := m.hub
 	if h == nil {
@@ -860,11 +1028,34 @@ func (r *hubRelay) handle(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "unknown node", http.StatusNotFound)
 		return
 	}
-	if !r.m.hubLoginAllowed(req, token) {
-		w.Header().Set("WWW-Authenticate", `Basic realm="OMP node"`)
-		http.Error(w, "login required", http.StatusUnauthorized)
+	ip := requestIP(req)
+	key := authKey(ip, "relay")
+	guard := r.m.lockout()
+	path := req.URL.Path
+	if retry := guard.lockedFor(key); retry > 0 {
+		r.m.recordHubAccess(token, host, ip, path, http.StatusTooManyRequests)
+		httpLocked(w, retry)
 		return
 	}
+	if r.m.hubLoginRequired(token) {
+		if !r.m.hubLoginAllowed(req, token) {
+			retry, _ := guard.fail(key)
+			status := http.StatusUnauthorized
+			if retry > 0 {
+				status = http.StatusTooManyRequests
+			}
+			r.m.recordHubAccess(token, host, ip, path, status)
+			if retry > 0 {
+				httpLocked(w, retry)
+				return
+			}
+			w.Header().Set("WWW-Authenticate", `Basic realm="OMP node"`)
+			http.Error(w, "login required", http.StatusUnauthorized)
+			return
+		}
+		guard.success(key)
+	}
+	r.m.recordHubAccess(token, host, ip, path, http.StatusOK)
 	if r.m.hubTunnelFor(token) == nil {
 		http.Error(w, "node offline", http.StatusBadGateway)
 		return
@@ -1065,6 +1256,21 @@ func newHubPairCode() (string, error) {
 	return string(buf), nil
 }
 
+const hubDeviceIDAlphabet = "abcdefghjkmnpqrstuvwxyz23456789"
+
+// newHubDeviceID creates a readable, non-secret identity such as
+// "node-7f3k9m2q". The center uses it as the registry key and host label.
+func newHubDeviceID() (string, error) {
+	buf := make([]byte, 10)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	for i := range buf {
+		buf[i] = hubDeviceIDAlphabet[int(buf[i])%len(hubDeviceIDAlphabet)]
+	}
+	return "node-" + string(buf), nil
+}
+
 func newHubDeviceSecret() (string, error) {
 	buf := make([]byte, 32)
 	if _, err := rand.Read(buf); err != nil {
@@ -1128,7 +1334,7 @@ func (m *ManagementServer) defaultNodeHost(token string) string {
 	if suffix == "" {
 		return ""
 	}
-	return "omp-" + token + "." + suffix
+	return "omp-" + strings.ToLower(token) + "." + suffix
 }
 
 func normalizeHubHost(raw string) (string, error) {

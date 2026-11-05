@@ -1361,12 +1361,16 @@ func main() {
 				}
 				hubStateFile = filepath.Join(cfg.DataDir, name)
 			}
+			hubDeviceID := strings.TrimSpace(cfg.Hub.DeviceID)
+			if hubDeviceID == "" {
+				hubDeviceID = strings.TrimSpace(cfg.Hub.DeviceToken)
+			}
 			if err := mgmtSrv.EnableHub(
 				cfg.Hub.Secret,
 				strings.EqualFold(cfg.Hub.Mode, "server"),
 				core.HubClientOptions{
 					ServerURL:      cfg.Hub.ServerURL,
-					DeviceToken:    cfg.Hub.DeviceToken,
+					DeviceToken:    hubDeviceID,
 					DeviceName:     cfg.Hub.DeviceName,
 					SyncIntervalM:  cfg.Hub.SyncIntervalM,
 					StateFile:      hubStateFile,

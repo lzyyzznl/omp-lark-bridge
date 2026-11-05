@@ -222,21 +222,23 @@ ompweb（omp 的网页工作台，默认 `http://127.0.0.1:30177`）是 **硬依
   在节点执行：
 
   ```bash
-  omp-lark-bridge hub pair https://bridge.example.com <CODE> --name zte-linux
+  omp-lark-bridge hub pair https://bridge.example.com <CODE> --device-name zte-linux
   ```
 
   把输出的 `[hub]` / `[ompweb]` 合并进节点 `config.toml`，再 `daemon restart`。
 - 节点只需要**出站 443**；不需要公网端口，也不需要单独的 Cloudflare Tunnel。
-- 也可以先以未配对状态启动（`server_url` 配好，`secret` / `device_token` 留空），
+- 也可以先以未配对状态启动（`server_url` 配好，`secret` / `device_id` 留空），
   在节点本机调用 `POST /api/v1/hub/pair/join` 贴入配对码；新节点立即生效，已配对节点
   返回 `restart_required`，重启后生效。
-- 验证：控制台节点在线，`https://omp-<device_token>.example.com/` 返回 200；
+- 验证：控制台节点在线，`https://omp-<device_id>.example.com/` 返回 200；
   未配对 host 返回 404，已配对但离线返回 502。
 - 节点页：中心和客户端都显示全部已配对节点；中心可改名称/独立密钥/登录码，
   客户端只读。
 - 登录码是中心 relay 的 HTTP Basic 密码，不是 OMP Web 自身密码；OMP Web 仍应设置
   `OMP_WEB_PASSWORD_HASH` 或用 Cloudflare Access。管理 token、hub secret、登录码、
   配对码都不要外传。
+- 中心按 IP 记录节点访问；连续错误超过 5 次锁 10 分钟，第二次 30 分钟，第三次起 24 小时。
+  中心节点页可查看/解锁，客户端只读；SSH 兜底接口见 `docs/HUB-NODES.md`。
 - 中兴 `zte-linux` / `zte-book` 不需要特殊安装包：按实际系统走 Linux/Windows 步骤。
 
 完整步骤（中心配置、Cloudflare、Linux/Windows 节点、动态移除、排障）见
@@ -257,8 +259,8 @@ ompweb（omp 的网页工作台，默认 `http://127.0.0.1:30177`）是 **硬依
 | 自启 | `omp-lark-bridge.exe daemon install --work-dir C:\path\to\repo` |
 | 打开后台看板 | `start http://localhost:31990/`（填默认 token `1`） |
 | 打开 ompweb 工作台 | `start http://localhost:30177/`（随服务自动拉起） |
-| 接入中心 | 控制台生成命令后运行 `omp-lark-bridge.exe hub pair https://bridge.example.com <CODE> --name node1` |
-| 节点 OMP Web | `https://omp-<device_token>.example.com/`（中心自动分配，勿预建固定 host） |
+| 接入中心 | 控制台生成命令后运行 `omp-lark-bridge.exe hub pair https://bridge.example.com <CODE> --device-name node1` |
+| 节点 OMP Web | `https://omp-<device_id>.example.com/`（中心自动分配，勿预建固定 host） |
 
 ---
 
@@ -336,7 +338,7 @@ npm config set registry https://registry.npmmirror.com   # 全局
 - [ ] 日志出现 `bot identified` / `platform ready` / `omp-lark-bridge is running`
 - [ ] 飞书里对 bot 发 `/help` 收到卡片
 - [ ] （接入中心时）节点 `hub pair` 成功，`hub-client.json` 存在且权限 `0600`
-- [ ] （接入中心时）控制台节点在线，`https://omp-<token>.<domain>/` 返回 200
+- [ ] （接入中心时）控制台节点在线，`https://omp-<device_id>.<domain>/` 返回 200
 - [ ] `git status` 干净（`config.toml`、`*.exe`、`web/dist`、`node_modules` 都不入库）
 
 ---

@@ -60,6 +60,9 @@ type ManagementServer struct {
 	server      *http.Server
 	startedAt   time.Time
 
+	authGuardOnce sync.Once
+	authGuard     *authLockout
+
 	mu      sync.RWMutex
 	engines map[string]*Engine // project name → engine
 
@@ -128,6 +131,11 @@ func NewManagementServer(port int, token string, corsOrigins []string) *Manageme
 		engines:     make(map[string]*Engine),
 		startedAt:   time.Now(),
 	}
+}
+
+func (m *ManagementServer) lockout() *authLockout {
+	m.authGuardOnce.Do(func() { m.authGuard = newAuthLockout() })
+	return m.authGuard
 }
 
 func (m *ManagementServer) RegisterEngine(name string, e *Engine) {
@@ -338,6 +346,8 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 		// web 看板用的视图/转发端点：走 management token（包 wrap）。
 		mux.HandleFunc(prefix+"/hub/nodes", m.wrap(m.handleHubNodes))
 		mux.HandleFunc(prefix+"/hub/nodes/", m.wrap(m.handleHubNodeUpdate))
+		mux.HandleFunc(prefix+"/hub/access", m.wrap(m.handleHubAccess))
+		mux.HandleFunc(prefix+"/hub/access/unlock", m.wrap(m.handleHubAccessUnlock))
 		mux.HandleFunc(prefix+"/hub/overview", m.wrap(m.handleHubOverview))
 		mux.HandleFunc(prefix+"/hub/overview/", m.wrap(m.handleHubOverviewRoutes))
 	}
@@ -443,12 +453,44 @@ func (m *ManagementServer) wrap(handler http.HandlerFunc) http.HandlerFunc {
 			w.WriteHeader(http.StatusNoContent)
 			return
 		}
+		key := authKey(requestIP(r), "management")
+		guard := m.lockout()
+		if retry := guard.lockedFor(key); retry > 0 {
+			// SSH recovery: a local admin may still unlock an IP (even if
+			// loopback itself got locked) with a valid management token.
+			localDirect := requestFromLoopback(r) &&
+				r.Header.Get("CF-Connecting-IP") == "" && r.Header.Get("X-Forwarded-For") == ""
+			if localDirect && strings.HasSuffix(r.URL.Path, "/hub/access/unlock") && m.authenticate(r) {
+				guard.success(key)
+				handler(w, r)
+				return
+			}
+			mgmtLocked(w, retry)
+			return
+		}
 		if !m.authenticate(r) {
+			// Missing credentials (e.g. the login screen before a token is
+			// entered) are not a brute-force attempt; only a provided wrong
+			// token counts toward the IP lock.
+			if hasManagementCredential(r) {
+				if retry, _ := guard.fail(key); retry > 0 {
+					mgmtLocked(w, retry)
+					return
+				}
+			}
 			mgmtError(w, http.StatusUnauthorized, "unauthorized: missing or invalid token")
 			return
 		}
+		guard.success(key)
 		handler(w, r)
 	}
+}
+
+func hasManagementCredential(r *http.Request) bool {
+	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
+		return strings.TrimPrefix(auth, "Bearer ") != ""
+	}
+	return r.URL.Query().Get("token") != ""
 }
 
 func (m *ManagementServer) authenticate(r *http.Request) bool {

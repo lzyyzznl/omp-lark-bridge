@@ -502,7 +502,7 @@ func TestHubClient_JoinFromConsole(t *testing.T) {
 		t.Fatalf("web_url = %q, want trailing slash trimmed", got.Data.WebURL)
 	}
 	sent := (*seen)[0]
-	if sent["code"] != "ABCD2345" || sent["name"] != "typed name" {
+	if sent["code"] != "ABCD2345" || sent["device_name"] != "typed name" {
 		t.Fatalf("claim payload = %v, want normalized code and typed name", sent)
 	}
 
@@ -607,13 +607,16 @@ func TestHubNodes_ClientReadOnlyDirectory(t *testing.T) {
 	}
 	defer m.Stop()
 	m.hub.mu.Lock()
+	m.hub.clientToken = "node-a"
 	m.hub.remoteNodes = []HubNodeView{
 		{ID: "node-a", Name: "Node A", WebURL: "https://omp-a.example", Online: true, SecretSet: true},
 	}
 	m.hub.mu.Unlock()
 
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/hub/nodes", nil)
+	req.Host = "127.0.0.1:31990"
 	rec := httptest.NewRecorder()
-	m.handleHubNodes(rec, httptest.NewRequest(http.MethodGet, "/api/v1/hub/nodes", nil))
+	m.handleHubNodes(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("client nodes status=%d body=%s", rec.Code, rec.Body.String())
 	}
@@ -632,6 +635,10 @@ func TestHubNodes_ClientReadOnlyDirectory(t *testing.T) {
 	}
 	if len(got.Data.Nodes) != 1 || got.Data.Nodes[0].ID != "node-a" {
 		t.Fatalf("client nodes = %+v", got.Data.Nodes)
+	}
+	if !got.Data.Nodes[0].IsSelf || got.Data.Nodes[0].WebURL != ompWebURLForRequest(req) ||
+		!strings.HasPrefix(got.Data.Nodes[0].WebURL, "http://127.0.0.1:") {
+		t.Fatalf("self node did not use shortest path: %+v", got.Data.Nodes[0])
 	}
 }
 
@@ -754,5 +761,80 @@ func TestHubPair_SecretsArePerNode(t *testing.T) {
 	}
 	if !m.authHubDevice(reqB, "node-b") || m.authHubDevice(reqA, "node-b") {
 		t.Fatal("node-b secret did not authenticate only node-b")
+	}
+}
+
+func TestHubPair_AutoDeviceID(t *testing.T) {
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("global-secret", true, HubClientOptions{
+		StateFile:      t.TempDir() + "/hub-devices.json",
+		RelayPort:      -1,
+		NodeHostSuffix: "example.com",
+	}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+
+	rec := postJSON(t, m.handleHubPairNew, "/api/v1/hub/pair/new", map[string]any{
+		"device_name": "Auto Node",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("auto pair/new status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Data struct {
+			Code       string `json:"code"`
+			DeviceID   string `json:"device_id"`
+			DeviceName string `json:"device_name"`
+			Host       string `json:"host"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if !strings.HasPrefix(created.Data.DeviceID, "node-") || created.Data.DeviceName != "Auto Node" {
+		t.Fatalf("auto device = %+v", created.Data)
+	}
+	if created.Data.Host != "omp-"+created.Data.DeviceID+".example.com" {
+		t.Fatalf("auto host = %q, want derived from %q", created.Data.Host, created.Data.DeviceID)
+	}
+	rec = postJSON(t, m.handleHubPairClaim, "/api/v1/hub/pair/claim", map[string]any{"code": created.Data.Code})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("claim status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var claimed struct {
+		Data struct {
+			DeviceID    string `json:"device_id"`
+			DeviceToken string `json:"device_token"`
+			DeviceName  string `json:"device_name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim: %v", err)
+	}
+	if claimed.Data.DeviceID != created.Data.DeviceID || claimed.Data.DeviceToken != created.Data.DeviceID ||
+		claimed.Data.DeviceName != "Auto Node" {
+		t.Fatalf("claim aliases = %+v", claimed.Data)
+	}
+
+	rec = postJSON(t, m.handleHubPairNew, "/api/v1/hub/pair/new", map[string]any{
+		"device_id":   "explicit-node",
+		"device_name": "Explicit",
+		"host":        "omp-explicit.example.com",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("explicit pair/new status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var explicit struct {
+		Data struct {
+			DeviceID   string `json:"device_id"`
+			DeviceName string `json:"device_name"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &explicit); err != nil {
+		t.Fatalf("decode explicit: %v", err)
+	}
+	if explicit.Data.DeviceID != "explicit-node" || explicit.Data.DeviceName != "Explicit" {
+		t.Fatalf("explicit aliases = %+v", explicit.Data)
 	}
 }

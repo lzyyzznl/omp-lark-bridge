@@ -101,6 +101,7 @@ type hubData struct {
 
 	// ── 反向隧道 / 配对（server 模式） ──────────────────────────────
 	paired         map[string]*HubDeviceRecord // device_token → 已配对设备
+	access         map[string]*HubAccessRecord // device|ip → recent access
 	hostIndex      map[string]string           // public host → device_token
 	pairCodes      map[string]*HubPairCode     // 一次性配对码
 	tunnels        map[string]*hubTunnel       // device_token → 在线隧道
@@ -125,6 +126,7 @@ func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubCli
 		outbox:         map[string][]HubOp{},
 		results:        map[string]HubOpResult{},
 		paired:         map[string]*HubDeviceRecord{},
+		access:         map[string]*HubAccessRecord{},
 		hostIndex:      map[string]string{},
 		pairCodes:      map[string]*HubPairCode{},
 		tunnels:        map[string]*hubTunnel{},
@@ -152,7 +154,10 @@ func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubCli
 				secret = st.Secret
 			}
 			if opts.DeviceToken == "" {
-				opts.DeviceToken = st.DeviceToken
+				opts.DeviceToken = strings.TrimSpace(st.DeviceID)
+				if opts.DeviceToken == "" {
+					opts.DeviceToken = st.DeviceToken
+				}
 			}
 			if opts.DeviceName == "" {
 				opts.DeviceName = st.DeviceName
@@ -573,6 +578,7 @@ func (m *ManagementServer) hubSyncOnce() {
 	state := hubClientState{
 		ServerURL:   h.serverURL,
 		Secret:      h.secret,
+		DeviceID:    h.clientToken,
 		DeviceToken: h.clientToken,
 		DeviceName:  h.deviceName,
 		WebURL:      h.webURL,
@@ -776,6 +782,19 @@ func (m *ManagementServer) handleHubOverview(w http.ResponseWriter, r *http.Requ
 // HubNodeView is the browser-safe node summary used by the console's Nodes
 // tab. It omits the shared secret and raw agent/session lists; ID is the
 // non-secret device token used by the remove action.
+// HubAccessRecord is an aggregated access observation for one node/IP.
+type HubAccessRecord struct {
+	Device      string    `json:"device_id"`
+	Host        string    `json:"host"`
+	IP          string    `json:"ip"`
+	Count       uint64    `json:"count"`
+	FirstSeen   time.Time `json:"first_seen"`
+	LastSeen    time.Time `json:"last_seen"`
+	LastPath    string    `json:"last_path,omitempty"`
+	LastStatus  int       `json:"last_status"`
+	LockedUntil time.Time `json:"locked_until,omitempty"`
+}
+
 type HubNodeView struct {
 	ID           string    `json:"id"`
 	Name         string    `json:"name"`
@@ -786,6 +805,7 @@ type HubNodeView struct {
 	SessionCount int       `json:"session_count"`
 	SecretSet    bool      `json:"secret_set"`
 	LoginCodeSet bool      `json:"login_code_set"`
+	IsSelf       bool      `json:"is_self,omitempty"`
 }
 
 // hubOnlineWindow is how long after the last registration a node still counts
@@ -868,9 +888,19 @@ func (m *ManagementServer) handleHubNodes(w http.ResponseWriter, r *http.Request
 	if h.serverURL != "" {
 		role = "client"
 	}
+	clientToken := h.clientToken
 	var nodes []HubNodeView
 	if role == "client" {
-		nodes = append(nodes, h.remoteNodes...)
+		for _, n := range h.remoteNodes {
+			if clientToken != "" && n.ID == clientToken {
+				// The node being viewed is this console's own node. Do not
+				// detour through the public relay: use the same shortest-path
+				// address as the console's "OMP Web" button.
+				n.WebURL = ompWebURLForRequest(r)
+				n.IsSelf = true
+			}
+			nodes = append(nodes, n)
+		}
 	} else {
 		nodes = m.hubNodeViewsLocked()
 	}

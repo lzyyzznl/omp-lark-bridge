@@ -16,7 +16,7 @@
 |---|---|---|
 | `bridge.example.com` | 中心 `127.0.0.1:31990` | 管理控制台、配对、节点列表 |
 | `omp-center.example.com` | 中心 `127.0.0.1:30177` | 中心自己的 OMP Web |
-| `omp-<token>.example.com` | 中心 relay `127.0.0.1:31991` | 每个节点的 OMP Web |
+| `omp-<device_id>.example.com` | 中心 relay `127.0.0.1:31991` | 每个节点的 OMP Web |
 
 节点只主动出站 `443` 连接中心，不需要公网端口，也不需要为每个节点单独建 Cloudflare Tunnel。
 
@@ -128,10 +128,13 @@ sudo systemctl restart cloudflared
 1. 浏览器打开 `https://bridge.example.com/`，填入管理 token。
 2. 进入「节点」→「添加节点」。
 3. 填写：
-   - `device_token`：例如 `pc5`，只允许 `[A-Za-z0-9_-]`，全中心唯一
-   - `显示名称`：例如 `zte-linux`
-   - `公网主机`：留空，自动生成 `omp-pc5.example.com`
+   - 设备 ID：可留空自动生成；手填只允许 `[A-Za-z0-9_-]`，全中心唯一
+   - 设备名称：例如 `zte-linux`，可留空
+   - `公网主机`：留空，自动生成 `omp-<device_id>.example.com`
 4. 复制页面给出的命令。
+
+设备 ID 留空时中心会自动生成 `node-xxxxxxxx`；它只是公开的节点标识，
+不是密钥，决定 host 和 relay 路由。设备名称可以随时在中心「编辑」里改，不会改变 URL。
 
 配对码：
 
@@ -149,13 +152,13 @@ sudo systemctl restart cloudflared
 
 ```bash
 omp-lark-bridge hub pair https://bridge.example.com <CODE> \
-  --name zte-linux \
+  --device-name zte-linux \
   --state-file /home/you/.omp-lark-bridge/hub-client.json
 ```
 
 成功后：
 
-- 写入 `hub-client.json`（创建权限 `0600`），包含 `server_url`、`secret`、`device_token`、`web_url`
+- 写入 `hub-client.json`（创建权限 `0600`），包含 `server_url`、`secret`、`device_id`、`web_url`（同时保留旧 `device_token` 兼容字段）
 - 终端打印 `[hub]` / `[ompweb]` 配置片段
 - 控制台节点开始显示；隧道建立后为在线
 
@@ -164,7 +167,7 @@ omp-lark-bridge hub pair https://bridge.example.com <CODE> \
 ### 2.3 免改配置贴码配对（可选）
 
 新版 client 模式允许**未配对启动**：`server_url` 和 `state_file` 配好，
-`secret` / `device_token` 都留空。启动后节点只开放配对入口，不会建立同步或隧道；
+`secret` / `device_id` 都留空。启动后节点只开放配对入口，不会建立同步或隧道；
 配对成功后新节点会立即生效，不需要改配置或重启。
 
 ```toml
@@ -173,7 +176,7 @@ enabled = true
 mode = "client"
 server_url = "https://bridge.example.com"
 state_file = "/home/you/.omp-lark-bridge/hub-client.json"
-# secret / device_token 留空，等待贴码配对
+# secret / device_id 留空，等待贴码配对
 ```
 
 中心「添加节点」生成码后，在**节点本机**调用节点自己的管理 API：
@@ -209,7 +212,7 @@ port = 30177
 public_url = "https://omp-pc5.example.com"
 ```
 
-`server_url`、`secret`、`device_token` 默认从 `hub-client.json` 读取；如果 `config.toml` 里也显式写了，显式值优先。
+`server_url`、`secret`、`device_id` 默认从 `hub-client.json` 读取；如果 `config.toml` 里也显式写了，显式值优先。
 
 建议显式写 `[ompweb] public_url`。它决定看板和 OMP Web 链接的浏览器地址；不写时 OLB 会尝试用配对返回的 `web_url` 自动填充，但独立部署的 OMP Web/服务环境不一定继承该环境变量。
 
@@ -232,8 +235,13 @@ omp-lark-bridge daemon status
 | 添加/移除节点 | ✅ | ❌ |
 | 修改名称/密钥/登录码 | ✅ | ❌ |
 
-客户端调用 `PATCH /api/v1/hub/nodes/{token}`、`POST /hub/pair/new`、
-`DELETE /hub/pair/{token}` 都会收到 `409 hub is not in server mode`。
+客户端调用 `PATCH /api/v1/hub/nodes/{device_id}`、`POST /hub/pair/new`、
+`DELETE /hub/pair/{device_id}` 都会收到 `409 hub is not in server mode`。
+
+客户端节点列表里如果某一行就是本机，后端会把该行的 `web_url` 换成控制台同源的
+最短地址（loopback / 局域网 / Tailscale 主机上的 OMP Web 端口），并标记 `is_self`；
+其他节点仍然走 `https://omp-<device_id>.<domain>/` 的公网 relay。这样从节点列表
+点本机不会绕 Cloudflare。
 
 中心节点行点「编辑」可改：
 
@@ -247,15 +255,52 @@ omp-lark-bridge daemon status
 对应 API：
 
 ```text
-PATCH /api/v1/hub/nodes/{device_token}
+PATCH /api/v1/hub/nodes/{device_id}
 Authorization: Bearer <中心 management token>
 Content-Type: application/json
 
-{"name":"zte-linux","secret":"<new-secret>","login_code":"<code>"}
+{"device_name":"zte-linux","secret":"<new-secret>","login_code":"<code>"}
 ```
 
 `login_code` 非空即设置；`clear_login_code: true` 清除。`secret` 至少 16 字符；
 不传的字段保持不变。
+
+### 2.6 访问记录与 IP 锁定
+
+中心会记录每个节点的 relay 访问，并在密码/登录码连续错误时按 IP 锁定：
+
+- 同一 IP 连续错误 **超过 5 次**（第 6 次）开始锁定。
+- 第一次锁 **10 分钟**，第二次 **30 分钟**，第三次及以后 **24 小时**。
+- 成功认证会清空该 IP 的失败次数和升级阶段。
+- 管理 token 与节点登录码分别计数；管理台正常的轮询不会重置节点登录码的失败次数。
+- 锁定只存在当前服务进程内；重启 OLB 会清空锁定和访问记录。
+
+中心「节点」→ 某节点 →「访问记录」可以看到：
+
+- 访问 IP、次数、最后访问时间、最后路径
+- 最近状态（正常 / 登录失败 / 已锁）
+- 锁定截止时间
+- 「解锁」按钮（仅中心；客户端写接口返回 409）
+
+访问记录按 `节点 + IP` 聚合，最多保留约 2000 条；仅在内存中，重启清空。
+
+**SSH 兜底解锁**（在中心本机执行，带中心 management token）：
+
+```bash
+TOKEN='从 config.toml [management] token 读取，不要回显'
+curl -sS -X POST   -H "Authorization: Bearer $TOKEN"   -H 'Content-Type: application/json'   -d '{"ip":"203.0.113.10"}'   http://127.0.0.1:31990/api/v1/hub/access/unlock
+```
+
+该接口只在中心 server 模式可用，会同时清除该 IP 的管理 token 和节点登录码锁定。
+客户端节点调用会得到 `409 hub is not in server mode`。
+
+网络注意：
+
+- 经 Cloudflare 进入时，中心从 `CF-Connecting-IP` / `X-Forwarded-For` 取真实客户端 IP；
+  只有来自 loopback（cloudflared）的请求才信任这些头。
+- 直连局域网/Tailscale 时用 socket 地址，不信任转发头。
+- **OMP Web 自己的密码登录发生在 ompweb 进程内，OLB 看不到失败次数。**
+  要享受这层锁定，请给节点设置中心登录码，或使用 Cloudflare Access 等外层认证。
 
 ## 3. Linux 节点安装（含中兴 `zte-linux`）
 
@@ -285,7 +330,7 @@ omp-lark-bridge --version
 
 ```bash
 omp-lark-bridge hub pair https://bridge.example.com <CODE> \
-  --name zte-linux \
+  --device-name zte-linux \
   --state-file /home/you/.omp-lark-bridge/hub-client.json
 ```
 
@@ -341,7 +386,7 @@ curl -sS -H "Authorization: Bearer <节点管理 token>" \
   http://127.0.0.1:31990/api/v1/status | jq '.data.hub'
 ```
 
-未配对时应看到 `"paired": false`；配对成功后为 `true`，并带 `server_url` / `device_token` / `web_url`。
+未配对时应看到 `"paired": false`；配对成功后为 `true`，并带 `server_url` / `device_id` / `web_url`。
 
 ## 4. Windows 节点安装（含 `zte-book` 等）
 
@@ -365,7 +410,7 @@ Set-Location C:\omp-node
 
 ```powershell
 .\omp-lark-bridge-windows-amd64.exe hub pair https://bridge.example.com <CODE> `
-  --name zte-book `
+  --device-name zte-book `
   --state-file "$env:USERPROFILE\.omp-lark-bridge\hub-client.json"
 ```
 
@@ -407,7 +452,7 @@ omp-lark-bridge daemon stop
 控制台「节点」页点「移除」，或调用管理 API：
 
 ```text
-DELETE /api/v1/hub/pair/<device_token>
+DELETE /api/v1/hub/pair/<device_id>
 Authorization: Bearer <管理 token>
 ```
 
@@ -415,21 +460,21 @@ Authorization: Bearer <管理 token>
 
 - 删除配对记录和 host 映射
 - 关闭现有隧道
-- `https://omp-<token>.example.com/` 变为 `404 unknown node`
+- `https://omp-<device_id>.example.com/` 变为 `404 unknown node`
 - 节点本机 OMP Web、Agent、cron、Feishu 继续运行
 - 节点的下一次隧道连接收到 `403 device is not paired`
 - 节点可能继续 `/hub/register`，但不会重新出现在「节点」页
 
 如果不再需要这个节点，建议在节点上同时停服务或关闭 `[hub]`，避免无意义的重连日志。
 
-再次需要时，重新「添加节点」并配对即可；同一个 `device_token` 可以复用。
+再次需要时，重新「添加节点」并配对即可；同一个 `device_id` 可以复用。
 
 ## 6. 排障
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
 | 客户端节点页报 `Cannot read properties of undefined (reading 'nodes')` | 客户端仍运行旧二进制，本地 `/hub/nodes` 仍被旧的 server-only 校验拦截 | 更新节点二进制到本版本并重启；中心侧会返回 `role=client, can_edit=false` |
-| `404 unknown node` | host 没配对 / `device_token` 不一致 / DNS 未走泛解析 | 控制台核对 host；确认配对记录；检查 `*.example.com` DNS 和 ingress |
+| `404 unknown node` | host 没配对 / `device_id` 不一致 / DNS 未走泛解析 | 控制台核对 host；确认配对记录；检查 `*.example.com` DNS 和 ingress |
 | `502 node offline` | 节点服务/隧道没连上 | 节点看 `hub: tunnel` 日志；确认出站 443、`server_url`、`hub-client.json` |
 | `403 device is not paired` | 节点已被移除，或中心 `hub-devices.json` 丢失 | 重新生成配对码并 `hub pair` |
 | `401 invalid hub secret` | 节点 secret 与中心不一致，或中心改密钥后节点还没同步 | 等节点下一次 `/hub/register` 自动采用新密钥；仍失败则重新配对；不要手改 secret |
@@ -459,7 +504,7 @@ Authorization: Bearer <管理 token>
 
 `zte-linux` / `zte-book` 等设备不需要特殊中心配置：
 
-- 中心只认 `device_token`、`name`、`host`。
+- 中心只认 `device_id`、`device_name`、`host`。
 - 节点按操作系统走 Linux 或 Windows 安装步骤。
 - 节点只需要出站 443；如果设备在 NAT/防火墙后，不需要端口映射。
 - 当前如果 SSH 22 不可达，需要在中兴设备本地（或通过其远程桌面/带外管理）执行 `hub pair` 和重启服务；中心侧无法代替节点本地安装。

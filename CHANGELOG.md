@@ -22,6 +22,14 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   客户端写操作返回 409。节点密码轮换通过下一次 `/hub/register` 自动落盘并重连。
 - 每个新配对节点使用独立 hub 密钥，不再共享全局 secret；旧记录继续兼容全局 secret。
 - 节点 relay 支持可选登录码（HTTP Basic），中心只保存哈希；未设置时保持直接转发。
+- 节点身份术语统一为 `device_id` / `device_name`（旧 `device_token` / `name` 继续兼容）；
+  `device_id` 留空时中心自动生成 `node-xxxxxxxx`，并据此生成 host。
+- 客户端节点列表中的本机行使用控制台同源的最短 OMP Web 地址（loopback/局域网/Tailscale），
+  不再固定绕公网域名；其他节点仍走 relay。
+- 管理 token / 节点登录码连续错误超过 5 次后按 IP 锁定：10 分钟、30 分钟、24 小时逐级升级；
+  成功认证重置。管理台与 relay 分别计数。
+- 中心节点页新增「访问记录」：按节点+IP 聚合次数、最后访问、路径、状态和锁定时间；
+  中心可手动解锁，客户端只读。提供本机 `POST /api/v1/hub/access/unlock` SSH 兜底。
 - Hub 节点可在**未配对**状态下启动：client 模式允许 `secret`/`device_token` 为空，
   此时只开放配对路径；已有凭据后再启动同步与反向隧道。新增 `POST /api/v1/hub/pair/join`
   （management token 保护）在节点本机完成配对——居中生成的一次性码贴进来即可，免改配置；

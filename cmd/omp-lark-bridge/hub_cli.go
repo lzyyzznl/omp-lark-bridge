@@ -19,11 +19,11 @@ import (
 // keeps an outbound tunnel to the center; it never needs an inbound port.
 func runHubCommand(args []string) {
 	if len(args) == 0 || args[0] != "pair" {
-		fmt.Fprintln(os.Stderr, "Usage: omp-lark-bridge hub pair <server_url> <code> [--name NAME] [--state-file PATH]")
+		fmt.Fprintln(os.Stderr, "Usage: omp-lark-bridge hub pair <server_url> <code> [--device-name NAME] [--state-file PATH]")
 		os.Exit(2)
 	}
 	if len(args) < 3 {
-		fmt.Fprintln(os.Stderr, "Usage: omp-lark-bridge hub pair <server_url> <code> [--name NAME] [--state-file PATH]")
+		fmt.Fprintln(os.Stderr, "Usage: omp-lark-bridge hub pair <server_url> <code> [--device-name NAME] [--state-file PATH]")
 		os.Exit(2)
 	}
 	serverURL := strings.TrimRight(strings.TrimSpace(args[1]), "/")
@@ -34,13 +34,18 @@ func runHubCommand(args []string) {
 	}
 
 	fs := flag.NewFlagSet("hub pair", flag.ContinueOnError)
-	name := fs.String("name", "", "device display name")
+	name := fs.String("name", "", "legacy alias for --device-name")
+	deviceName := fs.String("device-name", "", "device display name")
 	stateFile := fs.String("state-file", defaultHubStateFile(), "pairing state file")
 	if err := fs.Parse(args[3:]); err != nil {
 		os.Exit(2)
 	}
+	displayName := strings.TrimSpace(*deviceName)
+	if displayName == "" {
+		displayName = strings.TrimSpace(*name)
+	}
 
-	payload, _ := json.Marshal(map[string]string{"code": code, "name": *name})
+	payload, _ := json.Marshal(map[string]string{"code": code, "device_name": displayName})
 	req, err := http.NewRequest(http.MethodPost, serverURL+"/api/v1/hub/pair/claim", bytes.NewReader(payload))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "pair: build request: %v\n", err)
@@ -62,8 +67,10 @@ func runHubCommand(args []string) {
 		OK    bool   `json:"ok"`
 		Error string `json:"error"`
 		Data  struct {
-			DeviceToken string `json:"device_token"`
-			Name        string `json:"name"`
+			DeviceID    string `json:"device_id"`
+			DeviceName  string `json:"device_name"`
+			DeviceToken string `json:"device_token"` // legacy response
+			Name        string `json:"name"`         // legacy response
 			Secret      string `json:"secret"`
 			Host        string `json:"host"`
 			WebURL      string `json:"web_url"`
@@ -78,7 +85,15 @@ func runHubCommand(args []string) {
 		os.Exit(1)
 	}
 	out := envelope.Data
-	if out.DeviceToken == "" || out.Secret == "" {
+	deviceID := out.DeviceID
+	if deviceID == "" {
+		deviceID = out.DeviceToken
+	}
+	chosenName := out.DeviceName
+	if chosenName == "" {
+		chosenName = out.Name
+	}
+	if deviceID == "" || out.Secret == "" {
 		fmt.Fprintln(os.Stderr, "pair: center returned an incomplete response")
 		os.Exit(1)
 	}
@@ -88,8 +103,9 @@ func runHubCommand(args []string) {
 	st := map[string]string{
 		"server_url":   serverURL,
 		"secret":       out.Secret,
-		"device_token": out.DeviceToken,
-		"device_name":  out.Name,
+		"device_id":    deviceID,
+		"device_name":  chosenName,
+		"device_token": deviceID, // legacy state readers
 		"web_url":      out.WebURL,
 	}
 	b, _ := json.MarshalIndent(st, "", "  ")
@@ -105,7 +121,7 @@ func runHubCommand(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("paired %s (%s)\n", out.DeviceToken, out.Name)
+	fmt.Printf("paired %s (%s)\n", deviceID, deviceName)
 	fmt.Printf("web:   %s\n", out.WebURL)
 	fmt.Printf("state: %s\n", *stateFile)
 	fmt.Println()

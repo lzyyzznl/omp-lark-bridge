@@ -213,15 +213,16 @@ enabled = false           # 默认关闭 / default off
 # secret = "换一个长随机串"  # 中心默认/旧记录兼容密钥；新节点配对后使用独立密钥（X-Hub-Secret）
 # relay_port = 31991       # server：本机 relay 端口；cloudflared 的 omp-* 指到它
 # state_file = ""          # server：已配对设备；client：配对状态；默认 <data_dir>/hub-*.json
-# node_host_suffix = ""    # server：配对页留空时自动生成 omp-<token>.<suffix>；默认取 ompweb 域名后缀
+# node_host_suffix = ""    # server：配对页留空时自动生成 omp-<device_id>.<suffix>；默认取 ompweb 域名后缀
 # 节点接入：中心「节点」页点「添加节点」生成 10 分钟有效的一次性命令，在节点执行：
-#   omp-lark-bridge hub pair https://hub.example.com <code> --name node1
+#   omp-lark-bridge hub pair https://hub.example.com <code> --device-name node1
 # 节点服务已在运行（且配了 server_url）时，也可不重启直接在节点本机贴码配对：
 #   curl -X POST -H "Authorization: Bearer <management token>" -H "Content-Type: application/json" \
 #     -d '{"code":"XXXX-XXXX","name":"node1"}' http://127.0.0.1:31990/api/v1/hub/pair/join
 # 已配对节点重复贴码会落盘新凭据并返回 restart_required，需重启后生效。
 # 下面是 client 模式专属：
 # server_url = "https://hub.example.com"   # 中心 hub 地址（不带结尾斜杠）
-# device_token = "device-001"              # 本机设备标识（全 hub 唯一）
-# device_name = "机房柱机"                  # 显示名，默认取主机名
+# device_id = "node-7f3k9m2q"              # 本机唯一 ID；由配对命令写入状态文件，通常不用手填
+# device_name = "机房柱机"                  # 设备名称，默认取主机名
+# device_token = ""                        # 旧字段，等价于 device_id；仅兼容旧配置
 # sync_interval_mins = 1                   # 上报/轮询间隔，默认 1 分钟

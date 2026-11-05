@@ -11,12 +11,15 @@ export default function NodesPage({ onToast }) {
   const [role, setRole] = useState('')
   const [canEdit, setCanEdit] = useState(false)
   const [pairOpen, setPairOpen] = useState(false)
-  const [pairForm, setPairForm] = useState({ device_token: '', name: '', host: '' })
+  const [pairForm, setPairForm] = useState({ device_id: '', device_name: '', host: '' })
   const [pairing, setPairing] = useState(false)
   const [pairResult, setPairResult] = useState(null)
   const [editing, setEditing] = useState(null)
-  const [editForm, setEditForm] = useState({ name: '', secret: '', login_code: '', clear_login_code: false })
+  const [editForm, setEditForm] = useState({ device_name: '', secret: '', login_code: '', clear_login_code: false })
   const [saving, setSaving] = useState(false)
+  const [accessNode, setAccessNode] = useState(null)
+  const [accessRecords, setAccessRecords] = useState(null)
+  const [accessLoading, setAccessLoading] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -62,17 +65,43 @@ export default function NodesPage({ onToast }) {
     }
   }
 
+  const loadAccess = async (n) => {
+    setAccessNode(n)
+    setAccessRecords(null)
+    setAccessLoading(true)
+    try {
+      const r = await api.access(n.id)
+      setAccessRecords(r?.records || [])
+    } catch (err) {
+      onToast?.('err', err.message || String(err))
+    } finally {
+      setAccessLoading(false)
+    }
+  }
+
+  const unlockIP = async (rec) => {
+    if (!window.confirm(`解锁 IP ${rec.ip}？会清除该 IP 的登录锁定。`)) return
+    try {
+      await api.unlockAccess(rec.ip)
+      onToast?.('ok', `已解锁 ${rec.ip}`)
+      if (accessNode) await loadAccess(accessNode)
+      await load()
+    } catch (err) {
+      onToast?.('err', err.message || String(err))
+    }
+  }
+
   const startEdit = (n) => {
     setEditing(n)
-    setEditForm({ name: n.name || '', secret: '', login_code: '', clear_login_code: false })
+    setEditForm({ device_name: n.name || '', secret: '', login_code: '', clear_login_code: false })
   }
 
   const saveEdit = async (e) => {
     e.preventDefault()
     if (!editing) return
     const fields = {}
-    const name = editForm.name.trim()
-    if (name !== (editing.name || '')) fields.name = name
+    const name = editForm.device_name.trim()
+    if (name !== (editing.name || '')) fields.device_name = name
     if (editForm.secret.trim()) fields.secret = editForm.secret.trim()
     if (editForm.login_code.trim()) fields.login_code = editForm.login_code.trim()
     if (editForm.clear_login_code) fields.clear_login_code = true
@@ -95,16 +124,12 @@ export default function NodesPage({ onToast }) {
 
   const submitPair = async (e) => {
     e.preventDefault()
-    if (!pairForm.device_token.trim()) {
-      onToast?.('err', 'device_token 必填')
-      return
-    }
     setPairing(true)
     setPairResult(null)
     try {
       const r = await api.pairNode({
-        device_token: pairForm.device_token.trim(),
-        name: pairForm.name.trim(),
+        device_id: pairForm.device_id.trim(),
+        device_name: pairForm.device_name.trim(),
         host: pairForm.host.trim(),
       })
       if (!r?.code) throw new Error('生成失败：检查 device_token 是否已配对')
@@ -150,15 +175,15 @@ export default function NodesPage({ onToast }) {
           <form className="pair-form" onSubmit={submitPair}>
             <input
               className="input"
-              placeholder="device_token，例如 pc1"
-              value={pairForm.device_token}
-              onChange={e => setPairForm(f => ({ ...f, device_token: e.target.value }))}
+              placeholder="设备 ID（留空自动生成，例如 node-7f3k9m2q）"
+              value={pairForm.device_id}
+              onChange={e => setPairForm(f => ({ ...f, device_id: e.target.value }))}
             />
             <input
               className="input"
-              placeholder="显示名称，例如 zte-linux"
-              value={pairForm.name}
-              onChange={e => setPairForm(f => ({ ...f, name: e.target.value }))}
+              placeholder="设备名称，例如 zte-linux（可选）"
+              value={pairForm.device_name}
+              onChange={e => setPairForm(f => ({ ...f, device_name: e.target.value }))}
             />
             <input
               className="input"
@@ -171,7 +196,7 @@ export default function NodesPage({ onToast }) {
             </button>
           </form>
           <div className="hint" style={{ marginTop: 8 }}>
-            留空时自动生成 omp-&lt;token&gt;.&lt;中心域名&gt;；泛解析已开启，添加第 N 个节点不需要再建 DNS/ingress。
+            设备 ID 留空会自动生成；公网主机留空时使用 omp-&lt;设备ID&gt;.&lt;中心域名&gt;。泛解析已开启，添加第 N 个节点不需要再建 DNS/ingress。
           </div>
           {pairResult && (
             <div className="pair-result">
@@ -194,9 +219,9 @@ export default function NodesPage({ onToast }) {
           <form className="pair-form" onSubmit={saveEdit}>
             <input
               className="input"
-              placeholder="显示名称"
-              value={editForm.name}
-              onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+              placeholder="设备名称"
+              value={editForm.device_name}
+              onChange={e => setEditForm(f => ({ ...f, device_name: e.target.value }))}
             />
             <input
               className="input mono"
@@ -233,6 +258,63 @@ export default function NodesPage({ onToast }) {
           </form>
           <div className="hint" style={{ marginTop: 8 }}>
             密钥用于节点和中心认证，修改后节点下次同步会自动采用；登录码用于浏览器经中心访问该节点（HTTP Basic 密码），留空保持原值。
+          </div>
+        </div>
+      )}
+
+      {accessNode && canEdit && (
+        <div className="pair-panel">
+          <div className="pair-title">
+            访问记录 · {accessNode.name}
+            <button className="btn btn-ghost" type="button" style={{ float: 'right' }} onClick={() => setAccessNode(null)}>
+              关闭
+            </button>
+          </div>
+          {accessLoading ? (
+            <div className="hint">读取中…</div>
+          ) : (accessRecords || []).length === 0 ? (
+            <div className="hint">还没有访问记录。</div>
+          ) : (
+            <div className="nodes-table-wrap" style={{ marginTop: 8 }}>
+              <table className="nodes-table">
+                <thead>
+                  <tr>
+                    <th>IP</th>
+                    <th>次数</th>
+                    <th>最后访问</th>
+                    <th>路径</th>
+                    <th>状态</th>
+                    <th>锁定</th>
+                    <th>操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accessRecords.map((a) => {
+                    const locked = a.locked_until && new Date(a.locked_until) > new Date()
+                    const status = a.last_status === 429 ? '已锁' : a.last_status === 401 ? '登录失败' : '正常'
+                    return (
+                      <tr key={`${a.ip}-${a.last_seen}`}>
+                        <td className="mono">{a.ip}</td>
+                        <td className="num">{a.count}</td>
+                        <td className="mono">{formatTime(a.last_seen)}</td>
+                        <td className="mono">{a.last_path || '/'}</td>
+                        <td><span className={`badge ${a.last_status === 200 ? 'on' : 'off'}`}>{status}</span></td>
+                        <td className="mono">{locked ? formatTime(a.locked_until) : '—'}</td>
+                        <td>
+                          <button className="btn btn-ghost" onClick={() => unlockIP(a)} disabled={!locked}>
+                            解锁
+                          </button>
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+          <div className="hint" style={{ marginTop: 8 }}>
+            锁定只影响当前服务进程；重启会清空。SSH 兜底：POST http://127.0.0.1:31990/api/v1/hub/access/unlock
+            {' '}（带中心 management token，body 为 {'{'} "ip": "x.x.x.x" {'}'}）。
           </div>
         </div>
       )}
@@ -277,7 +359,13 @@ export default function NodesPage({ onToast }) {
             <tbody>
               {nodes.map((n) => (
                 <tr key={n.id || n.name}>
-                  <td className="mono">{n.name}</td>
+                  <td>
+                    <div className="mono">
+                      {n.name}
+                      {n.is_self ? <span className="badge on" style={{ marginLeft: 6 }}>本机</span> : null}
+                    </div>
+                    <div className="hint mono">{n.id}</div>
+                  </td>
                   <td><span className={`badge ${n.online ? 'on' : 'off'}`}>{n.online ? '在线' : '离线'}</span></td>
                   <td className="mono">{formatTime(n.last_seen)}</td>
                   <td className="num">{n.agent_count ?? 0}</td>
@@ -298,6 +386,11 @@ export default function NodesPage({ onToast }) {
                       {canEdit && (
                         <button className="btn btn-ghost" onClick={() => startEdit(n)}>
                           编辑
+                        </button>
+                      )}
+                      {canEdit && (
+                        <button className="btn btn-ghost" onClick={() => loadAccess(n)}>
+                          访问记录
                         </button>
                       )}
                       {canEdit && (

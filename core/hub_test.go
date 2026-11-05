@@ -316,7 +316,8 @@ func TestHub_ClientSyncLoopIntegration(t *testing.T) {
 		t.Fatalf("decode client nodes: %v", err)
 	}
 	if clientNodes.Data.Role != "client" || clientNodes.Data.CanEdit || len(clientNodes.Data.Nodes) != 1 ||
-		clientNodes.Data.Nodes[0].ID != "devC" || clientNodes.Data.Nodes[0].WebURL != "https://omp-c.example" {
+		clientNodes.Data.Nodes[0].ID != "devC" || !clientNodes.Data.Nodes[0].IsSelf ||
+		!strings.HasPrefix(clientNodes.Data.Nodes[0].WebURL, "http://127.0.0.1:") {
 		t.Fatalf("client nodes = %+v", clientNodes.Data)
 	}
 

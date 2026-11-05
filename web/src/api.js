@@ -137,9 +137,13 @@ export const api = {
   ompWeb: () => request('/ompweb'),
   // GET /api/v1/hub/nodes → {nodes:[...], role:'server'|'client', can_edit:boolean}
   nodes: () => request('/hub/nodes'),
-  // PATCH /api/v1/hub/nodes/{id} {name?,secret?,login_code?,clear_login_code?}
+  // PATCH /api/v1/hub/nodes/{id} {device_name?,secret?,login_code?,clear_login_code?}
   updateNode: (id, fields) => request(`/hub/nodes/${encodeURIComponent(id)}`, { method: 'PATCH', body: fields }),
-  // POST /api/v1/hub/pair/new {device_token,name,host} → {code,command,web_url,expires_at}
+  // GET /api/v1/hub/access?device={id} → {records:[...]}（中心只读）
+  access: (device) => request(`/hub/access${device ? `?device=${encodeURIComponent(device)}` : ''}`),
+  // POST /api/v1/hub/access/unlock {ip} → {unlocked:true}（中心专用，也用于 SSH 兜底）
+  unlockAccess: (ip) => request('/hub/access/unlock', { method: 'POST', body: { ip } }),
+  // POST /api/v1/hub/pair/new {device_id?,device_name?,host?} → {code,device_id,device_name,command,web_url,expires_at}
   pairNode: (payload) => request('/hub/pair/new', { method: 'POST', body: payload }),
   // DELETE /api/v1/hub/pair/{device} → {removed:true}
   unpairNode: (id) => request(`/hub/pair/${encodeURIComponent(id)}`, { method: 'DELETE' }),

@@ -278,7 +278,8 @@ type HubConfig struct {
 	Enabled        *bool  `toml:"enabled"`                      // default false
 	Mode           string `toml:"mode,omitempty"`               // "server" | "client"; empty disables
 	Secret         string `toml:"secret,omitempty"`             // shared secret; required for both modes
-	DeviceToken    string `toml:"device_token,omitempty"`       // client identity; required in client mode
+	DeviceID       string `toml:"device_id,omitempty"`          // client identity; preferred
+	DeviceToken    string `toml:"device_token,omitempty"`       // legacy alias for DeviceID
 	DeviceName     string `toml:"device_name,omitempty"`        // friendly name; default = hostname
 	ServerURL      string `toml:"server_url,omitempty"`         // client: http(s)://hub-host (no trailing slash)
 	SyncIntervalM  int    `toml:"sync_interval_mins,omitempty"` // client keepalive/poll interval; default 1

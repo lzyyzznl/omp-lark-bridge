@@ -153,14 +153,14 @@ make release-publish   # 全平台产物发布到 GitHub Release(新机器 insta
 
 节点数量不预设。控制台「节点」页点「添加节点」生成一次性命令，节点执行
 `hub pair` 即可接入；不再需要时点「移除」。每个节点自动使用
-`omp-<device_token>.<domain>` 的 host，由 `*.example.com` 泛解析 + relay 动态路由，
+`omp-<device_id>.<domain>` 的 host，由 `*.example.com` 泛解析 + relay 动态路由，
 无需预建 `pc1..pc4` 之类的固定槽位。
 
 ### 两种模式
 
 - **server**：中心；`[hub] mode = "server"`。注册 `/hub/*`，启动 relay（默认
   `127.0.0.1:31991`），维护 `hub-devices.json`。
-- **client**：节点；`[hub] mode = "client"`。用配对码换取 token + secret，主动向中心
+- **client**：节点；`[hub] mode = "client"`。用配对码换取 device_id + secret，主动向中心
   建立 WSS 隧道，把本机 OMP Web 通过隧道暴露给中心。
 
 旧的控制面仍然保留：client 每约 60 秒 `POST /api/v1/hub/register` 上报
@@ -169,18 +169,18 @@ agent/session 元数据，并拉取中心投递的 run/edit op。**OMP Web 页�
 
 ### 添加节点
 
-1. 中心控制台「节点」→「添加节点」，填 `device_token`（如 `pc5`）和名称；host 留空。
-2. 中心生成 10 分钟有效的一次性码，并自动推导 `omp-pc5.example.com`。
+1. 中心控制台「节点」→「添加节点」，设备 ID 可留空（自动生成 `node-xxxxxxxx`），设备名称可选；host 留空。
+2. 中心生成 10 分钟有效的一次性码，并自动推导 `omp-<device_id>.example.com`。
 3. 在节点执行控制台给出的命令：
 
    ```bash
-   omp-lark-bridge hub pair https://bridge.example.com <CODE> --name zte-linux
+   omp-lark-bridge hub pair https://bridge.example.com <CODE> --device-name zte-linux
    ```
 
 4. 把命令输出的 `[hub]` / `[ompweb]` 合并进节点 `config.toml`，重启节点服务。
 5. 控制台节点显示在线；浏览器打开 `https://omp-pc5.example.com/`。
 
-节点也可以先以**未配对状态**启动（`server_url` 配好，`secret` / `device_token` 留空），
+节点也可以先以**未配对状态**启动（`server_url` 配好，`secret` / `device_id` 留空），
 然后在节点本机调用 `POST /api/v1/hub/pair/join` 贴入配对码。新节点会立即生效；已配对
 节点返回 `restart_required`，重启后生效。详见
 [docs/HUB-NODES.md](./docs/HUB-NODES.md)。
@@ -195,12 +195,21 @@ agent/session 元数据，并拉取中心投递的 run/edit op。**OMP Web 页�
 - **中心**：可添加/移除节点，也可编辑每个节点的名称、独立密钥、登录码。
 - **客户端**：只读；没有添加/编辑/移除按钮，API 也会拒绝写操作。
 
+客户端节点列表里如果某一行就是本机，打开时使用控制台同源的最短地址
+（loopback / 局域网 / Tailscale 上同一主机的 OMP Web 端口），不再绕公网域名；
+其他节点仍然通过 `omp-<device_id>.<domain>` 的公网 relay 访问。
+
 中心修改密钥后，节点在下一次 `/hub/register` 同步时自动采用新密钥并重连；
 修改名称不会被子节点心跳覆盖。
 
 **登录码**是浏览器经中心访问节点时使用的 HTTP Basic 密码，中心只保存哈希；
 它不是节点 OMP Web 自身的登录密码（`OMP_WEB_PASSWORD_HASH` 仍由节点本地管理）。
 不设置登录码时，中心 relay 保持原来的直接转发行为。
+
+中心会按 IP 记录节点访问，并在密码/登录码错误超过 5 次后锁定：
+第一次 10 分钟、第二次 30 分钟、第三次起 24 小时。中心节点页可查看访问记录并解锁；
+客户端只读。锁定和最近访问记录在当前进程内存中，重启清空；SSH 兜底解锁接口见
+[docs/HUB-NODES.md](./docs/HUB-NODES.md)。
 
 ### 配置
 

@@ -198,6 +198,7 @@ token = "1"             # 初始默认 1，可改成任意串；改后需重启 
 enabled = true          # 默认开启；显式 false 才关闭
 port = 30177            # 默认 30177
 # bin = "/usr/local/bin/ompweb"  # 指定可执行文件；不设则从 PATH 找，找不到回退 npx
+# public_url = "https://omp.example.com"  # 浏览器访问地址（如 Cloudflare Tunnel 后面）；不设则用 127.0.0.1
 
 # =============================================================================
 # Hub / 多实例中心同步
@@ -210,6 +211,11 @@ enabled = false           # 默认关闭 / default off
 # mode = "server"          # 本机作为中心（配合下方 secret；注册 /hub/* 端点）
 # mode = "client"          # 本机作为设备，向 server_url 注册并接收转发任务
 # secret = "换一个长随机串"  # 共享密钥，server/client 必须一致（X-Hub-Secret）
+# relay_port = 31991       # server：本机 relay 端口；cloudflared 的 omp-* 指到它
+# state_file = ""          # server：已配对设备；client：配对状态；默认 <data_dir>/hub-*.json
+# node_host_suffix = ""    # server：配对页留空时自动生成 omp-<token>.<suffix>；默认取 ompweb 域名后缀
+# 节点接入：中心「节点」页点「添加节点」生成一次性命令，在节点执行：
+#   omp-lark-bridge hub pair https://hub.example.com <code> --name node1
 # 下面是 client 模式专属：
 # server_url = "https://hub.example.com"   # 中心 hub 地址（不带结尾斜杠）
 # device_token = "device-001"              # 本机设备标识（全 hub 唯一）

@@ -384,3 +384,57 @@ func TestHub_WebOverviewEndpoints(t *testing.T) {
 		t.Fatalf("result after execution = %s, want 执行完成", rec.Body.String())
 	}
 }
+
+func TestHub_NodesWebURL(t *testing.T) {
+	mgmt, ts := hubTestServer(t, "sec")
+
+	code, body := hubPost(t, ts.URL+"/api/v1/hub/register", "sec", map[string]any{
+		"device_token": "devX",
+		"name":         "设备X",
+		"web_url":      "https://omp-devx.example.com/",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("register status = %d body=%s", code, body)
+	}
+
+	rec := httptest.NewRecorder()
+	mgmt.handleHubNodes(rec, httptest.NewRequest(http.MethodGet, "/api/v1/hub/nodes", nil))
+	var got struct {
+		Data struct {
+			Nodes []HubNodeView `json:"nodes"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode nodes: %v (%s)", err, rec.Body.String())
+	}
+	if len(got.Data.Nodes) != 1 {
+		t.Fatalf("nodes = %+v, want one", got.Data.Nodes)
+	}
+	n := got.Data.Nodes[0]
+	if n.WebURL != "https://omp-devx.example.com" {
+		t.Errorf("web_url = %q, want trailing slash trimmed", n.WebURL)
+	}
+	if !n.Online {
+		t.Errorf("online = false right after register")
+	}
+
+	// Node-reported URLs are untrusted: javascript:/userinfo must be dropped.
+	code, body = hubPost(t, ts.URL+"/api/v1/hub/register", "sec", map[string]any{
+		"device_token": "devY",
+		"name":         "设备Y",
+		"web_url":      "javascript:alert(1)",
+	})
+	if code != http.StatusOK {
+		t.Fatalf("register devY status = %d body=%s", code, body)
+	}
+	rec = httptest.NewRecorder()
+	mgmt.handleHubNodes(rec, httptest.NewRequest(http.MethodGet, "/api/v1/hub/nodes", nil))
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode nodes: %v", err)
+	}
+	for _, node := range got.Data.Nodes {
+		if node.Name == "设备Y" && node.WebURL != "" {
+			t.Fatalf("unsafe web_url survived: %q", node.WebURL)
+		}
+	}
+}

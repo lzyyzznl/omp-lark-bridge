@@ -9,9 +9,11 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.0
+	github.com/hashicorp/yamux v0.1.2
 	github.com/larksuite/oapi-sdk-go/v3 v3.5.3
 	github.com/mdp/qrterminal/v3 v3.2.1
 	github.com/robfig/cron/v3 v3.0.1
+	golang.org/x/sys v0.43.0
 	modernc.org/sqlite v1.49.1
 	rsc.io/qr v0.2.0
 )
@@ -40,7 +42,6 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	golang.org/x/exp v0.0.0-20260410095643-746e56fc9e2f // indirect
-	golang.org/x/sys v0.43.0 // indirect
 	golang.org/x/term v0.42.0 // indirect
 	golang.org/x/text v0.36.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect

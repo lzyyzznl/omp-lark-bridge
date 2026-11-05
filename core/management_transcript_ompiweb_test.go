@@ -74,3 +74,56 @@ func TestTranscriptOmpWeb_MirrorsIntoOmpSessionsDir(t *testing.T) {
 		t.Errorf("headerless status = %d, want 422", rec.Code)
 	}
 }
+
+// TestOmpWebURLs pins the loopback/public split: probes stay on the internal
+// address, while browser links prefer the configured public URL.
+func TestOmpWebURLs(t *testing.T) {
+	t.Setenv("OMPWEB_URL", "http://127.0.0.1:9999/")
+	t.Setenv("OMPWEB_PUBLIC_URL", "")
+	if got := ompWebPublicURL(); got != "http://127.0.0.1:9999" {
+		t.Errorf("fallback public URL = %q, want internal", got)
+	}
+	t.Setenv("OMPWEB_PUBLIC_URL", "https://omp.example.com/")
+	if got := ompWebPublicURL(); got != "https://omp.example.com" {
+		t.Errorf("public URL = %q, want configured", got)
+	}
+	if got := ompWebConfiguredPublicURL(); got != "https://omp.example.com" {
+		t.Errorf("configured public URL = %q", got)
+	}
+}
+
+// TestTranscriptOmpWeb_PrefersPublicURL is the regression test for the
+// public-domain redirect bug: transcript links must use OMPWEB_PUBLIC_URL
+// instead of the server's loopback address.
+func TestTranscriptOmpWeb_PrefersPublicURL(t *testing.T) {
+	home := t.TempDir()
+	agentDir := filepath.Join(home, "agent")
+	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
+	t.Setenv("OMPWEB_URL", "http://127.0.0.1:9999/")
+	t.Setenv("OMPWEB_PUBLIC_URL", "https://omp.example.com/")
+
+	dir := t.TempDir()
+	id := "2026-01-01_public"
+	body := `{"type":"session","version":3,"id":"sess-2","cwd":"/w"}` + "\n"
+	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := &ManagementServer{}
+	rec := httptest.NewRecorder()
+	m.transcriptOmpWeb(rec, dir, id)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var resp struct {
+		Data struct {
+			URL string `json:"url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if want := "https://omp.example.com/?session=sess-2"; resp.Data.URL != want {
+		t.Errorf("url = %q, want %q", resp.Data.URL, want)
+	}
+}

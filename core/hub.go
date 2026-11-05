@@ -9,6 +9,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -27,6 +28,7 @@ import (
 type HubDevice struct {
 	Token    string          `json:"token"`
 	Name     string          `json:"name"`
+	WebURL   string          `json:"web_url,omitempty"`
 	Address  string          `json:"address,omitempty"`
 	LastSeen time.Time       `json:"last_seen"`
 	Agents   []*OmpAgentInfo `json:"agents"`
@@ -69,10 +71,14 @@ type HubOpResult struct {
 
 // HubClientOptions 配置 client 模式的同步目标。
 type HubClientOptions struct {
-	ServerURL     string
-	DeviceToken   string
-	DeviceName    string
-	SyncIntervalM int // 0 → 1 分钟
+	ServerURL      string
+	DeviceToken    string
+	DeviceName     string
+	SyncIntervalM  int // 0 → 1 分钟
+	StateFile      string
+	RelayPort      int
+	TargetAddr     string // client: local ompweb address, default 127.0.0.1:30177
+	NodeHostSuffix string // server: default public suffix for omp-<token>.<suffix>
 }
 
 // hubData 挂在 ManagementServer 上；nil 表示 hub 未启用。
@@ -90,29 +96,76 @@ type hubData struct {
 	syncEvery   time.Duration
 	remote      []HubDevice // client 模式：最近一次拉到的设备目录
 	stop        chan struct{}
+
+	// ── 反向隧道 / 配对（server 模式） ──────────────────────────────
+	paired         map[string]*HubDeviceRecord // device_token → 已配对设备
+	hostIndex      map[string]string           // public host → device_token
+	pairCodes      map[string]*HubPairCode     // 一次性配对码
+	tunnels        map[string]*hubTunnel       // device_token → 在线隧道
+	stateFile      string
+	relayPort      int
+	nodeHostSuffix string
+	relay          *hubRelay
+
+	// ── 反向隧道（client 模式） ────────────────────────────────────
+	webURL     string // 配对时中心分配的公开地址
+	targetAddr string // 本地 ompweb 地址，默认 127.0.0.1:30177
 }
 
 // EnableHub 启用 hub。serverMode=true 时注册 /hub/* 端点（必须在 Start 前调用）；
 // 否则启动 client 同步循环，周期性上报本机 inventory 并执行 server 转发的 op。
 func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubClientOptions) error {
-	if strings.TrimSpace(secret) == "" {
-		return errors.New("hub: secret is required")
-	}
 	h := &hubData{
-		secret:  secret,
-		devices: map[string]*HubDevice{},
-		outbox:  map[string][]HubOp{},
-		results: map[string]HubOpResult{},
-		stop:    make(chan struct{}),
+		secret:         secret,
+		devices:        map[string]*HubDevice{},
+		outbox:         map[string][]HubOp{},
+		results:        map[string]HubOpResult{},
+		paired:         map[string]*HubDeviceRecord{},
+		hostIndex:      map[string]string{},
+		pairCodes:      map[string]*HubPairCode{},
+		tunnels:        map[string]*hubTunnel{},
+		stop:           make(chan struct{}),
+		stateFile:      strings.TrimSpace(opts.StateFile),
+		relayPort:      opts.RelayPort,
+		nodeHostSuffix: strings.Trim(strings.TrimSpace(opts.NodeHostSuffix), "."),
+		targetAddr:     strings.TrimSpace(opts.TargetAddr),
+	}
+	if h.targetAddr == "" {
+		h.targetAddr = "127.0.0.1:30177"
 	}
 	if !serverMode {
-		opts.ServerURL = strings.TrimRight(opts.ServerURL, "/")
+		// Pairing state fills in credentials on a node that was enrolled with a
+		// one-time code. Explicit config values still win.
+		st, stErr := loadHubClientState(h.stateFile)
+		if stErr != nil {
+			return fmt.Errorf("hub: load client state: %w", stErr)
+		}
+		if st != nil {
+			if opts.ServerURL == "" {
+				opts.ServerURL = st.ServerURL
+			}
+			if strings.TrimSpace(secret) == "" {
+				secret = st.Secret
+			}
+			if opts.DeviceToken == "" {
+				opts.DeviceToken = st.DeviceToken
+			}
+			if opts.DeviceName == "" {
+				opts.DeviceName = st.DeviceName
+			}
+			h.webURL = strings.TrimRight(strings.TrimSpace(st.WebURL), "/")
+		}
+		opts.ServerURL = strings.TrimRight(strings.TrimSpace(opts.ServerURL), "/")
+		if strings.TrimSpace(secret) == "" {
+			return errors.New("hub: secret is required")
+		}
 		if opts.ServerURL == "" {
 			return errors.New("hub: server_url is required in client mode")
 		}
 		if opts.DeviceToken == "" {
 			return errors.New("hub: device_token is required in client mode")
 		}
+		h.secret = secret
 		h.serverURL = opts.ServerURL
 		h.clientToken = opts.DeviceToken
 		h.deviceName = opts.DeviceName
@@ -127,12 +180,28 @@ func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubCli
 		if opts.SyncIntervalM <= 0 {
 			h.syncEvery = time.Minute
 		}
+		if h.webURL != "" && strings.TrimSpace(os.Getenv("OMPWEB_PUBLIC_URL")) == "" {
+			os.Setenv("OMPWEB_PUBLIC_URL", h.webURL)
+		}
 		m.hub = h
 		m.startHubClientLoop()
+		m.startHubTunnelClient()
 		return nil
 	}
+	if strings.TrimSpace(secret) == "" {
+		return errors.New("hub: secret is required")
+	}
+	if h.relayPort == 0 {
+		h.relayPort = 31991
+	}
 	m.hub = h
-	slog.Info("hub: server mode enabled")
+	if err := m.loadHubDevices(); err != nil {
+		slog.Warn("hub: load paired devices failed", "error", err)
+	}
+	if err := m.startHubRelay(); err != nil {
+		slog.Error("hub: relay unavailable", "error", err)
+	}
+	slog.Info("hub: server mode enabled", "relay_port", h.relayPort, "paired", len(h.paired))
 	return nil
 }
 
@@ -168,6 +237,7 @@ func (m *ManagementServer) handleHubRegister(w http.ResponseWriter, r *http.Requ
 	var body struct {
 		Token    string          `json:"device_token"`
 		Name     string          `json:"name"`
+		WebURL   string          `json:"web_url"`
 		Agents   []*OmpAgentInfo `json:"agents"`
 		Sessions []HubSession    `json:"sessions"`
 		Poll     bool            `json:"poll"`
@@ -189,12 +259,19 @@ func (m *ManagementServer) handleHubRegister(w http.ResponseWriter, r *http.Requ
 	dev := &HubDevice{
 		Token:    body.Token,
 		Name:     name,
+		WebURL:   normalizeHubWebURL(body.WebURL),
 		Address:  r.RemoteAddr,
 		LastSeen: time.Now(),
 		Agents:   body.Agents,
 		Sessions: body.Sessions,
 	}
 	h.devices[body.Token] = dev
+	if rec := h.paired[body.Token]; rec != nil && name != "" && rec.Name != name {
+		// The center assigned web_url is authoritative; only the display name
+		// follows the node's current hostname.
+		rec.Name = name
+		m.saveHubDevicesLocked()
+	}
 	var ops []HubOp
 	if body.Poll {
 		ops = h.outbox[body.Token]
@@ -361,12 +438,16 @@ func (m *ManagementServer) startHubClientLoop() {
 func (m *ManagementServer) hubSyncOnce() {
 	h := m.hub
 	h.mu.Lock()
-	serverURL, token, name := h.serverURL, h.clientToken, h.deviceName
+	serverURL, token, name, webURL := h.serverURL, h.clientToken, h.deviceName, h.webURL
 	h.mu.Unlock()
+	if webURL == "" {
+		webURL = ompWebConfiguredPublicURL()
+	}
 	agents, sessions := m.collectHubInventory()
 	body, _ := json.Marshal(map[string]any{
 		"device_token": token,
 		"name":         name,
+		"web_url":      webURL,
 		"agents":       agents,
 		"sessions":     sessions,
 		"poll":         true,
@@ -586,6 +667,100 @@ func (m *ManagementServer) handleHubOverview(w http.ResponseWriter, r *http.Requ
 	}
 	h.mu.Unlock()
 	mgmtJSON(w, http.StatusOK, map[string]any{"devices": devices})
+}
+
+// HubNodeView is the browser-safe node summary used by the console's Nodes
+// tab. It omits the shared secret and raw agent/session lists; ID is the
+// non-secret device token used by the remove action.
+type HubNodeView struct {
+	ID           string    `json:"id"`
+	Name         string    `json:"name"`
+	WebURL       string    `json:"web_url,omitempty"`
+	LastSeen     time.Time `json:"last_seen"`
+	Online       bool      `json:"online"`
+	AgentCount   int       `json:"agent_count"`
+	SessionCount int       `json:"session_count"`
+}
+
+// hubOnlineWindow is how long after the last registration a node still counts
+// as online. Clients sync every minute by default, so three windows tolerates
+// a couple of missed heartbeats.
+const hubOnlineWindow = 3 * time.Minute
+
+// normalizeHubWebURL accepts only absolute http(s) URLs without credentials.
+// Node-reported values are rendered as links in the admin console, so
+// javascript:/data: schemes and userinfo must never reach the browser.
+func normalizeHubWebURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return ""
+	}
+	return strings.TrimRight(u.String(), "/")
+}
+
+// handleHubNodes returns a summary of the registered nodes for the console's
+// Nodes tab. Mounted under the management token (m.wrap), unlike the
+// X-Hub-Secret device endpoints.
+func (m *ManagementServer) handleHubNodes(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	h := m.hub
+	h.mu.Lock()
+	now := time.Now()
+	nodes := make([]HubNodeView, 0, len(h.devices)+len(h.paired))
+	if h.serverURL != "" {
+		for _, d := range h.remote {
+			nodes = append(nodes, HubNodeView{
+				ID:           d.Token,
+				Name:         d.Name,
+				WebURL:       d.WebURL,
+				LastSeen:     d.LastSeen,
+				Online:       now.Sub(d.LastSeen) <= hubOnlineWindow,
+				AgentCount:   len(d.Agents),
+				SessionCount: len(d.Sessions),
+			})
+		}
+	} else {
+		// Only paired devices are exposed here. An unpaired node can still POST
+		// /hub/register (legacy heartbeat), but it must not reappear after the
+		// admin removes it. Re-pair it to bring it back.
+		registered := make(map[string]HubDevice, len(h.devices))
+		for token, d := range h.devices {
+			registered[token] = *d
+		}
+		for token, rec := range h.paired {
+			view := HubNodeView{ID: token, Name: rec.Name, WebURL: rec.WebURL}
+			if view.Name == "" {
+				view.Name = token
+			}
+			if d, ok := registered[token]; ok {
+				if d.Name != "" {
+					view.Name = d.Name
+				}
+				if view.WebURL == "" {
+					view.WebURL = d.WebURL
+				}
+				view.LastSeen = d.LastSeen
+				view.AgentCount = len(d.Agents)
+				view.SessionCount = len(d.Sessions)
+			}
+			_, tunneled := h.tunnels[token]
+			// For paired nodes the tunnel is the liveness signal: /register can
+			// still succeed while the relay tunnel is down, but the node page is
+			// unreachable through the center until the tunnel reconnects.
+			view.Online = tunneled
+			nodes = append(nodes, view)
+		}
+	}
+	h.mu.Unlock()
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	mgmtJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
 }
 
 // handleHubOverviewRoutes 处理 web 的转发与结果查询（受 management token 保护）：

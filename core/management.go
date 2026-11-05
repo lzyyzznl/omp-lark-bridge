@@ -329,8 +329,13 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 		mux.HandleFunc(prefix+"/hub/register", m.handleHubRegister)
 		mux.HandleFunc(prefix+"/hub/devices", m.handleHubDevices)
 		mux.HandleFunc(prefix+"/hub/result", m.handleHubResult)
+		mux.HandleFunc(prefix+"/hub/tunnel", m.handleHubTunnel)
+		mux.HandleFunc(prefix+"/hub/pair/new", m.wrap(m.handleHubPairNew))
+		mux.HandleFunc(prefix+"/hub/pair/claim", m.handleHubPairClaim)
+		mux.HandleFunc(prefix+"/hub/pair/", m.wrap(m.handleHubPairDevice))
 		mux.HandleFunc(prefix+"/hub/", m.handleHubDeviceRoutes)
 		// web 看板用的视图/转发端点：走 management token（包 wrap）。
+		mux.HandleFunc(prefix+"/hub/nodes", m.wrap(m.handleHubNodes))
 		mux.HandleFunc(prefix+"/hub/overview", m.wrap(m.handleHubOverview))
 		mux.HandleFunc(prefix+"/hub/overview/", m.wrap(m.handleHubOverviewRoutes))
 	}
@@ -372,6 +377,14 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 func (m *ManagementServer) Stop() {
 	if m.server != nil {
 		m.server.Close()
+	}
+	if m.hub != nil {
+		m.hub.mu.Lock()
+		relay := m.hub.relay
+		m.hub.mu.Unlock()
+		if relay != nil && relay.srv != nil {
+			_ = relay.srv.Close()
+		}
 	}
 }
 
@@ -3887,35 +3900,54 @@ func (m *ManagementServer) handleOmpTools(w http.ResponseWriter, r *http.Request
 	mgmtJSON(w, http.StatusOK, map[string]any{"tools": OmpTools()})
 }
 
-// handleOmpWeb reports whether a local ompweb instance is reachable so the
-// console can offer a link to it. ompweb sends X-Frame-Options: DENY and
+// handleOmpWeb reports whether a local ompweb instance is reachable and returns
+// the browser-facing URL. ompweb sends X-Frame-Options: DENY and
 // frame-ancestors 'none', so it always opens in its own tab rather than being
-// embedded. The address comes from OMPWEB_URL (default: ompweb's own port).
+// embedded. Probes use the loopback address; links use OMPWEB_PUBLIC_URL when
+// configured (e.g. behind Cloudflare Tunnel).
 func (m *ManagementServer) handleOmpWeb(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	url := ompWebBase()
+	internal := ompWebInternalURL()
 	ctx, cancel := context.WithTimeout(r.Context(), 1500*time.Millisecond)
 	defer cancel()
 	reachable := false
-	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, url+"/", nil); err == nil {
+	if req, err := http.NewRequestWithContext(ctx, http.MethodGet, internal+"/", nil); err == nil {
 		if resp, err := http.DefaultClient.Do(req); err == nil {
 			reachable = resp.StatusCode < 500
 			resp.Body.Close()
 		}
 	}
-	mgmtJSON(w, http.StatusOK, map[string]any{"url": url, "reachable": reachable})
+	mgmtJSON(w, http.StatusOK, map[string]any{
+		"url":          ompWebPublicURL(),
+		"internal_url": internal,
+		"reachable":    reachable,
+	})
 }
 
-// ompWebBase is ompweb's address: OMPWEB_URL overrides ompweb's default port.
-func ompWebBase() string {
+// ompWebInternalURL is the loopback address used for health probes.
+func ompWebInternalURL() string {
 	url := strings.TrimRight(strings.TrimSpace(os.Getenv("OMPWEB_URL")), "/")
 	if url == "" {
 		url = "http://127.0.0.1:30177"
 	}
 	return url
+}
+
+// ompWebConfiguredPublicURL is the explicitly configured browser-facing URL.
+func ompWebConfiguredPublicURL() string {
+	return strings.TrimRight(strings.TrimSpace(os.Getenv("OMPWEB_PUBLIC_URL")), "/")
+}
+
+// ompWebPublicURL is the browser-facing address. It falls back to the internal
+// address when no public URL is configured.
+func ompWebPublicURL() string {
+	if url := ompWebConfiguredPublicURL(); url != "" {
+		return url
+	}
+	return ompWebInternalURL()
 }
 
 // ompSessionsMirrorDir is omp's own session store (the one ompweb enumerates,
@@ -4024,7 +4056,7 @@ func (m *ManagementServer) transcriptOmpWeb(w http.ResponseWriter, dir, id strin
 		}
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{
-		"url":     ompWebBase() + "/?session=" + url.QueryEscape(sid),
+		"url":     ompWebPublicURL() + "/?session=" + url.QueryEscape(sid),
 		"session": sid,
 	})
 }

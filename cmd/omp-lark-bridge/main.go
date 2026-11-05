@@ -227,6 +227,7 @@ var topLevelCommandHandlers = map[string]func([]string){
 	"sessions":  runSessions,
 	"agents":    runAgentsCommand,
 	"agent-sid": runAgentSID,
+	"hub":       runHubCommand,
 	"daemon":    runDaemon,
 	"service": func(args []string) {
 		if err := runServiceCommand(args); err != nil {
@@ -1352,14 +1353,26 @@ func main() {
 		// Hub（多实例中心同步）：server 模式注册 /hub/* 端点（必须在 Start 前）；
 		// client 模式启动周期上报 + 转发执行循环。
 		if cfg.Hub.Enabled != nil && *cfg.Hub.Enabled && cfg.Hub.Mode != "" {
+			hubStateFile := strings.TrimSpace(cfg.Hub.StateFile)
+			if hubStateFile == "" {
+				name := "hub-client.json"
+				if strings.EqualFold(cfg.Hub.Mode, "server") {
+					name = "hub-devices.json"
+				}
+				hubStateFile = filepath.Join(cfg.DataDir, name)
+			}
 			if err := mgmtSrv.EnableHub(
 				cfg.Hub.Secret,
 				strings.EqualFold(cfg.Hub.Mode, "server"),
 				core.HubClientOptions{
-					ServerURL:     cfg.Hub.ServerURL,
-					DeviceToken:   cfg.Hub.DeviceToken,
-					DeviceName:    cfg.Hub.DeviceName,
-					SyncIntervalM: cfg.Hub.SyncIntervalM,
+					ServerURL:      cfg.Hub.ServerURL,
+					DeviceToken:    cfg.Hub.DeviceToken,
+					DeviceName:     cfg.Hub.DeviceName,
+					SyncIntervalM:  cfg.Hub.SyncIntervalM,
+					StateFile:      hubStateFile,
+					RelayPort:      cfg.Hub.RelayPort,
+					TargetAddr:     fmt.Sprintf("127.0.0.1:%d", ompwebPort(cfg.OmpWeb)),
+					NodeHostSuffix: cfg.Hub.NodeHostSuffix,
 				},
 			); err != nil {
 				slog.Error("hub: enable failed", "mode", cfg.Hub.Mode, "error", err)
@@ -1418,6 +1431,9 @@ func main() {
 	var ompwebSup ompwebStopper
 	if cfg.OmpWeb.Enabled == nil || *cfg.OmpWeb.Enabled {
 		os.Setenv("OMPWEB_URL", ompwebURL(cfg.OmpWeb))
+		if public := strings.TrimSpace(cfg.OmpWeb.PublicURL); public != "" {
+			os.Setenv("OMPWEB_PUBLIC_URL", public)
+		}
 		ompwebSup = startOmpwebSupervisor(cfg.OmpWeb)
 	}
 

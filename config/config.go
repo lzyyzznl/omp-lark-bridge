@@ -263,9 +263,10 @@ const DefaultOmpWebPort = 30177
 // the process lifetime, so the web workspace is always reachable from the
 // console without a manual `npx`.
 type OmpWebConfig struct {
-	Enabled *bool  `toml:"enabled"`        // nil = enabled by default; explicit false disables
-	Port    int    `toml:"port,omitempty"` // listen port; default DefaultOmpWebPort (30177)
-	Bin     string `toml:"bin,omitempty"`  // ompweb executable; empty = resolve from PATH, then npx fallback
+	Enabled   *bool  `toml:"enabled"`              // nil = enabled by default; explicit false disables
+	Port      int    `toml:"port,omitempty"`       // listen port; default DefaultOmpWebPort (30177)
+	Bin       string `toml:"bin,omitempty"`        // ompweb executable; empty = resolve from PATH, then npx fallback
+	PublicURL string `toml:"public_url,omitempty"` // browser-facing URL (e.g. behind Cloudflare Tunnel); empty = loopback
 }
 
 // HubConfig controls multi-instance coordination through a central hub. A hub
@@ -274,13 +275,16 @@ type OmpWebConfig struct {
 // (mode="client") register themselves and pull forwarded ops on an interval
 // (no inbound connection needed, so clients can sit behind NAT/Cloudflare).
 type HubConfig struct {
-	Enabled       *bool  `toml:"enabled"`                      // default false
-	Mode          string `toml:"mode,omitempty"`               // "server" | "client"; empty disables
-	Secret        string `toml:"secret,omitempty"`             // shared secret; required for both modes
-	DeviceToken   string `toml:"device_token,omitempty"`       // client identity; required in client mode
-	DeviceName    string `toml:"device_name,omitempty"`        // friendly name; default = hostname
-	ServerURL     string `toml:"server_url,omitempty"`         // client: http(s)://hub-host (no trailing slash)
-	SyncIntervalM int    `toml:"sync_interval_mins,omitempty"` // client keepalive/poll interval; default 1
+	Enabled        *bool  `toml:"enabled"`                      // default false
+	Mode           string `toml:"mode,omitempty"`               // "server" | "client"; empty disables
+	Secret         string `toml:"secret,omitempty"`             // shared secret; required for both modes
+	DeviceToken    string `toml:"device_token,omitempty"`       // client identity; required in client mode
+	DeviceName     string `toml:"device_name,omitempty"`        // friendly name; default = hostname
+	ServerURL      string `toml:"server_url,omitempty"`         // client: http(s)://hub-host (no trailing slash)
+	SyncIntervalM  int    `toml:"sync_interval_mins,omitempty"` // client keepalive/poll interval; default 1
+	RelayPort      int    `toml:"relay_port,omitempty"`         // server: loopback relay port; default 31991
+	StateFile      string `toml:"state_file,omitempty"`         // server: paired devices; client: pairing state
+	NodeHostSuffix string `toml:"node_host_suffix,omitempty"`   // server: default suffix for omp-<token>.<suffix>
 }
 
 // Display mode constants.

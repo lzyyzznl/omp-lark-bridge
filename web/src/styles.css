@@ -905,3 +905,50 @@ textarea.input { resize: vertical; min-height: 72px; }
 }
 .proj-actions .btn { padding: 9px 16px; font-size: 13.5px; border-radius: var(--radius-sm); }
 .proj-actions .proj-del { color: var(--red); }
+
+/* 节点页：hub 聚合的设备目录。 */
+.nodes-toolbar { display: flex; justify-content: flex-end; gap: 8px; margin-bottom: 12px; }
+.pair-panel {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+  padding: 14px;
+  margin-bottom: 14px;
+}
+.pair-title { font-weight: 600; margin-bottom: 10px; }
+.pair-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.pair-form .input { flex: 1 1 200px; min-width: 0; }
+.pair-result { margin-top: 12px; }
+.pair-command {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--bg-subtle);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+.pair-actions { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.nodes-table-wrap {
+  overflow-x: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-sm);
+}
+.nodes-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.nodes-table th,
+.nodes-table td {
+  text-align: left;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+.nodes-table th { color: var(--ink-dim); font-weight: 500; font-size: 13px; }
+.nodes-table tr:last-child td { border-bottom: 0; }
+.nodes-table .num { font-variant-numeric: tabular-nums; }
+.node-actions { display: flex; gap: 6px; align-items: center; }
+.node-remove { color: var(--red); }

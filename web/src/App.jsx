@@ -7,6 +7,7 @@ import JobDialog from './components/JobDialog.jsx'
 import ConfirmDialog from './components/ConfirmDialog.jsx'
 import SettingsDialog from './components/SettingsDialog.jsx'
 import ProjectsPage from './components/ProjectsPage.jsx'
+import NodesPage from './components/NodesPage.jsx'
 import CronRunsPanel from './components/CronRunsPanel.jsx'
 import LoginScreen from './components/LoginScreen.jsx'
 import Toast from './components/Toast.jsx'
@@ -20,7 +21,7 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false)
   const [busyId, setBusyId] = useState(null)
   const [settingsOpen, setSettingsOpen] = useState(false)
-  const TAB_IDS = ['cron', 'projects']
+  const TAB_IDS = ['cron', 'projects', 'nodes']
   const tabFromHash = () => {
     const h = window.location.hash.replace(/^#\/?/, '').split('?')[0]
     // 会话查看 / agent 编辑已迁到 ompweb；旧书签落到项目页。
@@ -49,28 +50,38 @@ export default function App() {
   // ompweb 拒绝被 iframe 嵌入（X-Frame-Options: DENY），只能新标签页打开；
   // 未运行时就地提示启动命令，避免点了没反应。
   const openOmpWeb = useCallback(async () => {
+    // Open the tab synchronously so the popup blocker keeps the user gesture;
+    // resolve the final URL after the probe finishes.
+    const tab = window.open('', '_blank')
     try {
       const st = await api.ompWeb()
-      if (st.reachable) {
-        window.open(st.url, '_blank', 'noopener')
+      if (st.reachable && st.url) {
+        if (tab) tab.location.href = st.url
+        else window.open(st.url, '_blank', 'noopener')
       } else {
+        tab?.close()
         push('err', `ompweb 未运行（${st.url}）。启动：npx @kahme247/ompweb@latest`)
       }
     } catch (e) {
+      tab?.close()
       push('err', `ompweb 探测失败：${e.message || e}`)
     }
   }, [push])
   // 执行记录里的「查看对话」：后端把该会话镜像进 omp 会话库，返回 ompweb 的
   // 直达链接（?session=<id>），点开就是那条对话本身。
   const openTranscriptInOmpweb = useCallback(async (id) => {
+    const tab = window.open('', '_blank')
     try {
       const r = await api.transcriptOmpUrl(id)
       if (!r?.url) {
+        tab?.close()
         push('err', '拿不到 ompweb 直达链接')
         return
       }
-      window.open(r.url, '_blank', 'noopener')
+      if (tab) tab.location.href = r.url
+      else window.open(r.url, '_blank', 'noopener')
     } catch (e) {
+      tab?.close()
       push('err', `打开 ompweb 失败：${e.message || e}`)
     }
   }, [push])
@@ -153,6 +164,7 @@ export default function App() {
   const TABS = [
     { id: 'cron', label: '定时任务' },
     { id: 'projects', label: '项目管理' },
+    { id: 'nodes', label: '节点' },
   ]
   const tabTitle = TABS.find((t) => t.id === tab)?.label || ''
 
@@ -242,6 +254,8 @@ export default function App() {
       )}
 
       {tab === 'projects' && <ProjectsPage onToast={push} />}
+
+      {tab === 'nodes' && <NodesPage onToast={push} />}
 
 
       <JobDialog

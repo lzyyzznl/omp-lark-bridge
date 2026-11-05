@@ -127,4 +127,10 @@ export const api = {
   listAgents: () => request('/omp-agents'),
   // GET /api/v1/ompweb → {url, reachable}，控制台「ompweb」入口探测
   ompWeb: () => request('/ompweb'),
+  // GET /api/v1/hub/nodes → {nodes:[{name,web_url,last_seen,online,agent_count,session_count}]}
+  nodes: () => request('/hub/nodes'),
+  // POST /api/v1/hub/pair/new {device_token,name,host} → {code,command,web_url,expires_at}
+  pairNode: (payload) => request('/hub/pair/new', { method: 'POST', body: payload }),
+  // DELETE /api/v1/hub/pair/{device} → {removed:true}
+  unpairNode: (id) => request(`/hub/pair/${encodeURIComponent(id)}`, { method: 'DELETE' }),
 }

@@ -188,6 +188,20 @@ agent/session 元数据，并拉取中心投递的 run/edit op。**OMP Web 页�
 > 配对命令必须从公网控制台生成。不要在节点上用 `127.0.0.1:31990` 生成，
 > 否则命令里的 `server_url` 会是节点不可达的本地地址。
 
+### 节点页权限
+
+中心和客户端都会显示**全部已配对节点**，每行都可以打开对应 OMP Web。
+
+- **中心**：可添加/移除节点，也可编辑每个节点的名称、独立密钥、登录码。
+- **客户端**：只读；没有添加/编辑/移除按钮，API 也会拒绝写操作。
+
+中心修改密钥后，节点在下一次 `/hub/register` 同步时自动采用新密钥并重连；
+修改名称不会被子节点心跳覆盖。
+
+**登录码**是浏览器经中心访问节点时使用的 HTTP Basic 密码，中心只保存哈希；
+它不是节点 OMP Web 自身的登录密码（`OMP_WEB_PASSWORD_HASH` 仍由节点本地管理）。
+不设置登录码时，中心 relay 保持原来的直接转发行为。
+
 ### 配置
 
 中心：
@@ -216,7 +230,9 @@ state_file = "/home/you/.omp-lark-bridge/hub-client.json"
 public_url = "https://omp-pc5.example.com"
 ```
 
-`hub-client.json` 含中心共享 secret，创建权限保持 `0600`；不要提交、不要发群。
+`hub-client.json` 含该节点自己的 hub 密钥和配对凭据，创建权限保持 `0600`；
+不要提交、不要发群。中心 `hub-devices.json` 同样含每节点密钥和登录码哈希，
+按敏感文件管理。
 
 ### Cloudflare
 
@@ -226,9 +242,10 @@ public_url = "https://omp-pc5.example.com"
 - 末尾 `http_status:404`
 - 泛解析 CNAME `*.example.com` 指向同一个 tunnel；精确记录优先。
 
-> 安全：relay 只按 host 路由到已配对节点，**不校验访问者**。节点 OMP Web 必须设置
-> 自己的密码（`OMP_WEB_PASSWORD_HASH`）或用 Cloudflare Access 保护。管理 token、
-> hub secret、配对码都不要外传。中心 `31990` 建议只监听 `127.0.0.1`，由 cloudflared 转发。
+> 安全：relay 只按 host 路由到已配对节点；若节点设置了登录码，会先做 HTTP Basic
+> 认证，否则直接转发。节点 OMP Web 自身仍应设置密码（`OMP_WEB_PASSWORD_HASH`）或用
+> Cloudflare Access 保护。管理 token、hub secret、登录码、配对码都不要外传。中心
+> `31990` 建议只监听 `127.0.0.1`，由 cloudflared 转发。
 
 完整安装（中心、Linux/Windows 节点、中兴设备、动态移除、排障）见
 **[docs/HUB-NODES.md](./docs/HUB-NODES.md)**。

@@ -952,3 +952,12 @@ textarea.input { resize: vertical; min-height: 72px; }
 .nodes-table .num { font-variant-numeric: tabular-nums; }
 .node-actions { display: flex; gap: 6px; align-items: center; }
 .node-remove { color: var(--red); }
+.node-cred { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+.node-edit-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 100%;
+  color: var(--ink-dim);
+  font-size: 13px;
+}

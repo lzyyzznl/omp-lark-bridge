@@ -95,7 +95,8 @@ type hubData struct {
 	serverURL   string // client 模式
 	clientToken string
 	syncEvery   time.Duration
-	remote      []HubDevice // client 模式：最近一次拉到的设备目录
+	remote      []HubDevice   // client 模式：最近一次拉到的设备目录
+	remoteNodes []HubNodeView // client 模式：中心下发的全节点视图（只读）
 	stop        chan struct{}
 
 	// ── 反向隧道 / 配对（server 模式） ──────────────────────────────
@@ -253,16 +254,41 @@ func (m *ManagementServer) authHub(r *http.Request) bool {
 	return subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) == 1
 }
 
+// authHubDevice authenticates a node by its own secret. Records created before
+// per-node secrets (Secret == "") keep using the global hub secret. During a
+// rotation the previous secret is accepted so the node can still sync and pick
+// up the new one; a normal pairing has no previous secret.
+func (m *ManagementServer) authHubDevice(r *http.Request, device string) bool {
+	h := m.hub
+	if h == nil || device == "" {
+		return false
+	}
+	h.mu.Lock()
+	secret := h.secret
+	prev := ""
+	if rec := h.paired[device]; rec != nil {
+		if rec.Secret != "" {
+			secret = rec.Secret
+			prev = rec.PrevSecret
+		}
+	}
+	h.mu.Unlock()
+	provided := r.Header.Get("X-Hub-Secret")
+	if secret == "" || provided == "" {
+		return false
+	}
+	if subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) == 1 {
+		return true
+	}
+	return prev != "" && subtle.ConstantTimeCompare([]byte(provided), []byte(prev)) == 1
+}
+
 // ── server 模式：/hub/* 端点 ─────────────────────────────────────────
 
 // handleHubRegister 接收客户端 inventory 上报（含 poll 拉取 outbox）：
 // POST /api/v1/hub/register {device_token,name,agents,sessions,poll}
 // 响应 {devices:[...], ops:[...]} —— devices 是全部在线设备目录（客户端互查）。
 func (m *ManagementServer) handleHubRegister(w http.ResponseWriter, r *http.Request) {
-	if !m.authHub(r) {
-		mgmtError(w, http.StatusUnauthorized, "invalid hub secret")
-		return
-	}
 	if r.Method != http.MethodPost {
 		mgmtError(w, http.StatusMethodNotAllowed, "POST only")
 		return
@@ -283,6 +309,10 @@ func (m *ManagementServer) handleHubRegister(w http.ResponseWriter, r *http.Requ
 		mgmtError(w, http.StatusBadRequest, "device_token is required")
 		return
 	}
+	if !m.authHubDevice(r, body.Token) {
+		mgmtError(w, http.StatusUnauthorized, "invalid hub secret")
+		return
+	}
 	h := m.hub
 	h.mu.Lock()
 	name := strings.TrimSpace(body.Name)
@@ -299,25 +329,24 @@ func (m *ManagementServer) handleHubRegister(w http.ResponseWriter, r *http.Requ
 		Sessions: body.Sessions,
 	}
 	h.devices[body.Token] = dev
-	if rec := h.paired[body.Token]; rec != nil && name != "" && rec.Name != name {
-		// The center assigned web_url is authoritative; only the display name
-		// follows the node's current hostname.
-		rec.Name = name
-		m.saveHubDevicesLocked()
-	}
 	var ops []HubOp
 	if body.Poll {
 		ops = h.outbox[body.Token]
 		delete(h.outbox, body.Token)
 	}
 	devices := m.hubDevicesLocked()
-	for i := range devices {
-		if devices[i].Token == body.Token {
-			devices[i] = *dev
-		}
+	nodes := m.hubNodeViewsLocked()
+	nodeSecret := ""
+	if rec := h.paired[body.Token]; rec != nil {
+		nodeSecret = rec.Secret
 	}
 	h.mu.Unlock()
-	mgmtJSON(w, http.StatusOK, map[string]any{"devices": devices, "ops": ops})
+	resp := map[string]any{"devices": devices, "ops": ops, "nodes": nodes}
+	if nodeSecret != "" {
+		// The node compares this with its local state and persists rotations.
+		resp["secret"] = nodeSecret
+	}
+	mgmtJSON(w, http.StatusOK, resp)
 }
 
 // hubDevicesLocked 返回按名称排序的设备目录副本（调用方须已持有 h.mu）。
@@ -422,7 +451,16 @@ func (m *ManagementServer) handleHubDeviceRoutes(w http.ResponseWriter, r *http.
 // handleHubResult 接收客户端执行完转发 op 的回执。
 // POST /api/v1/hub/result {op_id, ok, message, error}
 func (m *ManagementServer) handleHubResult(w http.ResponseWriter, r *http.Request) {
-	if !m.authHub(r) {
+	device := strings.TrimSpace(r.Header.Get("X-Hub-Device"))
+	authorized := false
+	if device != "" {
+		authorized = m.authHubDevice(r, device)
+	} else {
+		// Older nodes do not send the device header; keep the global-secret
+		// path for them.
+		authorized = m.authHub(r)
+	}
+	if !authorized {
 		mgmtError(w, http.StatusUnauthorized, "invalid hub secret")
 		return
 	}
@@ -493,6 +531,7 @@ func (m *ManagementServer) hubSyncOnce() {
 	req.Header.Set("Content-Type", "application/json")
 	h.mu.Lock()
 	req.Header.Set("X-Hub-Secret", h.secret)
+	req.Header.Set("X-Hub-Device", token)
 	h.mu.Unlock()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -505,17 +544,48 @@ func (m *ManagementServer) hubSyncOnce() {
 		slog.Warn("hub: sync rejected", "status", resp.StatusCode, "body", string(b))
 		return
 	}
-	var out struct {
-		Devices []HubDevice `json:"devices"`
-		Ops     []HubOp     `json:"ops"`
+	var envelope struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Data  struct {
+			Devices []HubDevice   `json:"devices"`
+			Nodes   []HubNodeView `json:"nodes"`
+			Ops     []HubOp       `json:"ops"`
+			Secret  string        `json:"secret"`
+		} `json:"data"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
 		slog.Warn("hub: sync decode failed", "error", err)
 		return
 	}
+	if !envelope.OK {
+		slog.Warn("hub: sync rejected", "server", serverURL, "error", envelope.Error)
+		return
+	}
+	out := envelope.Data
 	h.mu.Lock()
 	h.remote = out.Devices
+	h.remoteNodes = out.Nodes
+	secretChanged := out.Secret != "" && out.Secret != h.secret
+	if secretChanged {
+		h.secret = out.Secret
+	}
+	state := hubClientState{
+		ServerURL:   h.serverURL,
+		Secret:      h.secret,
+		DeviceToken: h.clientToken,
+		DeviceName:  h.deviceName,
+		WebURL:      h.webURL,
+	}
+	stateFile := h.stateFile
 	h.mu.Unlock()
+	if secretChanged {
+		if err := saveHubClientState(stateFile, state); err != nil {
+			slog.Warn("hub: persist rotated secret failed", "error", err)
+		} else {
+			slog.Info("hub: adopted rotated secret", "device", token)
+		}
+	}
 	for _, op := range out.Ops {
 		res := m.executeHubOp(op)
 		m.reportHubResult(serverURL, res)
@@ -622,6 +692,7 @@ func (m *ManagementServer) reportHubResult(serverURL string, res HubOpResult) {
 	req.Header.Set("Content-Type", "application/json")
 	m.hub.mu.Lock()
 	req.Header.Set("X-Hub-Secret", m.hub.secret)
+	req.Header.Set("X-Hub-Device", m.hub.clientToken)
 	m.hub.mu.Unlock()
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -713,6 +784,8 @@ type HubNodeView struct {
 	Online       bool      `json:"online"`
 	AgentCount   int       `json:"agent_count"`
 	SessionCount int       `json:"session_count"`
+	SecretSet    bool      `json:"secret_set"`
+	LoginCodeSet bool      `json:"login_code_set"`
 }
 
 // hubOnlineWindow is how long after the last registration a node still counts
@@ -735,68 +808,81 @@ func normalizeHubWebURL(raw string) string {
 	return strings.TrimRight(u.String(), "/")
 }
 
-// handleHubNodes returns a summary of the registered nodes for the console's
-// Nodes tab. Mounted under the management token (m.wrap), unlike the
-// X-Hub-Secret device endpoints.
+// hubNodeViewsLocked builds the browser-safe node directory. Only paired
+// records are exposed: an unpaired legacy heartbeat must not resurrect a node
+// after the admin removes it. Caller must hold h.mu.
+func (m *ManagementServer) hubNodeViewsLocked() []HubNodeView {
+	h := m.hub
+	if h == nil {
+		return []HubNodeView{}
+	}
+	nodes := make([]HubNodeView, 0, len(h.paired))
+	for token, rec := range h.paired {
+		view := HubNodeView{
+			ID:           token,
+			Name:         rec.Name,
+			WebURL:       rec.WebURL,
+			SecretSet:    rec.Secret != "",
+			LoginCodeSet: rec.LoginCodeHash != "",
+		}
+		if view.Name == "" {
+			view.Name = token
+		}
+		if d, ok := h.devices[token]; ok {
+			if view.Name == token && d.Name != "" {
+				view.Name = d.Name
+			}
+			if view.WebURL == "" {
+				view.WebURL = d.WebURL
+			}
+			view.LastSeen = d.LastSeen
+			view.AgentCount = len(d.Agents)
+			view.SessionCount = len(d.Sessions)
+		}
+		_, tunneled := h.tunnels[token]
+		// For paired nodes the tunnel is the liveness signal: /register can
+		// still succeed while the relay tunnel is down, but the node page is
+		// unreachable through the center until the tunnel reconnects.
+		view.Online = tunneled
+		nodes = append(nodes, view)
+	}
+	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
+	return nodes
+}
+
+// handleHubNodes returns the node directory to both center and node consoles.
+// The center exposes the paired records and can edit them; a client receives
+// the same read-only directory from the center via /hub/register.
 func (m *ManagementServer) handleHubNodes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
 		return
 	}
-	if !m.requireHubServer(w) {
+	h := m.hub
+	if h == nil {
+		mgmtError(w, http.StatusServiceUnavailable, "hub is not enabled")
 		return
 	}
-	h := m.hub
 	h.mu.Lock()
-	now := time.Now()
-	nodes := make([]HubNodeView, 0, len(h.devices)+len(h.paired))
+	role := "server"
 	if h.serverURL != "" {
-		for _, d := range h.remote {
-			nodes = append(nodes, HubNodeView{
-				ID:           d.Token,
-				Name:         d.Name,
-				WebURL:       d.WebURL,
-				LastSeen:     d.LastSeen,
-				Online:       now.Sub(d.LastSeen) <= hubOnlineWindow,
-				AgentCount:   len(d.Agents),
-				SessionCount: len(d.Sessions),
-			})
-		}
+		role = "client"
+	}
+	var nodes []HubNodeView
+	if role == "client" {
+		nodes = append(nodes, h.remoteNodes...)
 	} else {
-		// Only paired devices are exposed here. An unpaired node can still POST
-		// /hub/register (legacy heartbeat), but it must not reappear after the
-		// admin removes it. Re-pair it to bring it back.
-		registered := make(map[string]HubDevice, len(h.devices))
-		for token, d := range h.devices {
-			registered[token] = *d
-		}
-		for token, rec := range h.paired {
-			view := HubNodeView{ID: token, Name: rec.Name, WebURL: rec.WebURL}
-			if view.Name == "" {
-				view.Name = token
-			}
-			if d, ok := registered[token]; ok {
-				if d.Name != "" {
-					view.Name = d.Name
-				}
-				if view.WebURL == "" {
-					view.WebURL = d.WebURL
-				}
-				view.LastSeen = d.LastSeen
-				view.AgentCount = len(d.Agents)
-				view.SessionCount = len(d.Sessions)
-			}
-			_, tunneled := h.tunnels[token]
-			// For paired nodes the tunnel is the liveness signal: /register can
-			// still succeed while the relay tunnel is down, but the node page is
-			// unreachable through the center until the tunnel reconnects.
-			view.Online = tunneled
-			nodes = append(nodes, view)
-		}
+		nodes = m.hubNodeViewsLocked()
 	}
 	h.mu.Unlock()
-	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Name < nodes[j].Name })
-	mgmtJSON(w, http.StatusOK, map[string]any{"nodes": nodes})
+	if nodes == nil {
+		nodes = []HubNodeView{}
+	}
+	mgmtJSON(w, http.StatusOK, map[string]any{
+		"nodes":    nodes,
+		"role":     role,
+		"can_edit": role == "server",
+	})
 }
 
 // handleHubOverviewRoutes 处理 web 的转发与结果查询（受 management token 保护）：

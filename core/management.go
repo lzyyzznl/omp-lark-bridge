@@ -337,6 +337,7 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 		mux.HandleFunc(prefix+"/hub/", m.handleHubDeviceRoutes)
 		// web 看板用的视图/转发端点：走 management token（包 wrap）。
 		mux.HandleFunc(prefix+"/hub/nodes", m.wrap(m.handleHubNodes))
+		mux.HandleFunc(prefix+"/hub/nodes/", m.wrap(m.handleHubNodeUpdate))
 		mux.HandleFunc(prefix+"/hub/overview", m.wrap(m.handleHubOverview))
 		mux.HandleFunc(prefix+"/hub/overview/", m.wrap(m.handleHubOverviewRoutes))
 	}

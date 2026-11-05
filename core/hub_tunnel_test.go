@@ -87,7 +87,7 @@ func TestHubPair_OneTimeCodeAndPersistedDevice(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil {
 		t.Fatalf("decode claim: %v", err)
 	}
-	if claimed.Data.DeviceToken != "dev1" || claimed.Data.Secret != "s3cr3t" || claimed.Data.WebURL != "https://omp-test.example" {
+	if claimed.Data.DeviceToken != "dev1" || len(claimed.Data.Secret) != 64 || claimed.Data.Secret == "s3cr3t" || claimed.Data.WebURL != "https://omp-test.example" {
 		t.Fatalf("unexpected claim: %+v", claimed.Data)
 	}
 
@@ -105,7 +105,7 @@ func TestHubPair_OneTimeCodeAndPersistedDevice(t *testing.T) {
 	}
 }
 
-func pairTestDevice(t *testing.T, m *ManagementServer, device, host string) {
+func pairTestDevice(t *testing.T, m *ManagementServer, device, host string) string {
 	t.Helper()
 	rec := postJSON(t, m.handleHubPairNew, "/api/v1/hub/pair/new", map[string]string{
 		"device_token": device,
@@ -127,6 +127,18 @@ func pairTestDevice(t *testing.T, m *ManagementServer, device, host string) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("claim status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	var claimed struct {
+		Data struct {
+			Secret string `json:"secret"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil {
+		t.Fatalf("decode claim: %v", err)
+	}
+	if claimed.Data.Secret == "" {
+		t.Fatal("claim returned empty secret")
+	}
+	return claimed.Data.Secret
 }
 
 func TestHubRelay_WebSocketUpgrade(t *testing.T) {
@@ -158,7 +170,7 @@ func TestHubRelay_WebSocketUpgrade(t *testing.T) {
 		t.Fatalf("EnableHub: %v", err)
 	}
 	defer m.Stop()
-	pairTestDevice(t, m, "devws", "127.0.0.1")
+	deviceSecret := pairTestDevice(t, m, "devws", "127.0.0.1")
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/hub/tunnel", m.handleHubTunnel)
@@ -166,7 +178,7 @@ func TestHubRelay_WebSocketUpgrade(t *testing.T) {
 	defer tunnelSrv.Close()
 	wsURL := "ws" + strings.TrimPrefix(tunnelSrv.URL, "http") + "/api/v1/hub/tunnel"
 	header := http.Header{}
-	header.Set("X-Hub-Secret", "s3cr3t")
+	header.Set("X-Hub-Secret", deviceSecret)
 	header.Set("X-Hub-Device", "devws")
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
@@ -220,7 +232,7 @@ func TestHubPair_RemoveDevice(t *testing.T) {
 		t.Fatalf("EnableHub: %v", err)
 	}
 	defer m.Stop()
-	pairTestDevice(t, m, "devrm", "omp-rm.example")
+	_ = pairTestDevice(t, m, "devrm", "omp-rm.example")
 	if _, ok := m.hub.paired["devrm"]; !ok {
 		t.Fatal("device was not paired")
 	}
@@ -325,6 +337,14 @@ func TestHubTunnel_RelayHTTPAndOffline(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("claim status=%d body=%s", rec.Code, rec.Body.String())
 	}
+	var claimed struct {
+		Data struct {
+			Secret string `json:"secret"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil || claimed.Data.Secret == "" {
+		t.Fatalf("claim decode: %v body=%s", err, rec.Body.String())
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/v1/hub/tunnel", m.handleHubTunnel)
@@ -333,7 +353,7 @@ func TestHubTunnel_RelayHTTPAndOffline(t *testing.T) {
 
 	wsURL := "ws" + strings.TrimPrefix(tunnelSrv.URL, "http") + "/api/v1/hub/tunnel"
 	header := http.Header{}
-	header.Set("X-Hub-Secret", "s3cr3t")
+	header.Set("X-Hub-Secret", claimed.Data.Secret)
 	header.Set("X-Hub-Device", "dev1")
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, header)
 	if err != nil {
@@ -574,5 +594,165 @@ func TestHubClient_JoinFailures(t *testing.T) {
 	rec = postJSON(t, m.handleHubPairJoin, "/api/v1/hub/pair/join", map[string]string{})
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("empty code status=%d, want 400", rec.Code)
+	}
+}
+
+func TestHubNodes_ClientReadOnlyDirectory(t *testing.T) {
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("", false, HubClientOptions{
+		ServerURL: "http://127.0.0.1:1",
+		StateFile: t.TempDir() + "/hub-client.json",
+	}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+	m.hub.mu.Lock()
+	m.hub.remoteNodes = []HubNodeView{
+		{ID: "node-a", Name: "Node A", WebURL: "https://omp-a.example", Online: true, SecretSet: true},
+	}
+	m.hub.mu.Unlock()
+
+	rec := httptest.NewRecorder()
+	m.handleHubNodes(rec, httptest.NewRequest(http.MethodGet, "/api/v1/hub/nodes", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("client nodes status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Data struct {
+			Nodes   []HubNodeView `json:"nodes"`
+			Role    string        `json:"role"`
+			CanEdit bool          `json:"can_edit"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Data.Role != "client" || got.Data.CanEdit {
+		t.Fatalf("role=%q can_edit=%v, want client/false", got.Data.Role, got.Data.CanEdit)
+	}
+	if len(got.Data.Nodes) != 1 || got.Data.Nodes[0].ID != "node-a" {
+		t.Fatalf("client nodes = %+v", got.Data.Nodes)
+	}
+}
+
+func patchJSON(t *testing.T, handler http.HandlerFunc, path string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+	b, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPatch, path, bytes.NewReader(b))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	handler(rec, req)
+	return rec
+}
+
+func TestHubNodeUpdate_CenterEditsNameSecretAndLoginCode(t *testing.T) {
+	stateFile := t.TempDir() + "/hub-devices.json"
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("global-secret", true, HubClientOptions{StateFile: stateFile, RelayPort: -1}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+	oldSecret := pairTestDevice(t, m, "devupd", "omp-upd.example")
+
+	rec := patchJSON(t, m.handleHubNodeUpdate, "/api/v1/hub/nodes/devupd", map[string]any{
+		"name":       "新名字",
+		"secret":     "new-secret-0123456789",
+		"login_code": "code-1234",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Data struct {
+			Updated       bool `json:"updated"`
+			SecretRotated bool `json:"secret_rotated"`
+			LoginCodeSet  bool `json:"login_code_set"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode update: %v", err)
+	}
+	if !got.Data.Updated || !got.Data.SecretRotated || !got.Data.LoginCodeSet {
+		t.Fatalf("update data = %+v", got.Data)
+	}
+	m.hub.mu.Lock()
+	rec2 := m.hub.paired["devupd"]
+	view := m.hubNodeViewsLocked()
+	m.hub.mu.Unlock()
+	if rec2.Name != "新名字" || rec2.Secret != "new-secret-0123456789" || rec2.PrevSecret != oldSecret {
+		t.Fatalf("record = %+v", rec2)
+	}
+	if len(view) != 1 || view[0].Name != "新名字" || !view[0].SecretSet || !view[0].LoginCodeSet {
+		t.Fatalf("view = %+v", view)
+	}
+
+	// The old secret keeps working for sync/heartbeat while the node catches up.
+	body, _ := json.Marshal(map[string]any{"device_token": "devupd"})
+	registerReq := httptest.NewRequest(http.MethodPost, "/api/v1/hub/register", bytes.NewReader(body))
+	registerReq.Header.Set("Content-Type", "application/json")
+	registerReq.Header.Set("X-Hub-Secret", oldSecret)
+	registerRec := httptest.NewRecorder()
+	m.handleHubRegister(registerRec, registerReq)
+	if registerRec.Code != http.StatusOK {
+		t.Fatalf("register with old secret status=%d body=%s", registerRec.Code, registerRec.Body.String())
+	}
+	if !strings.Contains(registerRec.Body.String(), `"secret":"new-secret-0123456789"`) {
+		t.Fatalf("register response missing new secret: %s", registerRec.Body.String())
+	}
+
+	// Login gate accepts the configured code and rejects missing/wrong codes.
+	authReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	authReq.SetBasicAuth("node", "code-1234")
+	if !m.hubLoginAllowed(authReq, "devupd") {
+		t.Fatal("valid login code rejected")
+	}
+	if m.hubLoginAllowed(httptest.NewRequest(http.MethodGet, "/", nil), "devupd") {
+		t.Fatal("login gate allowed request without credentials")
+	}
+	badReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	badReq.SetBasicAuth("node", "wrong")
+	if m.hubLoginAllowed(badReq, "devupd") {
+		t.Fatal("login gate allowed wrong code")
+	}
+}
+
+func TestHubNodeUpdate_ClientIsReadOnly(t *testing.T) {
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("", false, HubClientOptions{
+		ServerURL: "http://127.0.0.1:1",
+		StateFile: t.TempDir() + "/hub-client.json",
+	}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+	rec := patchJSON(t, m.handleHubNodeUpdate, "/api/v1/hub/nodes/node-a", map[string]any{"name": "x"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("client update status=%d body=%s, want 409", rec.Code, rec.Body.String())
+	}
+}
+
+func TestHubPair_SecretsArePerNode(t *testing.T) {
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("global-secret", true, HubClientOptions{StateFile: t.TempDir() + "/hub-devices.json", RelayPort: -1}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+	a := pairTestDevice(t, m, "node-a", "omp-a.example")
+	b := pairTestDevice(t, m, "node-b", "omp-b.example")
+	if a == b || a == "global-secret" || b == "global-secret" {
+		t.Fatalf("per-node secrets not unique: a=%q b=%q", a, b)
+	}
+	reqA := httptest.NewRequest(http.MethodPost, "/", nil)
+	reqA.Header.Set("X-Hub-Secret", a)
+	reqB := httptest.NewRequest(http.MethodPost, "/", nil)
+	reqB.Header.Set("X-Hub-Secret", b)
+	if !m.authHubDevice(reqA, "node-a") || m.authHubDevice(reqB, "node-a") {
+		t.Fatal("node-a secret did not authenticate only node-a")
+	}
+	if !m.authHubDevice(reqB, "node-b") || m.authHubDevice(reqA, "node-b") {
+		t.Fatal("node-b secret did not authenticate only node-b")
 	}
 }

@@ -8,17 +8,24 @@ export default function NodesPage({ onToast }) {
   const [nodes, setNodes] = useState(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  const [role, setRole] = useState('')
+  const [canEdit, setCanEdit] = useState(false)
   const [pairOpen, setPairOpen] = useState(false)
   const [pairForm, setPairForm] = useState({ device_token: '', name: '', host: '' })
   const [pairing, setPairing] = useState(false)
   const [pairResult, setPairResult] = useState(null)
+  const [editing, setEditing] = useState(null)
+  const [editForm, setEditForm] = useState({ name: '', secret: '', login_code: '', clear_login_code: false })
+  const [saving, setSaving] = useState(false)
 
   const load = useCallback(async () => {
     setLoading(true)
     setError('')
     try {
       const r = await api.nodes()
-      setNodes(r.nodes || [])
+      setNodes(r?.nodes || [])
+      setRole(r?.role || '')
+      setCanEdit(r?.can_edit === true)
     } catch (e) {
       setNodes(null)
       setError(e.message || String(e))
@@ -52,6 +59,37 @@ export default function NodesPage({ onToast }) {
       load()
     } catch (err) {
       onToast?.('err', err.message || String(err))
+    }
+  }
+
+  const startEdit = (n) => {
+    setEditing(n)
+    setEditForm({ name: n.name || '', secret: '', login_code: '', clear_login_code: false })
+  }
+
+  const saveEdit = async (e) => {
+    e.preventDefault()
+    if (!editing) return
+    const fields = {}
+    const name = editForm.name.trim()
+    if (name !== (editing.name || '')) fields.name = name
+    if (editForm.secret.trim()) fields.secret = editForm.secret.trim()
+    if (editForm.login_code.trim()) fields.login_code = editForm.login_code.trim()
+    if (editForm.clear_login_code) fields.clear_login_code = true
+    if (Object.keys(fields).length === 0) {
+      onToast?.('err', '没有修改')
+      return
+    }
+    setSaving(true)
+    try {
+      await api.updateNode(editing.id, fields)
+      onToast?.('ok', '已保存')
+      setEditing(null)
+      await load()
+    } catch (err) {
+      onToast?.('err', err.message || String(err))
+    } finally {
+      setSaving(false)
     }
   }
 
@@ -93,15 +131,20 @@ export default function NodesPage({ onToast }) {
     <div className="shell">
       <div className="section-title">节点</div>
       <div className="nodes-toolbar">
-        <button className="btn btn-ghost" onClick={() => setPairOpen(v => !v)}>
-          {pairOpen ? '收起配对' : '添加节点'}
-        </button>
+        {canEdit && (
+          <button className="btn btn-ghost" onClick={() => setPairOpen(v => !v)}>
+            {pairOpen ? '收起配对' : '添加节点'}
+          </button>
+        )}
         <button className="btn btn-ghost" onClick={load} disabled={loading}>
           {loading ? '刷新中…' : '刷新'}
         </button>
+        {!canEdit && role === 'client' && (
+          <span className="hint">客户端只读：可查看并打开所有节点</span>
+        )}
       </div>
 
-      {pairOpen && (
+      {pairOpen && canEdit && (
         <div className="pair-panel">
           <div className="pair-title">添加节点</div>
           <form className="pair-form" onSubmit={submitPair}>
@@ -145,11 +188,62 @@ export default function NodesPage({ onToast }) {
         </div>
       )}
 
+      {editing && canEdit && (
+        <div className="pair-panel">
+          <div className="pair-title">编辑节点 {editing.name}</div>
+          <form className="pair-form" onSubmit={saveEdit}>
+            <input
+              className="input"
+              placeholder="显示名称"
+              value={editForm.name}
+              onChange={e => setEditForm(f => ({ ...f, name: e.target.value }))}
+            />
+            <input
+              className="input mono"
+              type="password"
+              placeholder="新密钥（留空保持）"
+              value={editForm.secret}
+              onChange={e => setEditForm(f => ({ ...f, secret: e.target.value }))}
+              spellCheck={false}
+            />
+            <input
+              className="input mono"
+              type="password"
+              placeholder={editing.login_code_set ? '新登录码（留空保持）' : '登录码（留空不启用）'}
+              value={editForm.login_code}
+              onChange={e => setEditForm(f => ({ ...f, login_code: e.target.value, clear_login_code: false }))}
+              spellCheck={false}
+            />
+            <label className="node-edit-check">
+              <input
+                type="checkbox"
+                checked={editForm.clear_login_code}
+                onChange={e => setEditForm(f => ({ ...f, clear_login_code: e.target.checked, login_code: '' }))}
+              />
+              清除登录码
+            </label>
+            <div className="pair-actions">
+              <button className="btn" type="submit" disabled={saving}>
+                {saving ? '保存中…' : '保存'}
+              </button>
+              <button className="btn btn-ghost" type="button" onClick={() => setEditing(null)} disabled={saving}>
+                取消
+              </button>
+            </div>
+          </form>
+          <div className="hint" style={{ marginTop: 8 }}>
+            密钥用于节点和中心认证，修改后节点下次同步会自动采用；登录码用于浏览器经中心访问该节点（HTTP Basic 密码），留空保持原值。
+          </div>
+        </div>
+      )}
+
       {error ? (
         <div className="state-block">
           <div className="big">无法读取节点列表</div>
           <div className="hint">{error}</div>
-          <div className="hint">确认 config.toml 已启用 [hub] server 模式，并重启服务。</div>
+          <div className="hint">
+            确认 config.toml 已启用 [hub] 并完成配对；客户端模式需要能同步中心，且为只读。
+          </div>
         </div>
       ) : loading && nodes === null ? (
         <div>
@@ -160,7 +254,11 @@ export default function NodesPage({ onToast }) {
       ) : (nodes || []).length === 0 ? (
         <div className="state-block">
           <div className="big">还没有节点</div>
-          <div className="hint">点「添加节点」生成一次性配对命令，在节点上执行即可接入中心。</div>
+          <div className="hint">
+            {role === 'client'
+              ? '还没有从中心同步到节点目录；确认本节点已配对并等待一次同步。'
+              : '点「添加节点」生成一次性配对命令，在节点上执行即可接入中心。'}
+          </div>
         </div>
       ) : (
         <div className="nodes-table-wrap">
@@ -172,25 +270,41 @@ export default function NodesPage({ onToast }) {
                 <th>最后心跳</th>
                 <th>Agents</th>
                 <th>会话</th>
+                <th>凭证</th>
                 <th>OMP Web</th>
               </tr>
             </thead>
             <tbody>
-              {nodes.map((n, i) => (
-                <tr key={`${n.name}-${i}`}>
+              {nodes.map((n) => (
+                <tr key={n.id || n.name}>
                   <td className="mono">{n.name}</td>
                   <td><span className={`badge ${n.online ? 'on' : 'off'}`}>{n.online ? '在线' : '离线'}</span></td>
                   <td className="mono">{formatTime(n.last_seen)}</td>
                   <td className="num">{n.agent_count ?? 0}</td>
                   <td className="num">{n.session_count ?? 0}</td>
                   <td>
+                    <div className="node-cred">
+                      <span className={`badge ${n.secret_set ? 'on' : 'off'}`}>
+                        {n.secret_set ? '独立密钥' : '默认密钥'}
+                      </span>
+                      {n.login_code_set ? <span className="badge on">登录码已设</span> : null}
+                    </div>
+                  </td>
+                  <td>
                     <div className="node-actions">
                       <button className="btn btn-ghost" onClick={() => open(n)} disabled={!n.web_url}>
                         {n.web_url ? '打开 ↗' : '未上报'}
                       </button>
-                      <button className="btn btn-ghost node-remove" onClick={() => remove(n)}>
-                        移除
-                      </button>
+                      {canEdit && (
+                        <button className="btn btn-ghost" onClick={() => startEdit(n)}>
+                          编辑
+                        </button>
+                      )}
+                      {canEdit && (
+                        <button className="btn btn-ghost node-remove" onClick={() => remove(n)}>
+                          移除
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

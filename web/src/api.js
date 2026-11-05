@@ -52,9 +52,6 @@ async function request(path, { method = 'GET', body } = {}) {
   let data = null
   try { data = await res.json() } catch {}
 
-  // 只有真正成功才续期。
-  if (data && data.ok === true) renewToken()
-
   if (res.status === 401) {
     // token 缺失或错误：清掉 cookie，回到登录页重新输入。
     clearToken()
@@ -62,6 +59,17 @@ async function request(path, { method = 'GET', body } = {}) {
     err.status = 401
     throw err
   }
+  if (!data) {
+    throw new Error(`management API 返回空响应（HTTP ${res.status}）`)
+  }
+  if (data.ok !== true) {
+    // 不要返回 undefined：调用方会把它当成成功响应再取字段，最终报
+    // "Cannot read properties of undefined" 并掩盖真正的 409/500。
+    throw new Error(data.error || `management API 请求失败（HTTP ${res.status}）`)
+  }
+
+  // 只有真正成功才续期。
+  renewToken()
   return data.data
 }
 
@@ -127,8 +135,10 @@ export const api = {
   listAgents: () => request('/omp-agents'),
   // GET /api/v1/ompweb → {url, reachable}，控制台「ompweb」入口探测
   ompWeb: () => request('/ompweb'),
-  // GET /api/v1/hub/nodes → {nodes:[{name,web_url,last_seen,online,agent_count,session_count}]}
+  // GET /api/v1/hub/nodes → {nodes:[...], role:'server'|'client', can_edit:boolean}
   nodes: () => request('/hub/nodes'),
+  // PATCH /api/v1/hub/nodes/{id} {name?,secret?,login_code?,clear_login_code?}
+  updateNode: (id, fields) => request(`/hub/nodes/${encodeURIComponent(id)}`, { method: 'PATCH', body: fields }),
   // POST /api/v1/hub/pair/new {device_token,name,host} → {code,command,web_url,expires_at}
   pairNode: (payload) => request('/hub/pair/new', { method: 'POST', body: payload }),
   // DELETE /api/v1/hub/pair/{device} → {removed:true}

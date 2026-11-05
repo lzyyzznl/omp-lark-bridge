@@ -255,6 +255,7 @@ func TestHub_ClientSyncLoopIntegration(t *testing.T) {
 	smux.HandleFunc("/api/v1/hub/", serverM.handleHubDeviceRoutes)
 	sts := httptest.NewServer(smux)
 	defer sts.Close()
+	devSecret := pairTestDevice(t, serverM, "devC", "omp-c.example")
 
 	cdir := t.TempDir()
 	clientAgent := &expertRunAgent{chatTranscriptAgent: chatTranscriptAgent{stubTranscriptAgent: stubTranscriptAgent{dir: cdir}}}
@@ -262,7 +263,7 @@ func TestHub_ClientSyncLoopIntegration(t *testing.T) {
 	ce := NewEngine("client-proj", clientAgent, nil, "", LangEnglish)
 	ce.sessions = NewSessionManager("")
 	cm.RegisterEngine("client-proj", ce)
-	if err := cm.EnableHub("sec", false, HubClientOptions{
+	if err := cm.EnableHub(devSecret, false, HubClientOptions{
 		ServerURL: sts.URL, DeviceToken: "devC", DeviceName: "客户端C", SyncIntervalM: 1,
 	}); err != nil {
 		t.Fatal(err)
@@ -288,13 +289,44 @@ func TestHub_ClientSyncLoopIntegration(t *testing.T) {
 		t.Errorf("server device name = %q, want 客户端C", devName)
 	}
 
+	// The client also receives the full paired-node directory from /register.
+	nodeDeadline := time.Now().Add(5 * time.Second)
+	for {
+		cm.hub.mu.Lock()
+		remoteCount := len(cm.hub.remoteNodes)
+		cm.hub.mu.Unlock()
+		if remoteCount > 0 {
+			break
+		}
+		if time.Now().After(nodeDeadline) {
+			t.Fatal("client never received node directory")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	clientNodesRec := httptest.NewRecorder()
+	cm.handleHubNodes(clientNodesRec, httptest.NewRequest(http.MethodGet, "/api/v1/hub/nodes", nil))
+	var clientNodes struct {
+		Data struct {
+			Nodes   []HubNodeView `json:"nodes"`
+			Role    string        `json:"role"`
+			CanEdit bool          `json:"can_edit"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(clientNodesRec.Body.Bytes(), &clientNodes); err != nil {
+		t.Fatalf("decode client nodes: %v", err)
+	}
+	if clientNodes.Data.Role != "client" || clientNodes.Data.CanEdit || len(clientNodes.Data.Nodes) != 1 ||
+		clientNodes.Data.Nodes[0].ID != "devC" || clientNodes.Data.Nodes[0].WebURL != "https://omp-c.example" {
+		t.Fatalf("client nodes = %+v", clientNodes.Data)
+	}
+
 	// 服务端转发「用专家执行」给 devC。
 	if code, _ := hubPost(t, sts.URL+"/api/v1/hub/devC/run", "sec", map[string]any{"agent": "scout", "message": "你好"}); code != http.StatusOK {
 		t.Fatalf("forward run status = %d", code)
 	}
 
 	// client 下次同步：带 poll 拉取 server 投递的 op（走真实 HTTP 端点）。
-	code, data := hubPost(t, sts.URL+"/api/v1/hub/register", "sec", map[string]any{"device_token": "devC", "name": "客户端C", "poll": true})
+	code, data := hubPost(t, sts.URL+"/api/v1/hub/register", devSecret, map[string]any{"device_token": "devC", "name": "客户端C", "poll": true})
 	if code != http.StatusOK {
 		t.Fatalf("client pull register = %d", code)
 	}
@@ -412,8 +444,16 @@ func TestHub_NodesWebURL(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("pair/claim status = %d body=%s", rec.Code, rec.Body.String())
 	}
+	var claimed struct {
+		Data struct {
+			Secret string `json:"secret"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil || claimed.Data.Secret == "" {
+		t.Fatalf("claim secret = %q err=%v", claimed.Data.Secret, err)
+	}
 
-	code, body := hubPost(t, ts.URL+"/api/v1/hub/register", "sec", map[string]any{
+	code, body := hubPost(t, ts.URL+"/api/v1/hub/register", claimed.Data.Secret, map[string]any{
 		"device_token": "devX",
 		"name":         "设备X-在线",
 		"web_url":      "https://omp-devx.example.com/",
@@ -436,8 +476,8 @@ func TestHub_NodesWebURL(t *testing.T) {
 		t.Fatalf("nodes = %+v, want one", got.Data.Nodes)
 	}
 	n := got.Data.Nodes[0]
-	if n.ID != "devX" || n.Name != "设备X-在线" {
-		t.Errorf("node = %+v, want registered name for devX", n)
+	if n.ID != "devX" || n.Name != "设备X" {
+		t.Errorf("node = %+v, want center-assigned name for devX", n)
 	}
 	if n.WebURL != "https://omp-devx.example.com" {
 		t.Errorf("web_url = %q, want https URL built from the pair host", n.WebURL)

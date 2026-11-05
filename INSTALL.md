@@ -232,8 +232,11 @@ ompweb（omp 的网页工作台，默认 `http://127.0.0.1:30177`）是 **硬依
   返回 `restart_required`，重启后生效。
 - 验证：控制台节点在线，`https://omp-<device_token>.example.com/` 返回 200；
   未配对 host 返回 404，已配对但离线返回 502。
-- 安全：relay 不校验访问者，节点 OMP Web 必须加密码（`OMP_WEB_PASSWORD_HASH`）
-  或 Cloudflare Access；管理 token、hub secret、配对码都不要外传。
+- 节点页：中心和客户端都显示全部已配对节点；中心可改名称/独立密钥/登录码，
+  客户端只读。
+- 登录码是中心 relay 的 HTTP Basic 密码，不是 OMP Web 自身密码；OMP Web 仍应设置
+  `OMP_WEB_PASSWORD_HASH` 或用 Cloudflare Access。管理 token、hub secret、登录码、
+  配对码都不要外传。
 - 中兴 `zte-linux` / `zte-book` 不需要特殊安装包：按实际系统走 Linux/Windows 步骤。
 
 完整步骤（中心配置、Cloudflare、Linux/Windows 节点、动态移除、排障）见

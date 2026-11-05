@@ -17,6 +17,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 - 文档：新增 `docs/HUB-NODES.md`，覆盖中心、Linux/Windows 节点、中兴设备接入与排障；
   README / INSTALL 同步更新节点安装说明，并补充未配对启动、`pair/join` 贴码配对和
   `/api/v1/status` 的 `hub` 字段检查。
+- 节点页：中心和客户端都显示全部已配对节点，都可打开 OMP Web；客户端只读。
+  中心可修改节点名称、独立 hub 密钥和 relay 登录码（`PATCH /api/v1/hub/nodes/{token}`）；
+  客户端写操作返回 409。节点密码轮换通过下一次 `/hub/register` 自动落盘并重连。
+- 每个新配对节点使用独立 hub 密钥，不再共享全局 secret；旧记录继续兼容全局 secret。
+- 节点 relay 支持可选登录码（HTTP Basic），中心只保存哈希；未设置时保持直接转发。
 - Hub 节点可在**未配对**状态下启动：client 模式允许 `secret`/`device_token` 为空，
   此时只开放配对路径；已有凭据后再启动同步与反向隧道。新增 `POST /api/v1/hub/pair/join`
   （management token 保护）在节点本机完成配对——居中生成的一次性码贴进来即可，免改配置；

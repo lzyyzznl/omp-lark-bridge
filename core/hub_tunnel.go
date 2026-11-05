@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/subtle"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -48,6 +51,16 @@ type HubDeviceRecord struct {
 	Host      string    `json:"host"`
 	WebURL    string    `json:"web_url"`
 	CreatedAt time.Time `json:"created_at"`
+
+	// Secret is this node's tunnel/heartbeat credential. Empty means the
+	// legacy global hub secret (records created before per-node secrets).
+	Secret string `json:"secret,omitempty"`
+	// PrevSecret is accepted only while a rotated node catches up: the node
+	// still authenticates with the old value until its next sync stores Secret.
+	PrevSecret string `json:"prev_secret,omitempty"`
+	// LoginCodeHash gates browser access through the center relay. Empty means
+	// no center-side login prompt; the node's own OMP Web auth still applies.
+	LoginCodeHash string `json:"login_code_hash,omitempty"`
 }
 
 // HubPairCode is a one-time enrollment code bound to a device slot.
@@ -333,12 +346,19 @@ func (m *ManagementServer) handleHubPairClaim(w http.ResponseWriter, r *http.Req
 	if name == "" {
 		name = pc.Token
 	}
+	secret, err := newHubDeviceSecret()
+	if err != nil {
+		h.mu.Unlock()
+		mgmtError(w, http.StatusInternalServerError, "generate device secret: "+err.Error())
+		return
+	}
 	rec := &HubDeviceRecord{
 		Token:     pc.Token,
 		Name:      name,
 		Host:      pc.Host,
 		WebURL:    "https://" + pc.Host,
 		CreatedAt: time.Now(),
+		Secret:    secret,
 	}
 	h.paired[pc.Token] = rec
 	h.hostIndex[pc.Host] = pc.Token
@@ -346,7 +366,6 @@ func (m *ManagementServer) handleHubPairClaim(w http.ResponseWriter, r *http.Req
 		delete(h.tunnels, pc.Token)
 		go old.close()
 	}
-	secret := h.secret
 	m.saveHubDevicesLocked()
 	h.mu.Unlock()
 
@@ -379,7 +398,16 @@ func saveHubClientState(path string, st hubClientState) error {
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		// Windows does not always replace an existing destination atomically.
+		// Fall back to an in-place write; the file remains owner-only.
+		if werr := os.WriteFile(path, b, 0o600); werr != nil {
+			_ = os.Remove(tmp)
+			return werr
+		}
+		_ = os.Remove(tmp)
+	}
+	return nil
 }
 
 // handleHubPairJoin enrolls this node with its configured center using a
@@ -557,6 +585,105 @@ func (m *ManagementServer) handleHubPairDevice(w http.ResponseWriter, r *http.Re
 	mgmtJSON(w, http.StatusOK, map[string]any{"removed": true, "device_token": device})
 }
 
+// handleHubNodeUpdate lets the center rename a node and set its tunnel secret
+// or browser login code. Node consoles are read-only: this handler is guarded
+// by requireHubServer.
+func (m *ManagementServer) handleHubNodeUpdate(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPatch {
+		mgmtError(w, http.StatusMethodNotAllowed, "PATCH only")
+		return
+	}
+	if !m.requireHubServer(w) {
+		return
+	}
+	device := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/hub/nodes/"), "/")
+	if !validHubToken(device) {
+		mgmtError(w, http.StatusBadRequest, "invalid device_token")
+		return
+	}
+	var body struct {
+		Name           *string `json:"name"`
+		Secret         *string `json:"secret"`
+		LoginCode      *string `json:"login_code"`
+		ClearLoginCode bool    `json:"clear_login_code"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	if body.Name == nil && body.Secret == nil && body.LoginCode == nil && !body.ClearLoginCode {
+		mgmtError(w, http.StatusBadRequest, "no fields to update")
+		return
+	}
+	if body.LoginCode != nil && body.ClearLoginCode {
+		mgmtError(w, http.StatusBadRequest, "login_code and clear_login_code are mutually exclusive")
+		return
+	}
+	h := m.hub
+	h.mu.Lock()
+	rec := h.paired[device]
+	if rec == nil {
+		h.mu.Unlock()
+		mgmtError(w, http.StatusNotFound, "device is not paired")
+		return
+	}
+	secretRotated := false
+	if body.Name != nil {
+		name := strings.TrimSpace(*body.Name)
+		if name == "" {
+			name = device
+		}
+		rec.Name = name
+	}
+	if body.Secret != nil {
+		secret := strings.TrimSpace(*body.Secret)
+		if len(secret) < 16 || len(secret) > 128 || strings.ContainsAny(secret, " \t\r\n") {
+			h.mu.Unlock()
+			mgmtError(w, http.StatusBadRequest, "secret must be 16-128 chars without whitespace")
+			return
+		}
+		if rec.Secret != "" {
+			rec.PrevSecret = rec.Secret
+		} else {
+			rec.PrevSecret = h.secret
+		}
+		rec.Secret = secret
+		secretRotated = true
+	}
+	if body.ClearLoginCode {
+		rec.LoginCodeHash = ""
+	}
+	if body.LoginCode != nil {
+		code := strings.TrimSpace(*body.LoginCode)
+		if !validHubLoginCode(code) {
+			h.mu.Unlock()
+			mgmtError(w, http.StatusBadRequest, "login_code must be 4-128 printable chars")
+			return
+		}
+		rec.LoginCodeHash = hashHubLoginCode(code)
+	}
+	loginSet := rec.LoginCodeHash != ""
+	m.saveHubDevicesLocked()
+	var tun *hubTunnel
+	if secretRotated {
+		tun = h.tunnels[device]
+		delete(h.tunnels, device)
+	}
+	h.mu.Unlock()
+	if tun != nil {
+		go tun.close()
+	}
+	slog.Info("hub: node updated", "device", device, "secret_rotated", secretRotated,
+		"login_code_set", loginSet)
+	mgmtJSON(w, http.StatusOK, map[string]any{
+		"updated":          true,
+		"device_token":     device,
+		"secret_rotated":   secretRotated,
+		"login_code_set":   loginSet,
+		"restart_required": false,
+	})
+}
+
 // ── tunnel server ─────────────────────────────────────────────────
 
 // handleHubTunnel upgrades a node's outbound WebSocket and serves yamux streams.
@@ -564,13 +691,13 @@ func (m *ManagementServer) handleHubTunnel(w http.ResponseWriter, r *http.Reques
 	if !m.requireHubServer(w) {
 		return
 	}
-	if !m.authHub(r) {
-		mgmtError(w, http.StatusUnauthorized, "invalid hub secret")
-		return
-	}
 	device := strings.TrimSpace(r.Header.Get("X-Hub-Device"))
 	if device == "" {
 		mgmtError(w, http.StatusBadRequest, "X-Hub-Device is required")
+		return
+	}
+	if !m.authHubDevice(r, device) {
+		mgmtError(w, http.StatusUnauthorized, "invalid hub secret")
 		return
 	}
 	h := m.hub
@@ -635,6 +762,31 @@ func (m *ManagementServer) hubHostToken(host string) string {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.hostIndex[host]
+}
+
+// hubLoginAllowed enforces the optional center-side login code for a node.
+// The code is stored as a hash; browsers use it as the HTTP Basic password.
+// An empty hash preserves the previous direct-access behavior.
+func (m *ManagementServer) hubLoginAllowed(req *http.Request, token string) bool {
+	h := m.hub
+	if h == nil {
+		return false
+	}
+	h.mu.Lock()
+	hash := ""
+	if rec := h.paired[token]; rec != nil {
+		hash = rec.LoginCodeHash
+	}
+	h.mu.Unlock()
+	if hash == "" {
+		return true
+	}
+	_, code, ok := req.BasicAuth()
+	if !ok || code == "" {
+		return false
+	}
+	sum := sha256.Sum256([]byte(code))
+	return subtle.ConstantTimeCompare([]byte(hex.EncodeToString(sum[:])), []byte(hash)) == 1
 }
 
 // ── relay ─────────────────────────────────────────────────────────
@@ -706,6 +858,11 @@ func (r *hubRelay) handle(w http.ResponseWriter, req *http.Request) {
 	token := r.m.hubHostToken(host)
 	if token == "" {
 		http.Error(w, "unknown node", http.StatusNotFound)
+		return
+	}
+	if !r.m.hubLoginAllowed(req, token) {
+		w.Header().Set("WWW-Authenticate", `Basic realm="OMP node"`)
+		http.Error(w, "login required", http.StatusUnauthorized)
 		return
 	}
 	if r.m.hubTunnelFor(token) == nil {
@@ -906,6 +1063,31 @@ func newHubPairCode() (string, error) {
 		buf[i] = hubPairAlphabet[int(buf[i])%len(hubPairAlphabet)]
 	}
 	return string(buf), nil
+}
+
+func newHubDeviceSecret() (string, error) {
+	buf := make([]byte, 32)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(buf), nil
+}
+
+func hashHubLoginCode(code string) string {
+	sum := sha256.Sum256([]byte(code))
+	return hex.EncodeToString(sum[:])
+}
+
+func validHubLoginCode(code string) bool {
+	if len(code) < 4 || len(code) > 128 {
+		return false
+	}
+	for _, r := range code {
+		if r < 0x20 || r == 0x7f {
+			return false
+		}
+	}
+	return true
 }
 
 func validHubToken(token string) bool {

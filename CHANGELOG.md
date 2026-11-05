@@ -25,6 +25,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `device_name`/`web_url`），控制台与运维脚本可据此判断节点是否已接入中心。
 
 ### Changed
+- ompweb 链接改为**跟随控制台入口地址**（不再统一发公网域名）：loopback 进入 -> ompweb loopback 地址；
+  私有/链路本地 IP、`100.64.0.0/10`、`*.ts.net`、`*.local|*.lan|*.home.arpa`、单标签主机名 ->
+  同一主机的 ompweb 端口；其余（公网域名/隧道）才用 `OMPWEB_PUBLIC_URL`。
+  影响 `GET /api/v1/ompweb` 的 `url` 与「查看对话」`{id}/ompiweb` 返回的 `url`。
+  注意控制台本身仍由 `[management] host`（默认 `127.0.0.1`）决定监听地址，要从局域网/Tailscale 进入需自行放开。
 - 控制台瘦身：移除「会话查看」「agent 人格」两个 tab（会话查看与 agent 编辑统一到 ompweb），
   `SessionsPage`/`AgentsPage`/`AgentDialog`/`ExpertRunDialog` 一并删除；后端 `/api/v1/*` 全部保留。
 - 飞书忙时排队提示改为「正在对话中，消息已排队，本轮结束后会自动追加发送」（五语言同步）。

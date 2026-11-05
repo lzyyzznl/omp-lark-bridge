@@ -11,6 +11,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `busy`/`queued` 字段，供 ompweb/APP 判定发送按钮是否可用。
 - 新增 `/cancelqueue`（别名 `/clearqueue`）清空忙时排队消息，回复已清空的条数。
 - 控制台新增「项目管理」页（`ProjectsPage`）：新建/重命名/删除/设置；项目仍是定时任务的挂钩对象。
+- Hub 多节点：控制台「节点」页、一次性配对码、`omp-lark-bridge hub pair` 客户端接入、
+  WSS + yamux 反向隧道、中心 relay、节点在线/移除；节点 host 自动生成为
+  `omp-<device_token>.<node_host_suffix>`，不再预建固定节点。
+- 文档：新增 `docs/HUB-NODES.md`，覆盖中心、Linux/Windows 节点、中兴设备接入与排障；
+  README / INSTALL 同步更新节点安装说明。
 
 ### Changed
 - 控制台瘦身：移除「会话查看」「agent 人格」两个 tab（会话查看与 agent 编辑统一到 ompweb），

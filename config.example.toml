@@ -198,23 +198,23 @@ token = "1"             # 初始默认 1，可改成任意串；改后需重启 
 enabled = true          # 默认开启；显式 false 才关闭
 port = 30177            # 默认 30177
 # bin = "/usr/local/bin/ompweb"  # 指定可执行文件；不设则从 PATH 找，找不到回退 npx
-# public_url = "https://omp.example.com"  # 浏览器访问地址（如 Cloudflare Tunnel 后面）；不设则用 127.0.0.1
+# public_url = "https://omp.example.com"  # 浏览器访问地址；节点接入时填中心分配的 omp-pcN 地址；不设则用 127.0.0.1
 
 # =============================================================================
-# Hub / 多实例中心同步
+# Hub / 中心 + 节点（OMP Web 反向隧道）
 # =============================================================================
-# 通过中心 hub 把多台 olb 设备连起来：server 模式聚合各客户端注册的 agents 与
-# 会话目录（只读互查），并能把「用专家执行 / 编辑 agent」请求转发给指定设备执行。
-# 客户端全程主动出站（周期 keepalive + 轮询 outbox），无需入站端口，可放 NAT/CF 后。
+# 通过中心 hub 把多台 olb 设备连成中心 + N 节点：server 模式提供节点页、配对和
+# OMP Web relay；client 模式主动出站建立 WSS 反向隧道，无需入站端口，可放 NAT/CF 后。
+# 旧控制面（inventory 上报 / run/edit outbox）仍保留，用于列表计数和跨节点操作。
 [hub]
 enabled = false           # 默认关闭 / default off
 # mode = "server"          # 本机作为中心（配合下方 secret；注册 /hub/* 端点）
-# mode = "client"          # 本机作为设备，向 server_url 注册并接收转发任务
+# mode = "client"          # 本机作为节点，向 server_url 注册并建立 OMP Web 隧道
 # secret = "换一个长随机串"  # 共享密钥，server/client 必须一致（X-Hub-Secret）
 # relay_port = 31991       # server：本机 relay 端口；cloudflared 的 omp-* 指到它
 # state_file = ""          # server：已配对设备；client：配对状态；默认 <data_dir>/hub-*.json
 # node_host_suffix = ""    # server：配对页留空时自动生成 omp-<token>.<suffix>；默认取 ompweb 域名后缀
-# 节点接入：中心「节点」页点「添加节点」生成一次性命令，在节点执行：
+# 节点接入：中心「节点」页点「添加节点」生成 10 分钟有效的一次性命令，在节点执行：
 #   omp-lark-bridge hub pair https://hub.example.com <code> --name node1
 # 下面是 client 模式专属：
 # server_url = "https://hub.example.com"   # 中心 hub 地址（不带结尾斜杠）

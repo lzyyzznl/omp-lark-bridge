@@ -212,6 +212,30 @@ ompweb（omp 的网页工作台，默认 `http://127.0.0.1:30177`）是 **硬依
 
 > ⚠️ 默认 `allow_from` 未设 = **企业内任何飞书用户都能对这台机器执行 shell**。若担心，配好之后设 `allow_from = ["<你的 open_id>"]`（用户对 bot 发 `/whoami` 拿 open_id）。
 
+### 5.7 多节点中心 / 节点接入（可选）
+
+单机装完后，如果要把多台机器接成一个中心 + N 节点：
+
+- **中心**：`[hub] mode = "server"`，并配置 `[ompweb] public_url`；Cloudflare 精确
+  `bridge` / `omp-center`，外加 `*.example.com` 泛解析 → relay `31991`。
+- **节点**：`[hub] mode = "client"`；控制台「节点」→「添加节点」生成一次性命令，
+  在节点执行：
+
+  ```bash
+  omp-lark-bridge hub pair https://bridge.example.com <CODE> --name zte-linux
+  ```
+
+  把输出的 `[hub]` / `[ompweb]` 合并进节点 `config.toml`，再 `daemon restart`。
+- 节点只需要**出站 443**；不需要公网端口，也不需要单独的 Cloudflare Tunnel。
+- 验证：控制台节点在线，`https://omp-<device_token>.example.com/` 返回 200；
+  未配对 host 返回 404，已配对但离线返回 502。
+- 安全：relay 不校验访问者，节点 OMP Web 必须加密码（`OMP_WEB_PASSWORD_HASH`）
+  或 Cloudflare Access；管理 token、hub secret、配对码都不要外传。
+- 中兴 `zte-linux` / `zte-book` 不需要特殊安装包：按实际系统走 Linux/Windows 步骤。
+
+完整步骤（中心配置、Cloudflare、Linux/Windows 节点、动态移除、排障）见
+**[docs/HUB-NODES.md](./docs/HUB-NODES.md)**。
+
 ---
 
 ## 6. Windows 快速参考（上面散落点的汇总）
@@ -227,6 +251,8 @@ ompweb（omp 的网页工作台，默认 `http://127.0.0.1:30177`）是 **硬依
 | 自启 | `omp-lark-bridge.exe daemon install --work-dir C:\path\to\repo` |
 | 打开后台看板 | `start http://localhost:31990/`（填默认 token `1`） |
 | 打开 ompweb 工作台 | `start http://localhost:30177/`（随服务自动拉起） |
+| 接入中心 | 控制台生成命令后运行 `omp-lark-bridge.exe hub pair https://bridge.example.com <CODE> --name node1` |
+| 节点 OMP Web | `https://omp-<device_token>.example.com/`（中心自动分配，勿预建固定 host） |
 
 ---
 
@@ -303,6 +329,8 @@ npm config set registry https://registry.npmmirror.com   # 全局
 - [ ] `daemon status` = Running
 - [ ] 日志出现 `bot identified` / `platform ready` / `omp-lark-bridge is running`
 - [ ] 飞书里对 bot 发 `/help` 收到卡片
+- [ ] （接入中心时）节点 `hub pair` 成功，`hub-client.json` 存在且权限 `0600`
+- [ ] （接入中心时）控制台节点在线，`https://omp-<token>.<domain>/` 返回 200
 - [ ] `git status` 干净（`config.toml`、`*.exe`、`web/dist`、`node_modules` 都不入库）
 
 ---

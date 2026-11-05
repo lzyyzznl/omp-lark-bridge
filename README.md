@@ -143,53 +143,90 @@ go test ./...      # 快速验证
 make release-publish   # 全平台产物发布到 GitHub Release(新机器 install.sh 自动拉取)
 ```
 
-## Hub:多实例中心同步
+## Hub:中心 + 节点（OMP Web 反向隧道）
 
-把多台 olb 实例连成一个"蜂群":通过一个中心 **hub**,任意一台都能看到全网
-设备目录(只读 agents/会话),并把「用专家执行」转发给指定设备执行。适合
-家里柱机、公司工位机、云服务器并存时集中调度。
+把多台机器接成一个**中心 + N 节点**：
+
+- **中心**：唯一公网入口，提供管理控制台、节点配对和 OMP Web relay。
+- **节点**：只主动出站 443 建立 WSS 隧道；不需要公网端口，也不需要为每个节点单独建 Cloudflare Tunnel。
+- **节点本地自治**：中心宕机时，节点本机的 OMP Web、会话、定时任务、飞书仍继续运行。
+
+节点数量不预设。控制台「节点」页点「添加节点」生成一次性命令，节点执行
+`hub pair` 即可接入；不再需要时点「移除」。每个节点自动使用
+`omp-<device_token>.<domain>` 的 host，由 `*.example.com` 泛解析 + relay 动态路由，
+无需预建 `pc1..pc4` 之类的固定槽位。
 
 ### 两种模式
 
-- **server**:作为中心,接收各设备周期性注册;web 看板「hub 全网设备」区块
-  列出全设备,并支持转发专家执行(执行结果异步回传,web 会轮询显示)。
-- **client**:作为设备,向 `server_url` 注册并上报本机 agents/会话目录,周期
-  拉取 server 转发的任务在本机执行并回传结果。全程**客户端主动出站**,
-  无需入站端口 —— 所以天然适合 NAT / Cloudflare Tunnel 之后。
+- **server**：中心；`[hub] mode = "server"`。注册 `/hub/*`，启动 relay（默认
+  `127.0.0.1:31991`），维护 `hub-devices.json`。
+- **client**：节点；`[hub] mode = "client"`。用配对码换取 token + secret，主动向中心
+  建立 WSS 隧道，把本机 OMP Web 通过隧道暴露给中心。
+
+旧的控制面仍然保留：client 每约 60 秒 `POST /api/v1/hub/register` 上报
+agent/session 元数据，并拉取中心投递的 run/edit op。**OMP Web 页面走反向隧道，
+两条链路互不替代**：inventory 只负责列表计数，页面访问以隧道是否存在为准。
+
+### 添加节点
+
+1. 中心控制台「节点」→「添加节点」，填 `device_token`（如 `pc5`）和名称；host 留空。
+2. 中心生成 10 分钟有效的一次性码，并自动推导 `omp-pc5.example.com`。
+3. 在节点执行控制台给出的命令：
+
+   ```bash
+   omp-lark-bridge hub pair https://bridge.example.com <CODE> --name zte-linux
+   ```
+
+4. 把命令输出的 `[hub]` / `[ompweb]` 合并进节点 `config.toml`，重启节点服务。
+5. 控制台节点显示在线；浏览器打开 `https://omp-pc5.example.com/`。
+
+> 配对命令必须从公网控制台生成。不要在节点上用 `127.0.0.1:31990` 生成，
+> 否则命令里的 `server_url` 会是节点不可达的本地地址。
 
 ### 配置
 
-见 `config.example.toml` 的 `[hub]` 段。关键字段:
+中心：
 
 ```toml
 [hub]
 enabled = true
-mode = "server"        # 本机为 server;其他机为 "client"
-secret = "用下面命令生成的长随机串"   # server/client 必须一致
-# client 专属:
-server_url = "https://hub.example.com"   # 中心地址(不带结尾斜杠)
-device_token = "device-001"              # 设备唯一标识
-device_name = "机房柱机"                 # 显示名,默认主机名
-sync_interval_mins = 1                   # 上报/轮询间隔,默认 1 分钟
+mode = "server"
+secret = "用 openssl rand -hex 32 生成的长随机串"
+relay_port = 31991
+node_host_suffix = "example.com"   # 留空则从 [ompweb] public_url 推导
+
+[ompweb]
+public_url = "https://omp-center.example.com"
 ```
 
-生成密钥(server 与所有设备共用同一个值):
+节点（配对命令会给出完整片段）：
 
-```bash
-openssl rand -hex 32
+```toml
+[hub]
+enabled = true
+mode = "client"
+state_file = "/home/you/.omp-lark-bridge/hub-client.json"
+
+[ompweb]
+public_url = "https://omp-pc5.example.com"
 ```
 
-> 注意:ssh 内网转发或直接暴露时,请保证 `server_url` 与各设备可达;
-> `X-Hub-Secret` 是共享密钥,泄露即等于任何能访问 hub 端点的人可投递任务。
+`hub-client.json` 含中心共享 secret，创建权限保持 `0600`；不要提交、不要发群。
 
-### 通过 Cloudflare 暴露 hub
+### Cloudflare
 
-- **client 模式**:对 `server_url` 只有出站连接,直接放 Cloudflare Tunnel
-  (`cloudflared tunnel --url http://127.0.0.1:31990`)即可,无需任何入站端口。
-- **server 模式需被外部设备访问**:不要直接公网开放 `31990`(management token
-  随之裸露)。建议 Cloudflare **Tunnel + Access**(Zero Trust)只放行 `/api/v1/hub/*`
-  给已知内网 IP,或干脆让各设备以 client 模式连一个内网 hub,由内网 hub 反向连
-  Cloudflare 暴露到公网。生产环境务必启用 HTTPS 并定期轮换 hub secret。
+- `bridge.example.com` → `127.0.0.1:31990`（控制台）
+- `omp-center.example.com` → `127.0.0.1:30177`（中心 OMP Web）
+- `*.example.com` → `127.0.0.1:31991`（节点 relay）
+- 末尾 `http_status:404`
+- 泛解析 CNAME `*.example.com` 指向同一个 tunnel；精确记录优先。
+
+> 安全：relay 只按 host 路由到已配对节点，**不校验访问者**。节点 OMP Web 必须设置
+> 自己的密码（`OMP_WEB_PASSWORD_HASH`）或用 Cloudflare Access 保护。管理 token、
+> hub secret、配对码都不要外传。中心 `31990` 建议只监听 `127.0.0.1`，由 cloudflared 转发。
+
+完整安装（中心、Linux/Windows 节点、中兴设备、动态移除、排障）见
+**[docs/HUB-NODES.md](./docs/HUB-NODES.md)**。
 
 ## 授权
 

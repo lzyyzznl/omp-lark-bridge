@@ -388,16 +388,41 @@ func TestHub_WebOverviewEndpoints(t *testing.T) {
 func TestHub_NodesWebURL(t *testing.T) {
 	mgmt, ts := hubTestServer(t, "sec")
 
-	code, body := hubPost(t, ts.URL+"/api/v1/hub/register", "sec", map[string]any{
+	// The Nodes tab lists paired devices only; pairing is what gives a node its
+	// public host, and the console must not resurrect an unpaired one.
+	rec := postJSON(t, mgmt.handleHubPairNew, "/api/v1/hub/pair/new", map[string]any{
 		"device_token": "devX",
 		"name":         "设备X",
+		"host":         "omp-devx.example.com",
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pair/new status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Data struct {
+			Code string `json:"code"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil || created.Data.Code == "" {
+		t.Fatalf("pair/new code = %q err=%v", created.Data.Code, err)
+	}
+	rec = postJSON(t, mgmt.handleHubPairClaim, "/api/v1/hub/pair/claim", map[string]any{
+		"code": created.Data.Code,
+	})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pair/claim status = %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	code, body := hubPost(t, ts.URL+"/api/v1/hub/register", "sec", map[string]any{
+		"device_token": "devX",
+		"name":         "设备X-在线",
 		"web_url":      "https://omp-devx.example.com/",
 	})
 	if code != http.StatusOK {
 		t.Fatalf("register status = %d body=%s", code, body)
 	}
 
-	rec := httptest.NewRecorder()
+	rec = httptest.NewRecorder()
 	mgmt.handleHubNodes(rec, httptest.NewRequest(http.MethodGet, "/api/v1/hub/nodes", nil))
 	var got struct {
 		Data struct {
@@ -411,18 +436,20 @@ func TestHub_NodesWebURL(t *testing.T) {
 		t.Fatalf("nodes = %+v, want one", got.Data.Nodes)
 	}
 	n := got.Data.Nodes[0]
-	if n.WebURL != "https://omp-devx.example.com" {
-		t.Errorf("web_url = %q, want trailing slash trimmed", n.WebURL)
+	if n.ID != "devX" || n.Name != "设备X-在线" {
+		t.Errorf("node = %+v, want registered name for devX", n)
 	}
-	if !n.Online {
-		t.Errorf("online = false right after register")
+	if n.WebURL != "https://omp-devx.example.com" {
+		t.Errorf("web_url = %q, want https URL built from the pair host", n.WebURL)
+	}
+	if n.Online {
+		t.Errorf("online = true without a tunnel")
 	}
 
-	// Node-reported URLs are untrusted: javascript:/userinfo must be dropped.
+	// An unpaired node may still POST /hub/register, but it stays invisible.
 	code, body = hubPost(t, ts.URL+"/api/v1/hub/register", "sec", map[string]any{
 		"device_token": "devY",
 		"name":         "设备Y",
-		"web_url":      "javascript:alert(1)",
 	})
 	if code != http.StatusOK {
 		t.Fatalf("register devY status = %d body=%s", code, body)
@@ -433,8 +460,26 @@ func TestHub_NodesWebURL(t *testing.T) {
 		t.Fatalf("decode nodes: %v", err)
 	}
 	for _, node := range got.Data.Nodes {
-		if node.Name == "设备Y" && node.WebURL != "" {
-			t.Fatalf("unsafe web_url survived: %q", node.WebURL)
+		if node.ID == "devY" {
+			t.Fatalf("unpaired node leaked into nodes list: %+v", node)
+		}
+	}
+}
+
+// Node-reported web URLs are untrusted: only plain http(s) hosts survive, and
+// javascript:/userinfo/ports are dropped rather than rendered as links.
+func TestNormalizeHubWebURL(t *testing.T) {
+	cases := map[string]string{
+		"https://omp.example.com/":      "https://omp.example.com",
+		"http://omp.example.com":        "http://omp.example.com",
+		"javascript:alert(1)":           "",
+		"https://user:pass@omp.example": "",
+		"https://omp.example.com:8080/": "https://omp.example.com:8080",
+		"  ":                            "",
+	}
+	for in, want := range cases {
+		if got := normalizeHubWebURL(in); got != want {
+			t.Errorf("normalizeHubWebURL(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

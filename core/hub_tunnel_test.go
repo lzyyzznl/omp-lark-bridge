@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -389,5 +390,189 @@ func TestHubTunnel_RelayHTTPAndOffline(t *testing.T) {
 	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusBadGateway {
 		t.Fatalf("offline relay status=%d, want 502", resp.StatusCode)
+	}
+}
+
+// A fresh node has no credentials yet: it must start in a pairing-only state,
+// never accept an empty X-Hub-Secret as authentication, and report "unpaired".
+func TestHubClient_StartsAwaitingPairing(t *testing.T) {
+	stateFile := t.TempDir() + "/hub-client.json"
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("", false, HubClientOptions{ServerURL: "https://center.example", StateFile: stateFile}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+	if m.hub == nil || m.hub.serverMode {
+		t.Fatalf("hub = %+v, want client mode", m.hub)
+	}
+	if m.hub.clientToken != "" || m.hub.secret != "" {
+		t.Fatalf("unpaired node holds credentials: token=%q", m.hub.clientToken)
+	}
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/hub/register", strings.NewReader(`{"device_token":"x"}`))
+	m.handleHubRegister(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("register without secret status=%d, want 401", rec.Code)
+	}
+	st := m.hubStatus()
+	if st["mode"] != "client" || st["paired"] != false {
+		t.Fatalf("status = %+v, want unpaired client", st)
+	}
+}
+
+// fakePairCenter serves the center's claim endpoint and reports the payloads it
+// received so tests can assert what the node sent.
+func fakePairCenter(t *testing.T, status int, data map[string]any) (*httptest.Server, *[]map[string]string) {
+	t.Helper()
+	var seen []map[string]string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/hub/pair/claim" {
+			http.NotFound(w, r)
+			return
+		}
+		var body map[string]string
+		_ = json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body)
+		seen = append(seen, body)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(status)
+		if status == http.StatusOK {
+			_ = json.NewEncoder(w).Encode(map[string]any{"ok": true, "data": data})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"ok": false, "error": "invalid or expired pairing code"})
+	}))
+	t.Cleanup(srv.Close)
+	return srv, &seen
+}
+
+func TestHubClient_JoinFromConsole(t *testing.T) {
+	t.Setenv("OMPWEB_PUBLIC_URL", "https://preconfigured.example")
+	center, seen := fakePairCenter(t, http.StatusOK, map[string]any{
+		"device_token": "dev-node",
+		"name":         "Node From Center",
+		"secret":       "shared-secret",
+		"web_url":      "https://omp-node.example/",
+	})
+	stateFile := t.TempDir() + "/hub-client.json"
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("", false, HubClientOptions{ServerURL: center.URL, StateFile: stateFile}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+
+	rec := postJSON(t, m.handleHubPairJoin, "/api/v1/hub/pair/join", map[string]string{"code": " abcd2345 ", "name": "typed name"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("join status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var got struct {
+		Data struct {
+			Applied         bool   `json:"applied"`
+			RestartRequired bool   `json:"restart_required"`
+			DeviceToken     string `json:"device_token"`
+			WebURL          string `json:"web_url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v (%s)", err, rec.Body.String())
+	}
+	if !got.Data.Applied || got.Data.RestartRequired || got.Data.DeviceToken != "dev-node" {
+		t.Fatalf("join data = %+v, want applied", got.Data)
+	}
+	if got.Data.WebURL != "https://omp-node.example" {
+		t.Fatalf("web_url = %q, want trailing slash trimmed", got.Data.WebURL)
+	}
+	sent := (*seen)[0]
+	if sent["code"] != "ABCD2345" || sent["name"] != "typed name" {
+		t.Fatalf("claim payload = %v, want normalized code and typed name", sent)
+	}
+
+	b, err := os.ReadFile(stateFile)
+	if err != nil {
+		t.Fatalf("state file: %v", err)
+	}
+	var st hubClientState
+	if err := json.Unmarshal(b, &st); err != nil {
+		t.Fatalf("state decode: %v", err)
+	}
+	if st.Secret != "shared-secret" || st.DeviceToken != "dev-node" || st.ServerURL != center.URL || st.DeviceName != "Node From Center" {
+		t.Fatalf("state = %+v", st)
+	}
+	// Windows ignores Unix permission bits; the 0600 intent only exists on POSIX.
+	if runtime.GOOS != "windows" {
+		if info, err := os.Stat(stateFile); err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("state perms = %v, err=%v, want 0600", info.Mode().Perm(), err)
+		}
+	}
+	m.hub.mu.Lock()
+	token, secret, web := m.hub.clientToken, m.hub.secret, m.hub.webURL
+	m.hub.mu.Unlock()
+	if token != "dev-node" || secret != "shared-secret" || web != "https://omp-node.example" {
+		t.Fatalf("live hub = token %q secret %q web %q", token, secret, web)
+	}
+
+	// Re-pairing a running node persists the new credentials but cannot swap
+	// the secret the tunnel loop already holds: it must ask for a restart.
+	center2, _ := fakePairCenter(t, http.StatusOK, map[string]any{
+		"device_token": "dev-node2",
+		"secret":       "new-secret",
+		"web_url":      "https://omp-node2.example",
+	})
+	m.hub.mu.Lock()
+	m.hub.serverURL = center2.URL
+	m.hub.mu.Unlock()
+	rec = postJSON(t, m.handleHubPairJoin, "/api/v1/hub/pair/join", map[string]string{"code": "EFGH2345"})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("re-join status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if got.Data.Applied || !got.Data.RestartRequired {
+		t.Fatalf("re-join data = %+v, want restart_required", got.Data)
+	}
+	m.hub.mu.Lock()
+	token = m.hub.clientToken
+	m.hub.mu.Unlock()
+	if token != "dev-node" {
+		t.Fatalf("live token = %q, want old credentials until restart", token)
+	}
+	b, _ = os.ReadFile(stateFile)
+	_ = json.Unmarshal(b, &st)
+	if st.DeviceToken != "dev-node2" || st.Secret != "new-secret" {
+		t.Fatalf("state after re-pair = %+v", st)
+	}
+}
+
+func TestHubClient_JoinFailures(t *testing.T) {
+	stateFile := t.TempDir() + "/hub-client.json"
+
+	// Server-mode consoles issue codes; they must not pair themselves.
+	center := NewManagementServer(0, "mgmt", nil)
+	if err := center.EnableHub("sec", true, HubClientOptions{RelayPort: -1}); err != nil {
+		t.Fatalf("EnableHub(server): %v", err)
+	}
+	defer center.Stop()
+	rec := postJSON(t, center.handleHubPairJoin, "/api/v1/hub/pair/join", map[string]string{"code": "ABCD2345"})
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("server-mode join status=%d, want 409", rec.Code)
+	}
+
+	// A rejected code surfaces the center's error and writes no state.
+	badCenter, _ := fakePairCenter(t, http.StatusBadRequest, nil)
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("", false, HubClientOptions{ServerURL: badCenter.URL, StateFile: stateFile}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	defer m.Stop()
+	rec = postJSON(t, m.handleHubPairJoin, "/api/v1/hub/pair/join", map[string]string{"code": "ABCD2345"})
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "invalid or expired pairing code") {
+		t.Fatalf("join status=%d body=%s, want 502 with center error", rec.Code, rec.Body.String())
+	}
+	if _, err := os.Stat(stateFile); !os.IsNotExist(err) {
+		t.Fatalf("state file written after failed join: err=%v", err)
+	}
+	rec = postJSON(t, m.handleHubPairJoin, "/api/v1/hub/pair/join", map[string]string{})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("empty code status=%d, want 400", rec.Code)
 	}
 }

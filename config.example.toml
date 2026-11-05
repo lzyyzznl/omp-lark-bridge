@@ -216,6 +216,10 @@ enabled = false           # 默认关闭 / default off
 # node_host_suffix = ""    # server：配对页留空时自动生成 omp-<token>.<suffix>；默认取 ompweb 域名后缀
 # 节点接入：中心「节点」页点「添加节点」生成 10 分钟有效的一次性命令，在节点执行：
 #   omp-lark-bridge hub pair https://hub.example.com <code> --name node1
+# 节点服务已在运行（且配了 server_url）时，也可不重启直接在节点本机贴码配对：
+#   curl -X POST -H "Authorization: Bearer <management token>" -H "Content-Type: application/json" \
+#     -d '{"code":"XXXX-XXXX","name":"node1"}' http://127.0.0.1:31990/api/v1/hub/pair/join
+# 已配对节点重复贴码会落盘新凭据并返回 restart_required，需重启后生效。
 # 下面是 client 模式专属：
 # server_url = "https://hub.example.com"   # 中心 hub 地址（不带结尾斜杠）
 # device_token = "device-001"              # 本机设备标识（全 hub 唯一）

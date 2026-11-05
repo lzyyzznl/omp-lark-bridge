@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -201,8 +202,7 @@ func (m *ManagementServer) handleHubPairNew(w http.ResponseWriter, r *http.Reque
 		mgmtError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	if m.hub == nil {
-		mgmtError(w, http.StatusServiceUnavailable, "hub is not enabled")
+	if !m.requireHubServer(w) {
 		return
 	}
 	var body struct {
@@ -296,8 +296,7 @@ func (m *ManagementServer) handleHubPairClaim(w http.ResponseWriter, r *http.Req
 		mgmtError(w, http.StatusMethodNotAllowed, "POST only")
 		return
 	}
-	if m.hub == nil {
-		mgmtError(w, http.StatusServiceUnavailable, "hub is not enabled")
+	if !m.requireHubServer(w) {
 		return
 	}
 	var body struct {
@@ -361,6 +360,167 @@ func (m *ManagementServer) handleHubPairClaim(w http.ResponseWriter, r *http.Req
 	})
 }
 
+// saveHubClientState persists enrollment credentials with owner-only perms.
+func saveHubClientState(path string, st hubClientState) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("hub: state_file is not configured")
+	}
+	b, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return err
+	}
+	b = append(b, '\n')
+	if dir := filepath.Dir(path); dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			return err
+		}
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, b, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// handleHubPairJoin enrolls this node with its configured center using a
+// one-time code typed into the console; it is the web counterpart of
+// `omp-lark-bridge hub pair`. Client mode only, behind the management token.
+//
+// A fresh node applies the credentials immediately (its client loops have not
+// started yet). Re-pairing an already-enrolled node persists the new state and
+// asks for a restart, because the running loops still hold the old secret.
+func (m *ManagementServer) handleHubPairJoin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		mgmtError(w, http.StatusMethodNotAllowed, "POST only")
+		return
+	}
+	h := m.hub
+	if h == nil {
+		mgmtError(w, http.StatusServiceUnavailable, "hub is not enabled")
+		return
+	}
+	if h.serverMode {
+		mgmtError(w, http.StatusConflict, "hub is in server mode; issue pairing codes on the center instead")
+		return
+	}
+	var body struct {
+		Code string `json:"code"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&body); err != nil {
+		mgmtError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
+		return
+	}
+	code := strings.ToUpper(strings.TrimSpace(body.Code))
+	if code == "" {
+		mgmtError(w, http.StatusBadRequest, "code is required")
+		return
+	}
+	h.mu.Lock()
+	if h.pairingNow {
+		h.mu.Unlock()
+		mgmtError(w, http.StatusConflict, "pairing already in progress")
+		return
+	}
+	h.pairingNow = true
+	serverURL := strings.TrimRight(strings.TrimSpace(h.serverURL), "/")
+	stateFile := h.stateFile
+	alreadyPaired := h.clientToken != ""
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.pairingNow = false
+		h.mu.Unlock()
+	}()
+	if serverURL == "" {
+		mgmtError(w, http.StatusBadRequest, "hub: server_url is not configured")
+		return
+	}
+
+	payload, _ := json.Marshal(map[string]string{"code": code, "name": strings.TrimSpace(body.Name)})
+	req, err := http.NewRequest(http.MethodPost, serverURL+"/api/v1/hub/pair/claim", bytes.NewReader(payload))
+	if err != nil {
+		mgmtError(w, http.StatusBadGateway, "build claim request: "+err.Error())
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := (&http.Client{Timeout: 20 * time.Second}).Do(req)
+	if err != nil {
+		mgmtError(w, http.StatusBadGateway, "contact center: "+err.Error())
+		return
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	var envelope struct {
+		OK    bool   `json:"ok"`
+		Error string `json:"error"`
+		Data  struct {
+			DeviceToken string `json:"device_token"`
+			Name        string `json:"name"`
+			Secret      string `json:"secret"`
+			WebURL      string `json:"web_url"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		mgmtError(w, http.StatusBadGateway, fmt.Sprintf("center returned %s", resp.Status))
+		return
+	}
+	if resp.StatusCode != http.StatusOK || !envelope.OK {
+		msg := envelope.Error
+		if msg == "" {
+			msg = resp.Status
+		}
+		mgmtError(w, http.StatusBadGateway, "pair failed: "+msg)
+		return
+	}
+	out := envelope.Data
+	if out.DeviceToken == "" || out.Secret == "" {
+		mgmtError(w, http.StatusBadGateway, "center returned an incomplete pairing response")
+		return
+	}
+	if out.Name == "" {
+		out.Name = out.DeviceToken
+	}
+	st := hubClientState{
+		ServerURL:   serverURL,
+		Secret:      out.Secret,
+		DeviceToken: out.DeviceToken,
+		DeviceName:  out.Name,
+		WebURL:      normalizeHubWebURL(out.WebURL),
+	}
+	if err := saveHubClientState(stateFile, st); err != nil {
+		mgmtError(w, http.StatusInternalServerError, "persist pairing state: "+err.Error())
+		return
+	}
+	applied := false
+	if !alreadyPaired {
+		h.mu.Lock()
+		h.secret = st.Secret
+		h.clientToken = st.DeviceToken
+		h.deviceName = st.DeviceName
+		h.webURL = st.WebURL
+		webURL := h.webURL
+		h.mu.Unlock()
+		if webURL != "" && strings.TrimSpace(os.Getenv("OMPWEB_PUBLIC_URL")) == "" {
+			os.Setenv("OMPWEB_PUBLIC_URL", webURL)
+		}
+		m.startHubClientLoop()
+		m.startHubTunnelClient()
+		applied = true
+	}
+	slog.Info("hub: node paired", "device", st.DeviceToken, "name", st.DeviceName,
+		"server_url", st.ServerURL, "applied", applied)
+	mgmtJSON(w, http.StatusOK, map[string]any{
+		"paired":           true,
+		"applied":          applied,
+		"restart_required": !applied,
+		"device_token":     st.DeviceToken,
+		"device_name":      st.DeviceName,
+		"web_url":          st.WebURL,
+		"server_url":       st.ServerURL,
+	})
+}
+
 // handleHubPairDevice removes a paired device. The node keeps running locally;
 // its next tunnel attempt is rejected until an admin pairs it again.
 func (m *ManagementServer) handleHubPairDevice(w http.ResponseWriter, r *http.Request) {
@@ -368,8 +528,7 @@ func (m *ManagementServer) handleHubPairDevice(w http.ResponseWriter, r *http.Re
 		mgmtError(w, http.StatusMethodNotAllowed, "DELETE only")
 		return
 	}
-	if m.hub == nil {
-		mgmtError(w, http.StatusServiceUnavailable, "hub is not enabled")
+	if !m.requireHubServer(w) {
 		return
 	}
 	device := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/v1/hub/pair/"), "/")
@@ -402,8 +561,7 @@ func (m *ManagementServer) handleHubPairDevice(w http.ResponseWriter, r *http.Re
 
 // handleHubTunnel upgrades a node's outbound WebSocket and serves yamux streams.
 func (m *ManagementServer) handleHubTunnel(w http.ResponseWriter, r *http.Request) {
-	if m.hub == nil {
-		mgmtError(w, http.StatusServiceUnavailable, "hub is not enabled")
+	if !m.requireHubServer(w) {
 		return
 	}
 	if !m.authHub(r) {

@@ -86,6 +86,7 @@ type hubData struct {
 	mu         sync.Mutex
 	secret     string
 	deviceName string
+	serverMode bool // true: this instance is the center; false: it is a node
 
 	devices map[string]*HubDevice // server 模式：device_token → 设备
 	outbox  map[string][]HubOp    // server 模式：device_token → 待投递 op
@@ -110,6 +111,7 @@ type hubData struct {
 	// ── 反向隧道（client 模式） ────────────────────────────────────
 	webURL     string // 配对时中心分配的公开地址
 	targetAddr string // 本地 ompweb 地址，默认 127.0.0.1:30177
+	pairingNow bool   // 一次只允许一个配对请求改写状态文件
 }
 
 // EnableHub 启用 hub。serverMode=true 时注册 /hub/* 端点（必须在 Start 前调用）；
@@ -117,6 +119,7 @@ type hubData struct {
 func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubClientOptions) error {
 	h := &hubData{
 		secret:         secret,
+		serverMode:     serverMode,
 		devices:        map[string]*HubDevice{},
 		outbox:         map[string][]HubOp{},
 		results:        map[string]HubOpResult{},
@@ -156,14 +159,28 @@ func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubCli
 			h.webURL = strings.TrimRight(strings.TrimSpace(st.WebURL), "/")
 		}
 		opts.ServerURL = strings.TrimRight(strings.TrimSpace(opts.ServerURL), "/")
-		if strings.TrimSpace(secret) == "" {
-			return errors.New("hub: secret is required")
-		}
 		if opts.ServerURL == "" {
 			return errors.New("hub: server_url is required in client mode")
 		}
-		if opts.DeviceToken == "" {
-			return errors.New("hub: device_token is required in client mode")
+		secret = strings.TrimSpace(secret)
+		opts.DeviceToken = strings.TrimSpace(opts.DeviceToken)
+		h.syncEvery = time.Duration(opts.SyncIntervalM) * time.Minute
+		if opts.SyncIntervalM <= 0 {
+			h.syncEvery = time.Minute
+		}
+		if secret == "" || opts.DeviceToken == "" {
+			if secret != "" || opts.DeviceToken != "" {
+				return errors.New("hub: secret and device_token must both be set in client mode")
+			}
+			// Fresh node: nothing enrolled yet. Expose the dashboard's single
+			// pairing-code input and wait for POST /hub/pair/join; no client
+			// loops until credentials exist.
+			h.secret = ""
+			h.serverURL = opts.ServerURL
+			h.deviceName = opts.DeviceName
+			m.hub = h
+			slog.Info("hub: client mode awaiting pairing", "server_url", h.serverURL)
+			return nil
 		}
 		h.secret = secret
 		h.serverURL = opts.ServerURL
@@ -175,10 +192,6 @@ func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubCli
 			} else {
 				h.deviceName = opts.DeviceToken
 			}
-		}
-		h.syncEvery = time.Duration(opts.SyncIntervalM) * time.Minute
-		if opts.SyncIntervalM <= 0 {
-			h.syncEvery = time.Minute
 		}
 		if h.webURL != "" && strings.TrimSpace(os.Getenv("OMPWEB_PUBLIC_URL")) == "" {
 			os.Setenv("OMPWEB_PUBLIC_URL", h.webURL)
@@ -208,6 +221,21 @@ func (m *ManagementServer) EnableHub(secret string, serverMode bool, opts HubCli
 // hubEnabled reports whether hub data is configured (either mode).
 func (m *ManagementServer) hubEnabled() bool { return m.hub != nil }
 
+// requireHubServer writes an error and returns false unless this instance is
+// the hub center. Nodes only get the pairing page; issuing codes, listing
+// nodes and accepting tunnels all belong to the center.
+func (m *ManagementServer) requireHubServer(w http.ResponseWriter) bool {
+	if m.hub == nil {
+		mgmtError(w, http.StatusServiceUnavailable, "hub is not enabled")
+		return false
+	}
+	if !m.hub.serverMode {
+		mgmtError(w, http.StatusConflict, "hub is not in server mode")
+		return false
+	}
+	return true
+}
+
 // authHub 校验 hub 共享密钥（不同设备的 X-Hub-Secret，常量时间比较）。
 func (m *ManagementServer) authHub(r *http.Request) bool {
 	h := m.hub
@@ -217,7 +245,12 @@ func (m *ManagementServer) authHub(r *http.Request) bool {
 	h.mu.Lock()
 	secret := h.secret
 	h.mu.Unlock()
-	return subtle.ConstantTimeCompare([]byte(r.Header.Get("X-Hub-Secret")), []byte(secret)) == 1
+	provided := r.Header.Get("X-Hub-Secret")
+	// An unpaired client has no secret yet: never let an empty header match it.
+	if secret == "" || provided == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(provided), []byte(secret)) == 1
 }
 
 // ── server 模式：/hub/* 端点 ─────────────────────────────────────────
@@ -708,6 +741,9 @@ func normalizeHubWebURL(raw string) string {
 func (m *ManagementServer) handleHubNodes(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		mgmtError(w, http.StatusMethodNotAllowed, "GET only")
+		return
+	}
+	if !m.requireHubServer(w) {
 		return
 	}
 	h := m.hub

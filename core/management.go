@@ -332,6 +332,7 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 		mux.HandleFunc(prefix+"/hub/tunnel", m.handleHubTunnel)
 		mux.HandleFunc(prefix+"/hub/pair/new", m.wrap(m.handleHubPairNew))
 		mux.HandleFunc(prefix+"/hub/pair/claim", m.handleHubPairClaim)
+		mux.HandleFunc(prefix+"/hub/pair/join", m.wrap(m.handleHubPairJoin))
 		mux.HandleFunc(prefix+"/hub/pair/", m.wrap(m.handleHubPairDevice))
 		mux.HandleFunc(prefix+"/hub/", m.handleHubDeviceRoutes)
 		// web 看板用的视图/转发端点：走 management token（包 wrap）。
@@ -560,7 +561,33 @@ func (m *ManagementServer) handleStatus(w http.ResponseWriter, r *http.Request) 
 			"token_set": m.bridgeServer.token != "",
 		}
 	}
+	resp["hub"] = m.hubStatus()
 	mgmtJSON(w, http.StatusOK, resp)
+}
+
+// hubStatus describes this instance's hub role for the console: "off" when hub
+// is disabled, "server" for the center, "client" for a node. A client that has
+// not been enrolled with a pairing code reports paired=false.
+func (m *ManagementServer) hubStatus() map[string]any {
+	h := m.hub
+	if h == nil {
+		return map[string]any{"enabled": false, "mode": "off", "paired": false}
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	mode := "server"
+	if !h.serverMode {
+		mode = "client"
+	}
+	info := map[string]any{"enabled": true, "mode": mode, "paired": true}
+	if mode == "client" {
+		info["paired"] = h.clientToken != ""
+		info["server_url"] = h.serverURL
+		info["device_token"] = h.clientToken
+		info["device_name"] = h.deviceName
+		info["web_url"] = h.webURL
+	}
+	return info
 }
 
 func (m *ManagementServer) handleRestart(w http.ResponseWriter, r *http.Request) {

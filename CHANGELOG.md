@@ -16,6 +16,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   `omp-<device_token>.<node_host_suffix>`，不再预建固定节点。
 - 文档：新增 `docs/HUB-NODES.md`，覆盖中心、Linux/Windows 节点、中兴设备接入与排障；
   README / INSTALL 同步更新节点安装说明。
+- Hub 节点可在**未配对**状态下启动：client 模式允许 `secret`/`device_token` 为空，
+  此时只开放配对路径；已有凭据后再启动同步与反向隧道。新增 `POST /api/v1/hub/pair/join`
+  （management token 保护）在节点本机完成配对——居中生成的一次性码贴进来即可，免改配置；
+  已配对节点重复配对会落盘新凭据并返回 `restart_required`，不改动运行中的隧道密钥。
+- `GET /api/v1/status` 新增 `hub` 字段（`enabled`/`mode`/`paired`/`server_url`/`device_token`/
+  `device_name`/`web_url`），控制台与运维脚本可据此判断节点是否已接入中心。
 
 ### Changed
 - 控制台瘦身：移除「会话查看」「agent 人格」两个 tab（会话查看与 agent 编辑统一到 ompweb），
@@ -93,6 +99,15 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   的队列无同步关系，用户点按钮后紧接发文本时可能乱序到达引擎。
 
 ### Fixed（审计修复·调度/飞书/并发/竞态）
+- Hub：未配对节点（secret 为空）的 `/hub/register` 会被**空** `X-Hub-Secret` 匹配通过，
+  等同未认证注册；现要求双方 secret 均非空才做常量时间比较。
+- Hub：`/hub/nodes`、`/hub/devices`、`/hub/result`、`/hub/register` 的 hub 角色校验原先只看
+  `m.hub != nil`，client 模式下同样返回中心数据；改为 `requireHubServer` 统一守卫（`/hub/tunnel`
+  保持客户端升级路径）。
+- Hub：节点未配对时首次 `pair/join` 后启动同步循环会因 `sync_interval_mins` 尚未计算而
+  `time.NewTicker(0)` panic；`syncEvery` 改为在两条分支之前初始化。
+- Hub：注册过的**未配对**设备仍会出现在「节点」页并拿到公开地址，与「删除设备后不得复现」
+  的设计冲突；nodes 列表改为只暴露配对记录，未配对注册仅作心跳留存。
 - timer fire 时**同步标记并落盘** `Fired`（结果后置 `SetResult` 记录）：修复重启 /
   重扫过后已触发的一次性任务被启动扫描重复执行；解锁 CUJ-E4（原 flaky 被 `t.Skip`）。
 - cron 调度链套 `SkipIfStillRunning` + `Recover`，且 `runJob`/`RunJobNow` 增加 per-job

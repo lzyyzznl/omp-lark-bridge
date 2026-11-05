@@ -428,6 +428,7 @@ Authorization: Bearer <管理 token>
 
 | 现象 | 原因 | 处理 |
 |---|---|---|
+| 客户端节点页报 `Cannot read properties of undefined (reading 'nodes')` | 客户端仍运行旧二进制，本地 `/hub/nodes` 仍被旧的 server-only 校验拦截 | 更新节点二进制到本版本并重启；中心侧会返回 `role=client, can_edit=false` |
 | `404 unknown node` | host 没配对 / `device_token` 不一致 / DNS 未走泛解析 | 控制台核对 host；确认配对记录；检查 `*.example.com` DNS 和 ingress |
 | `502 node offline` | 节点服务/隧道没连上 | 节点看 `hub: tunnel` 日志；确认出站 443、`server_url`、`hub-client.json` |
 | `403 device is not paired` | 节点已被移除，或中心 `hub-devices.json` 丢失 | 重新生成配对码并 `hub pair` |

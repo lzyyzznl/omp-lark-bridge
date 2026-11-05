@@ -159,7 +159,39 @@ omp-lark-bridge hub pair https://bridge.example.com <CODE> \
 
 如果提示 `invalid or expired pairing code`：回控制台重新生成一个新的码。不要重复使用旧码。
 
-### 2.3 节点配置
+### 2.3 免改配置贴码配对（可选）
+
+新版 client 模式允许**未配对启动**：`server_url` 和 `state_file` 配好，
+`secret` / `device_token` 都留空。启动后节点只开放配对入口，不会建立同步或隧道；
+配对成功后新节点会立即生效，不需要改配置或重启。
+
+```toml
+[hub]
+enabled = true
+mode = "client"
+server_url = "https://bridge.example.com"
+state_file = "/home/you/.omp-lark-bridge/hub-client.json"
+# secret / device_token 留空，等待贴码配对
+```
+
+中心「添加节点」生成码后，在**节点本机**调用节点自己的管理 API：
+
+```bash
+curl -sS -X POST \
+  -H "Authorization: Bearer <节点管理 token>" \
+  -H "Content-Type: application/json" \
+  -d '{"code":"<CODE>","name":"zte-linux"}' \
+  http://127.0.0.1:31990/api/v1/hub/pair/join
+```
+
+- 这是**节点**的管理 API，不是中心；token 用节点的 `[management] token`。
+- 未配对节点：返回 `applied: true`，立即启动同步循环和反向隧道；状态文件落盘为 `0600`。
+- 已配对节点：返回 `restart_required: true`；新凭据已落盘，但运行中的隧道仍使用旧 secret，
+  重启节点后生效。
+- 仍然可以使用 `hub pair` CLI；两种方式二选一。
+- 确认是否已配对：`GET /api/v1/status` 的 `hub.paired` 字段。
+
+### 2.4 节点配置
 
 把命令输出的片段合并进节点 `config.toml`：
 
@@ -262,6 +294,15 @@ curl -I https://omp-pc5.example.com/
 - host 未配对：`404 unknown node`
 
 控制台「节点」页应显示该节点为在线；agent/session 数量来自节点每约 60 秒一次的 inventory 上报，可能比“在线”状态晚几秒到一分钟。
+
+节点本机也可以直接看 hub 状态：
+
+```bash
+curl -sS -H "Authorization: Bearer <节点管理 token>" \
+  http://127.0.0.1:31990/api/v1/status | jq '.data.hub'
+```
+
+未配对时应看到 `"paired": false`；配对成功后为 `true`，并带 `server_url` / `device_token` / `web_url`。
 
 ## 4. Windows 节点安装（含 `zte-book` 等）
 

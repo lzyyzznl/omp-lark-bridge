@@ -180,6 +180,11 @@ agent/session 元数据，并拉取中心投递的 run/edit op。**OMP Web 页�
 4. 把命令输出的 `[hub]` / `[ompweb]` 合并进节点 `config.toml`，重启节点服务。
 5. 控制台节点显示在线；浏览器打开 `https://omp-pc5.example.com/`。
 
+节点也可以先以**未配对状态**启动（`server_url` 配好，`secret` / `device_token` 留空），
+然后在节点本机调用 `POST /api/v1/hub/pair/join` 贴入配对码。新节点会立即生效；已配对
+节点返回 `restart_required`，重启后生效。详见
+[docs/HUB-NODES.md](./docs/HUB-NODES.md)。
+
 > 配对命令必须从公网控制台生成。不要在节点上用 `127.0.0.1:31990` 生成，
 > 否则命令里的 `server_url` 会是节点不可达的本地地址。
 

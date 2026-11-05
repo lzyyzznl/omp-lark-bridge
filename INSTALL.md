@@ -227,6 +227,9 @@ ompweb（omp 的网页工作台，默认 `http://127.0.0.1:30177`）是 **硬依
 
   把输出的 `[hub]` / `[ompweb]` 合并进节点 `config.toml`，再 `daemon restart`。
 - 节点只需要**出站 443**；不需要公网端口，也不需要单独的 Cloudflare Tunnel。
+- 也可以先以未配对状态启动（`server_url` 配好，`secret` / `device_token` 留空），
+  在节点本机调用 `POST /api/v1/hub/pair/join` 贴入配对码；新节点立即生效，已配对节点
+  返回 `restart_required`，重启后生效。
 - 验证：控制台节点在线，`https://omp-<device_token>.example.com/` 返回 200；
   未配对 host 返回 404，已配对但离线返回 502。
 - 安全：relay 不校验访问者，节点 OMP Web 必须加密码（`OMP_WEB_PASSWORD_HASH`）

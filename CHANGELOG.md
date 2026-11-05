@@ -15,7 +15,8 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   WSS + yamux 反向隧道、中心 relay、节点在线/移除；节点 host 自动生成为
   `omp-<device_token>.<node_host_suffix>`，不再预建固定节点。
 - 文档：新增 `docs/HUB-NODES.md`，覆盖中心、Linux/Windows 节点、中兴设备接入与排障；
-  README / INSTALL 同步更新节点安装说明。
+  README / INSTALL 同步更新节点安装说明，并补充未配对启动、`pair/join` 贴码配对和
+  `/api/v1/status` 的 `hub` 字段检查。
 - Hub 节点可在**未配对**状态下启动：client 模式允许 `secret`/`device_token` 为空，
   此时只开放配对路径；已有凭据后再启动同步与反向隧道。新增 `POST /api/v1/hub/pair/join`
   （management token 保护）在节点本机完成配对——居中生成的一次性码贴进来即可，免改配置；

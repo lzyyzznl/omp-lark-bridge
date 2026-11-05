@@ -30,7 +30,7 @@ func TestTranscriptOmpWeb_MirrorsIntoOmpSessionsDir(t *testing.T) {
 
 	m := &ManagementServer{}
 	rec := httptest.NewRecorder()
-	m.transcriptOmpWeb(rec, dir, id)
+	m.transcriptOmpWeb(rec, ompWebReq("127.0.0.1:31990"), dir, id)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
 	}
@@ -58,7 +58,7 @@ func TestTranscriptOmpWeb_MirrorsIntoOmpSessionsDir(t *testing.T) {
 
 	// Path traversal in the id must be rejected before any file access.
 	rec = httptest.NewRecorder()
-	m.transcriptOmpWeb(rec, dir, "../"+id)
+	m.transcriptOmpWeb(rec, ompWebReq("127.0.0.1:31990"), dir, "../"+id)
 	if rec.Code != http.StatusBadRequest {
 		t.Errorf("traversal status = %d, want 400", rec.Code)
 	}
@@ -69,7 +69,7 @@ func TestTranscriptOmpWeb_MirrorsIntoOmpSessionsDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	rec = httptest.NewRecorder()
-	m.transcriptOmpWeb(rec, dir, "bare")
+	m.transcriptOmpWeb(rec, ompWebReq("127.0.0.1:31990"), dir, "bare")
 	if rec.Code != http.StatusUnprocessableEntity {
 		t.Errorf("headerless status = %d, want 422", rec.Code)
 	}
@@ -92,38 +92,73 @@ func TestOmpWebURLs(t *testing.T) {
 	}
 }
 
-// TestTranscriptOmpWeb_PrefersPublicURL is the regression test for the
-// public-domain redirect bug: transcript links must use OMPWEB_PUBLIC_URL
-// instead of the server's loopback address.
-func TestTranscriptOmpWeb_PrefersPublicURL(t *testing.T) {
-	home := t.TempDir()
-	agentDir := filepath.Join(home, "agent")
+// ompWebReq builds a console request whose Host is how the browser reached it.
+func ompWebReq(host string) *http.Request {
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/ompweb", nil)
+	req.Host = host
+	return req
+}
+
+// TestOmpWebURLForRequest pins the routing priority: a console opened on this
+// machine links to loopback, a LAN or tailnet entry links to that same host, and
+// only a public entry point keeps the configured public domain.
+func TestOmpWebURLForRequest(t *testing.T) {
+	t.Setenv("OMPWEB_URL", "http://127.0.0.1:30177")
+	t.Setenv("OMPWEB_PUBLIC_URL", "https://omp-lct950915.lizeyu.win")
+	cases := []struct{ host, want string }{
+		{"127.0.0.1:31990", "http://127.0.0.1:30177"},
+		{"[::1]:31990", "http://127.0.0.1:30177"},
+		{"localhost:31990", "http://127.0.0.1:30177"},
+		{"192.168.67.74:31990", "http://192.168.67.74:30177"},
+		{"10.0.0.9:31990", "http://10.0.0.9:30177"},
+		{"100.78.175.122:31990", "http://100.78.175.122:30177"},
+		{"omen-ubuntu.tail7fe07c.ts.net:31990", "http://omen-ubuntu.tail7fe07c.ts.net:30177"},
+		{"desktop-1:31990", "http://desktop-1:30177"},
+		{"omp-lct950915.lizeyu.win", "https://omp-lct950915.lizeyu.win"},
+		{"bridge.lizeyu.win", "https://omp-lct950915.lizeyu.win"},
+	}
+	for _, c := range cases {
+		if got := ompWebURLForRequest(ompWebReq(c.host)); got != c.want {
+			t.Errorf("host %q -> %q, want %q", c.host, got, c.want)
+		}
+	}
+}
+
+// TestTranscriptOmpWeb_FollowsEntryHost is the regression test for the loopback
+// detour: a LAN-opened console used to hand out the public domain.
+func TestTranscriptOmpWeb_FollowsEntryHost(t *testing.T) {
+	agentDir := filepath.Join(t.TempDir(), "agent")
 	t.Setenv("PI_CODING_AGENT_DIR", agentDir)
-	t.Setenv("OMPWEB_URL", "http://127.0.0.1:9999/")
-	t.Setenv("OMPWEB_PUBLIC_URL", "https://omp.example.com/")
+	t.Setenv("OMPWEB_URL", "http://127.0.0.1:30177")
+	t.Setenv("OMPWEB_PUBLIC_URL", "https://omp-lct950915.lizeyu.win")
 
 	dir := t.TempDir()
-	id := "2026-01-01_public"
+	id := "2026-01-01_lan"
 	body := `{"type":"session","version":3,"id":"sess-2","cwd":"/w"}` + "\n"
 	if err := os.WriteFile(filepath.Join(dir, id+".jsonl"), []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
 	m := &ManagementServer{}
-	rec := httptest.NewRecorder()
-	m.transcriptOmpWeb(rec, dir, id)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	var resp struct {
-		Data struct {
-			URL string `json:"url"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if want := "https://omp.example.com/?session=sess-2"; resp.Data.URL != want {
-		t.Errorf("url = %q, want %q", resp.Data.URL, want)
+	for host, want := range map[string]string{
+		"192.168.67.74:31990":      "http://192.168.67.74:30177/?session=sess-2",
+		"omp-lct950915.lizeyu.win": "https://omp-lct950915.lizeyu.win/?session=sess-2",
+	} {
+		rec := httptest.NewRecorder()
+		m.transcriptOmpWeb(rec, ompWebReq(host), dir, id)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: status = %d, body = %s", host, rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				URL string `json:"url"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("%s: decode: %v", host, err)
+		}
+		if resp.Data.URL != want {
+			t.Errorf("%s: url = %q, want %q", host, resp.Data.URL, want)
+		}
 	}
 }

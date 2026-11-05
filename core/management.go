@@ -2633,7 +2633,7 @@ func (m *ManagementServer) handleProjectTranscripts(w http.ResponseWriter, r *ht
 	// 不改变既有路径穿越拒绝行为。
 	id, action, hasAction := strings.Cut(rest, "/")
 	if hasAction && action == "ompiweb" && r.Method == http.MethodGet {
-		m.transcriptOmpWeb(w, dir, id)
+		m.transcriptOmpWeb(w, r, dir, id)
 		return
 	}
 	if hasAction && action == "chat" && !strings.Contains(action, "/") && r.Method == http.MethodPost {
@@ -2930,7 +2930,7 @@ func (m *ManagementServer) handleTranscriptLibrary(w http.ResponseWriter, r *htt
 			mgmtError(w, http.StatusNotFound, "no session directory available yet")
 			return
 		}
-		m.transcriptOmpWeb(w, dir, id)
+		m.transcriptOmpWeb(w, r, dir, id)
 		return
 	}
 	switch sub {
@@ -3948,7 +3948,7 @@ func (m *ManagementServer) handleOmpWeb(w http.ResponseWriter, r *http.Request) 
 		}
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{
-		"url":          ompWebPublicURL(),
+		"url":          ompWebURLForRequest(r),
 		"internal_url": internal,
 		"reachable":    reachable,
 	})
@@ -3975,6 +3975,84 @@ func ompWebPublicURL() string {
 		return url
 	}
 	return ompWebInternalURL()
+}
+
+// tailscaleCGNAT is the 100.64.0.0/10 carrier-grade NAT range Tailscale hands
+// out to tailnet nodes.
+var tailscaleCGNAT = func() *net.IPNet {
+	_, n, err := net.ParseCIDR("100.64.0.0/10")
+	if err != nil {
+		panic(err)
+	}
+	return n
+}()
+
+// ompWebURLForRequest is the browser-facing ompweb address for console request
+// r. Handing every browser OMPWEB_PUBLIC_URL made a console opened on this
+// machine (127.0.0.1:31990) or on the LAN detour through the public domain, so
+// the link follows the way the console itself was reached, shortest path first:
+//
+//   - loopback -> the ompweb loopback address (same machine, no detour)
+//   - private/link-local IP, 100.64.0.0/10, *.ts.net, *.local, *.lan,
+//     *.home.arpa, single-label host -> that same host on the ompweb port
+//   - anything else (public domain, tunnel) -> OMPWEB_PUBLIC_URL
+func ompWebURLForRequest(r *http.Request) string {
+	if r == nil {
+		return ompWebPublicURL()
+	}
+	host := hostWithoutPort(r.Host)
+	if host == "" {
+		return ompWebPublicURL()
+	}
+	ip := net.ParseIP(host)
+	switch {
+	case ip != nil && ip.IsLoopback(), strings.EqualFold(host, "localhost"):
+		return ompWebInternalURL()
+	case ip != nil && (ip.IsPrivate() || ip.IsLinkLocalUnicast() || tailscaleCGNAT.Contains(ip)):
+		return ompWebURLOnHost(host)
+	case ip == nil && isLocalishHost(host):
+		return ompWebURLOnHost(host)
+	}
+	return ompWebPublicURL()
+}
+
+// ompWebURLOnHost rebuilds the ompweb address on host, keeping the port and
+// scheme of the loopback address.
+func ompWebURLOnHost(host string) string {
+	base, err := url.Parse(ompWebInternalURL())
+	if err != nil {
+		return ompWebPublicURL()
+	}
+	port := base.Port()
+	if port == "" {
+		port = "30177"
+	}
+	scheme := base.Scheme
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + net.JoinHostPort(host, port)
+}
+
+// isLocalishHost reports whether host is a name that can only resolve inside the
+// local network or the tailnet, so rebuilding the ompweb URL on it is safe.
+func isLocalishHost(host string) bool {
+	switch {
+	case strings.HasSuffix(host, ".ts.net"), strings.HasSuffix(host, ".local"),
+		strings.HasSuffix(host, ".lan"), strings.HasSuffix(host, ".home.arpa"):
+		return true
+	}
+	return !strings.Contains(host, ".")
+}
+
+// hostWithoutPort lowercases a request Host header and drops its port and any
+// IPv6 brackets; a trailing dot (FQDN form) is trimmed.
+func hostWithoutPort(hostport string) string {
+	hostport = strings.TrimSpace(hostport)
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		return strings.TrimSuffix(strings.ToLower(h), ".")
+	}
+	return strings.TrimSuffix(strings.ToLower(strings.Trim(hostport, "[]")), ".")
 }
 
 // ompSessionsMirrorDir is omp's own session store (the one ompweb enumerates,
@@ -4050,7 +4128,7 @@ func copyFileAtomic(src, dst string) error {
 // under its sessions dir, while OLB keeps transcripts under the data dir, so the
 // file is copied on demand. The copy is the viewer's own file: continuing the
 // chat in ompweb writes the copy, never OLB's original.
-func (m *ManagementServer) transcriptOmpWeb(w http.ResponseWriter, dir, id string) {
+func (m *ManagementServer) transcriptOmpWeb(w http.ResponseWriter, r *http.Request, dir, id string) {
 	if id == "" || filepath.Base(id) != id {
 		mgmtError(w, http.StatusBadRequest, "invalid transcript id")
 		return
@@ -4083,7 +4161,7 @@ func (m *ManagementServer) transcriptOmpWeb(w http.ResponseWriter, dir, id strin
 		}
 	}
 	mgmtJSON(w, http.StatusOK, map[string]any{
-		"url":     ompWebPublicURL() + "/?session=" + url.QueryEscape(sid),
+		"url":     ompWebURLForRequest(r) + "/?session=" + url.QueryEscape(sid),
 		"session": sid,
 	})
 }

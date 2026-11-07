@@ -121,7 +121,7 @@ func runHubCommand(args []string) {
 		os.Exit(1)
 	}
 
-	fmt.Printf("paired %s (%s)\n", deviceID, deviceName)
+	fmt.Printf("paired %s (%s)\n", deviceID, chosenName)
 	fmt.Printf("web:   %s\n", out.WebURL)
 	fmt.Printf("state: %s\n", *stateFile)
 	fmt.Println()

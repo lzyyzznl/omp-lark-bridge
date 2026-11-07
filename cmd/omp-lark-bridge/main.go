@@ -1382,6 +1382,22 @@ func main() {
 				slog.Error("hub: enable failed", "mode", cfg.Hub.Mode, "error", err)
 			}
 		}
+		// Mobile（手机网关）：必须在 Start 前启用，路由在 buildHandler 里注册。
+		if cfg.Mobile.Enabled != nil && *cfg.Mobile.Enabled {
+			opts := core.MobileOptions{StateFile: strings.TrimSpace(cfg.Mobile.StateFile)}
+			opts.RequireConsole = true
+			if cfg.Mobile.RequireConsole != nil {
+				opts.RequireConsole = *cfg.Mobile.RequireConsole
+			}
+			opts.RequireForKeys = true
+			if cfg.Mobile.RequireForKeys != nil {
+				opts.RequireForKeys = *cfg.Mobile.RequireForKeys
+			}
+			opts.WebTrustedSecret = cfg.Mobile.WebTrustedSecret
+			if err := mgmtSrv.EnableMobile(opts); err != nil {
+				slog.Error("mobile: enable failed", "error", err)
+			}
+		}
 		mgmtSrv.Start()
 	}
 

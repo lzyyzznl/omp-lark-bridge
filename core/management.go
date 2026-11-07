@@ -85,6 +85,9 @@ type ManagementServer struct {
 	// 设备注册表 + outbox；client 模式持有同步循环与远端目录快照。
 	hub *hubData
 
+	// mobile 是手机端网关（见 mobile.go）；nil 表示未启用。
+	mobile *mobileData
+
 	setupFeishuSave      func(req FeishuSetupSaveRequest) error
 	setupWeixinSave      func(req WeixinSetupSaveRequest) error
 	addPlatformToProject func(projectName, platType string, opts map[string]any, workDir, agentType string) error
@@ -295,6 +298,8 @@ type CCSwitchProviderInfo struct {
 func (m *ManagementServer) Start() {
 	mux := http.NewServeMux()
 	handler := m.buildHandler(mux)
+	// 手机网关：控制台页面同样要手机确认；API 自身的 token/签名不受影响。
+	handler = m.mobileConsoleGate(handler)
 
 	m.server = &http.Server{
 		// JoinHostPort with an empty host yields ":port" (all interfaces), which
@@ -338,18 +343,26 @@ func (m *ManagementServer) buildHandler(mux *http.ServeMux) http.Handler {
 		mux.HandleFunc(prefix+"/hub/devices", m.handleHubDevices)
 		mux.HandleFunc(prefix+"/hub/result", m.handleHubResult)
 		mux.HandleFunc(prefix+"/hub/tunnel", m.handleHubTunnel)
-		mux.HandleFunc(prefix+"/hub/pair/new", m.wrap(m.handleHubPairNew))
+		// 配对/密钥类操作：手机签名是第二把钥匙（mobileKeyGuard），
+		// 浏览器 token 单独无法操作；读请求照旧。
+		mux.HandleFunc(prefix+"/hub/pair/new", m.wrapKey(m.handleHubPairNew))
 		mux.HandleFunc(prefix+"/hub/pair/claim", m.handleHubPairClaim)
-		mux.HandleFunc(prefix+"/hub/pair/join", m.wrap(m.handleHubPairJoin))
-		mux.HandleFunc(prefix+"/hub/pair/", m.wrap(m.handleHubPairDevice))
+		mux.HandleFunc(prefix+"/hub/pair/join", m.wrapKey(m.handleHubPairJoin))
+		mux.HandleFunc(prefix+"/hub/pair/", m.wrapKey(m.handleHubPairDevice))
 		mux.HandleFunc(prefix+"/hub/", m.handleHubDeviceRoutes)
 		// web 看板用的视图/转发端点：走 management token（包 wrap）。
-		mux.HandleFunc(prefix+"/hub/nodes", m.wrap(m.handleHubNodes))
-		mux.HandleFunc(prefix+"/hub/nodes/", m.wrap(m.handleHubNodeUpdate))
+		mux.HandleFunc(prefix+"/hub/nodes", m.wrapKey(m.handleHubNodes))
+		mux.HandleFunc(prefix+"/hub/nodes/", m.wrapKey(m.handleHubNodeUpdate))
 		mux.HandleFunc(prefix+"/hub/access", m.wrap(m.handleHubAccess))
-		mux.HandleFunc(prefix+"/hub/access/unlock", m.wrap(m.handleHubAccessUnlock))
+		mux.HandleFunc(prefix+"/hub/access/unlock", m.wrapKey(m.handleHubAccessUnlock))
 		mux.HandleFunc(prefix+"/hub/overview", m.wrap(m.handleHubOverview))
 		mux.HandleFunc(prefix+"/hub/overview/", m.wrap(m.handleHubOverviewRoutes))
+	}
+
+	// Mobile gateway（手机 App）：签名请求与 management token 二选一。
+	if m.mobile != nil {
+		mux.HandleFunc(prefix+"/mobile", m.mobileAuth(m.handleMobile))
+		mux.HandleFunc(prefix+"/mobile/", m.mobileAuth(m.handleMobile))
 	}
 
 	// Projects

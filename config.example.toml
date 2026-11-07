@@ -226,3 +226,17 @@ enabled = false           # 默认关闭 / default off
 # device_name = "机房柱机"                  # 设备名称，默认取主机名
 # device_token = ""                        # 旧字段，等价于 device_id；仅兼容旧配置
 # sync_interval_mins = 1                   # 上报/轮询间隔，默认 1 分钟
+
+# =============================================================================
+# Mobile / 手机网关（Android App：审批 + 密钥控制）
+# =============================================================================
+# 开启后，中心多一对 /api/v1/mobile/* 接口：手机一次性用 management token 换一对
+# 设备 ID + 密钥，此后每个请求用 HMAC-SHA256 签名。只要有一台手机已登记：
+#   - require_console：节点网页先显示「等待手机确认」，手机批准后发一次性链接放行；
+#   - require_for_keys：配对/改密钥等写操作必须带手机签名，仅有 token 会被 403。
+# 一台都没登记时两道闸自动关闭，避免把自己锁在门外。详见 docs/MOBILE.md。
+[mobile]
+enabled = false           # 默认关闭 / default off
+# state_file = ""         # 已登记手机与访问链接；默认 <data_dir>/mobile-devices.json
+# require_console = true  # 节点网页需要手机批准（默认 true）
+# require_for_keys = true # 配对/密钥写操作需要手机签名（默认 true）

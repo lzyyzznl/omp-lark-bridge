@@ -1017,6 +1017,27 @@ func (m *ManagementServer) startHubRelay() error {
 	return nil
 }
 
+// hubSingleNodeToken is the last-resort resolver: a front door shared by every
+// node cannot name one from the Host header, and a fresh browser request has no
+// grant material yet. With exactly one paired node the answer is unambiguous,
+// so the gate page can still be served there. Ambiguity is left to the caller
+// (404), because silently picking a node would route one console into another.
+func (m *ManagementServer) hubSingleNodeToken() string {
+	h := m.hub
+	if h == nil {
+		return ""
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.paired) != 1 {
+		return ""
+	}
+	for token := range h.paired {
+		return token
+	}
+	return ""
+}
+
 func (r *hubRelay) handle(w http.ResponseWriter, req *http.Request) {
 	host := req.Host
 	if h, _, err := net.SplitHostPort(host); err == nil {
@@ -1024,6 +1045,12 @@ func (r *hubRelay) handle(w http.ResponseWriter, req *http.Request) {
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
 	token := r.m.hubHostToken(host)
+	if token == "" {
+		token = r.m.mobileRelayToken(req)
+	}
+	if token == "" {
+		token = r.m.hubSingleNodeToken()
+	}
 	if token == "" {
 		http.Error(w, "unknown node", http.StatusNotFound)
 		return
@@ -1035,6 +1062,16 @@ func (r *hubRelay) handle(w http.ResponseWriter, req *http.Request) {
 	if retry := guard.lockedFor(key); retry > 0 {
 		r.m.recordHubAccess(token, host, ip, path, http.StatusTooManyRequests)
 		httpLocked(w, retry)
+		return
+	}
+	// 手机网关：/__omp/grant 与审批状态轮询由中继本地处理；其余页面在手机
+	// 确认（或已有访问 cookie）前一律显示「等待手机确认」。
+	if r.m.mobileServeRelayEndpoint(w, req, token, host) {
+		return
+	}
+	if r.m.mobileGateActive() && !r.m.mobileAccessAllowed(req, token) {
+		r.m.serveMobileGate(w, req, token, host)
+		r.m.recordHubAccess(token, host, ip, path, http.StatusUnauthorized)
 		return
 	}
 	if r.m.hubLoginRequired(token) {
@@ -1060,6 +1097,8 @@ func (r *hubRelay) handle(w http.ResponseWriter, req *http.Request) {
 		http.Error(w, "node offline", http.StatusBadGateway)
 		return
 	}
+	// Phone-approved sessions skip the node's own workspace password.
+	r.m.applyMobileWebTrust(req, token)
 	proxy := &httputil.ReverseProxy{
 		Director: func(out *http.Request) {
 			out.URL.Scheme = "http"

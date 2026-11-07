@@ -259,6 +259,23 @@ public_url = "https://omp-pc5.example.com"
 完整安装（中心、Linux/Windows 节点、中兴设备、动态移除、排障）见
 **[docs/HUB-NODES.md](./docs/HUB-NODES.md)**。
 
+## 手机网关（Android App）
+
+`[mobile]` 把手机变成第二把钥匙：浏览器打开节点网页要先在手机上点「批准」，
+配对节点/改登录码/改密钥必须由手机签名，手机 App 里也能直接打开各节点的 OMP Web。
+服务端 `/api/v1/mobile/*` 用设备密钥做 HMAC-SHA256 签名；一台手机都没登记时两道闸
+自动关闭，不会锁死自己。Android 客户端在 [`omp-android/`](./omp-android)，纯 Kotlin +
+Compose + Room + Retrofit，无需 Google 服务。
+
+```toml
+[mobile]
+enabled = true
+require_console = true    # 节点网页需手机批准
+require_for_keys = true   # 配对/密钥写操作需手机签名
+```
+
+安装、登记、接口、安全边界与排障见 **[docs/MOBILE.md](./docs/MOBILE.md)**。
+
 ## 授权
 
 MIT License,见 [LICENSE](./LICENSE);派生声明见 [NOTICE](./NOTICE)。本项目

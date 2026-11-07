@@ -155,3 +155,6 @@ credentials/
 omp-lark-bridge-new
 # ws test dumps (written into cwd by feishu ws tests)
 test_ws_*.json
+
+# Local build artifacts (make release / cross-compiled binaries)
+.deploy/

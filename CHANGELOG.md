@@ -6,6 +6,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
 ## [Unreleased]
 
 ### Added
+- 手机网关：控制台页面（中心 management web）也纳入手机确认，`console` 作为独立 scope，
+  批准控制台不放行节点、批准节点不放行控制台；App 的签名 API 不受闸门影响。
+  文档补充重新对外开放控制台域名的 ingress 写法。
+- Android App 新增「Console」入口：节点页一键以 `console` scope 走一次性授权链接，
+  直接在 App 内打开中心管理界面（链接 origin 取自 App 访问中心的 `Host` +
+  `X-Forwarded-Proto`，Tunnel 与 LAN 都可用）。
 - 会话驱动留槽：`core.SessionDriver`（`SessionStatus`/`SendPrompt`/`StopSession`）与
   `SessionDriverStatus`，由 `Engine` 实现；`/api/v1/projects/{name}/sessions` 每条会话新增
   `busy`/`queued` 字段，供 ompweb/APP 判定发送按钮是否可用。
@@ -28,6 +34,12 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   不再固定绕公网域名；其他节点仍走 relay。
 - 管理 token / 节点登录码连续错误超过 5 次后按 IP 锁定：10 分钟、30 分钟、24 小时逐级升级；
   成功认证重置。管理台与 relay 分别计数。
+- 手机网关（`[mobile]`）：设备登记 + HMAC-SHA256 请求签名、待审批队列与 WebSocket 推送、
+  节点网页「等待手机确认」闸门、一次性放行链接、配对/密钥写操作手机签名闸门；
+  全部吊销后自动退回只认 token 的模式。接口见 `core/mobile.go`。
+- Android 客户端（`omp-android/`）：Kotlin + Compose，节点列表/审批/密钥/设置、WebView 打开
+  节点 OMP Web、前台服务保持 WS 并本地发通知；密钥存 EncryptedSharedPreferences。
+- 文档：新增 `docs/MOBILE.md`；README 增加手机网关入口，`config.example.toml` 增加 `[mobile]`。
 - 中心节点页新增「访问记录」：按节点+IP 聚合次数、最后访问、路径、状态和锁定时间；
   中心可手动解锁，客户端只读。提供本机 `POST /api/v1/hub/access/unlock` SSH 兜底。
 - Hub 节点可在**未配对**状态下启动：client 模式允许 `secret`/`device_token` 为空，
@@ -36,6 +48,11 @@ Format follows [Keep a Changelog](https://keepachangelog.com/).
   已配对节点重复配对会落盘新凭据并返回 `restart_required`，不改动运行中的隧道密钥。
 - `GET /api/v1/status` 新增 `hub` 字段（`enabled`/`mode`/`paired`/`server_url`/`device_token`/
   `device_name`/`web_url`），控制台与运维脚本可据此判断节点是否已接入中心。
+
+### Fixed
+- 手机闸门不再拦机器协议：`/api/v1/hub/tunnel` 与 `/api/v1/hub/pair/claim` 由节点自带
+  `X-Hub-Device` + secret 认证，纳入闸门会让节点隧道每 30 秒重连失败并给手机刷一条
+  待审批。回归测试 `TestMobileConsoleGateSparesMachineEndpoints`。
 
 ### Changed
 - ompweb 链接改为**跟随控制台入口地址**（不再统一发公网域名）：loopback 进入 -> ompweb loopback 地址；

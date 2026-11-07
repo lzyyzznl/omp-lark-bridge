@@ -838,3 +838,135 @@ func TestHubPair_AutoDeviceID(t *testing.T) {
 		t.Fatalf("explicit aliases = %+v", explicit.Data)
 	}
 }
+
+// TestHubRelay_MobileTrustedHeader covers the "phone approval is the login"
+// contract: once the phone's access cookie is present the relay vouches for the
+// request with X-Omp-Web-Auth so ompweb skips its own workspace password, and a
+// client-supplied trust header is never forwarded.
+func TestHubRelay_MobileTrustedHeader(t *testing.T) {
+	const secret = "phone-approved-secret"
+	seen := make(chan string, 4)
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Get("X-Omp-Web-Auth")
+		_, _ = io.WriteString(w, "hello from node")
+	}))
+	defer backend.Close()
+	backendAddr := backend.Listener.Addr().String()
+
+	relayPort := freeTCPPort(t)
+	m := NewManagementServer(0, "mgmt", nil)
+	if err := m.EnableHub("s3cr3t", true, HubClientOptions{StateFile: t.TempDir() + "/hub-devices.json", RelayPort: relayPort}); err != nil {
+		t.Fatalf("EnableHub: %v", err)
+	}
+	if err := m.EnableMobile(MobileOptions{
+		StateFile:        t.TempDir() + "/mobile.json",
+		RequireConsole:   true,
+		WebTrustedSecret: secret,
+	}); err != nil {
+		t.Fatalf("EnableMobile: %v", err)
+	}
+	defer m.Stop()
+
+	rec := postJSON(t, m.handleHubPairNew, "/api/v1/hub/pair/new", map[string]string{
+		"device_token": "dev1",
+		"name":         "Node One",
+		"host":         "omp-test.example",
+	})
+	var created struct {
+		Data struct {
+			Code string `json:"code"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &created)
+	rec = postJSON(t, m.handleHubPairClaim, "/api/v1/hub/pair/claim", map[string]string{"code": created.Data.Code})
+	var claimed struct {
+		Data struct {
+			Secret string `json:"secret"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &claimed); err != nil || claimed.Data.Secret == "" {
+		t.Fatalf("claim decode: %v body=%s", err, rec.Body.String())
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/hub/tunnel", m.handleHubTunnel)
+	tunnelSrv := httptest.NewServer(mux)
+	defer tunnelSrv.Close()
+	header := http.Header{}
+	header.Set("X-Hub-Secret", claimed.Data.Secret)
+	header.Set("X-Hub-Device", "dev1")
+	conn, _, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(tunnelSrv.URL, "http")+"/api/v1/hub/tunnel", header)
+	if err != nil {
+		t.Fatalf("dial tunnel: %v", err)
+	}
+	session, err := yamux.Server(newWSNetConn(conn), hubYamuxConfig())
+	if err != nil {
+		t.Fatalf("yamux server: %v", err)
+	}
+	defer session.Close()
+	go func() {
+		for {
+			stream, err := session.AcceptStream()
+			if err != nil {
+				return
+			}
+			go proxyHubStream(stream, backendAddr)
+		}
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for m.hubTunnelFor("dev1") == nil && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if m.hubTunnelFor("dev1") == nil {
+		t.Fatal("tunnel was not registered")
+	}
+
+	// An enrolled phone exists, so the gate is live.
+	m.mobile.mu.Lock()
+	m.mobile.devices["phone1"] = &mobileDevice{ID: "phone1", Name: "Pixel", Secret: "x"}
+	m.mobile.access["granted"] = &mobileAccess{Node: "dev1", ExpiresAt: time.Now().Add(time.Hour)}
+	m.mobile.mu.Unlock()
+
+	relayURL := "http://127.0.0.1:" + strconv.Itoa(relayPort) + "/"
+	do := func(cookie string, spoof string) *http.Response {
+		req, _ := http.NewRequest(http.MethodGet, relayURL, nil)
+		req.Host = "omp-test.example"
+		if cookie != "" {
+			req.AddCookie(&http.Cookie{Name: mobileAccessCookie, Value: cookie})
+		}
+		if spoof != "" {
+			req.Header.Set("X-Omp-Web-Auth", spoof)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("relay request: %v", err)
+		}
+		t.Cleanup(func() { resp.Body.Close() })
+		return resp
+	}
+
+	resp := do("granted", "spoofed-by-client")
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		t.Fatalf("approved relay status=%d body=%q", resp.StatusCode, body)
+	}
+	select {
+	case got := <-seen:
+		if got != secret {
+			t.Fatalf("upstream X-Omp-Web-Auth = %q, want the configured secret", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("backend was not reached for the approved request")
+	}
+
+	// No access cookie: the gate answers and nothing reaches the node.
+	resp = do("", secret)
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("unapproved relay status=%d, want 401", resp.StatusCode)
+	}
+	select {
+	case got := <-seen:
+		t.Fatalf("unapproved request reached the node with header %q", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+}

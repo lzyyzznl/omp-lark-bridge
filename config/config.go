@@ -116,6 +116,7 @@ type Config struct {
 	OmpWeb             OmpWebConfig            `toml:"ompweb"`  // bundled ompweb child process
 	Archive            ArchiveConfig           `toml:"archive"` // session library auto-archiving
 	Hub                HubConfig               `toml:"hub"`     // multi-instance hub (see HubConfig)
+	Mobile             MobileConfig            `toml:"mobile"`  // phone gateway (Android app)
 	Hooks              []HookConfig            `toml:"hooks"`
 	IdleTimeoutMins    *int                    `toml:"idle_timeout_mins,omitempty"`  // max minutes between consecutive agent events; 0 = no timeout; default 120
 	MaxTurnTimeMins    *int                    `toml:"max_turn_time_mins,omitempty"` // absolute wall-clock cap per turn in minutes; 0 = disabled (default)
@@ -286,6 +287,20 @@ type HubConfig struct {
 	RelayPort      int    `toml:"relay_port,omitempty"`         // server: loopback relay port; default 31991
 	StateFile      string `toml:"state_file,omitempty"`         // server: paired devices; client: pairing state
 	NodeHostSuffix string `toml:"node_host_suffix,omitempty"`   // server: default suffix for omp-<token>.<suffix>
+}
+
+// MobileConfig controls the phone gateway (Android app). The app signs every
+// request with a device secret enrolled once; while a phone is enrolled, node
+// web pages and key/pairing mutations require the phone.
+type MobileConfig struct {
+	Enabled        *bool  `toml:"enabled"`              // default false
+	StateFile      string `toml:"state_file,omitempty"` // default ~/.omp-lark-bridge/mobile-devices.json
+	RequireConsole *bool  `toml:"require_console"`      // default true: node pages need phone approval
+	RequireForKeys *bool  `toml:"require_for_keys"`     // default true: key ops need a phone signature
+	// WebTrustedSecret is sent as X-Omp-Web-Auth on requests a phone already
+	// approved, so ompweb skips its own workspace password. The node's ompweb
+	// must carry sha256(secret) in OMP_WEB_TRUSTED_HEADER_SHA256.
+	WebTrustedSecret string `toml:"web_trusted_secret,omitempty"`
 }
 
 // Display mode constants.
